@@ -1,0 +1,49 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main, perf/bounded-incremental-index]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: Rust tests and macOS application
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      PCRE2_SYS_STATIC: "1"
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      CARGO_TERM_COLOR: always
+      FILESEARCH_COMPILE_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prepare Rust toolchain
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
+      - name: Check formatting
+        run: cargo fmt --manifest-path core/Cargo.toml --check
+      - name: Rust tests
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --manifest-path core/Cargo.toml -- --test-threads=1
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
+      - name: Repository consistency checks
+        if: ${{ !cancelled() }}
+        run: |
+          python3 tests/check_localization.py
+          python3 tests/check_localization_protocol.py
+          python3 tests/check_legacy_migration.py
+          python3 tests/check_application_identity.py
+      - name: Build app, XPC service, and CLI without signing or installation
+        if: ${{ !cancelled() }}
+        run: ./build.sh
