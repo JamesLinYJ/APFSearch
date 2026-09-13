@@ -1,0 +1,38 @@
+name: Apply guarded incremental implementation
+on:
+  push:
+    branches: [perf/bounded-incremental-index]
+    paths:
+      - .github/workflows/_apply_incremental.yml
+      - scripts/_apply_incremental_patch.py
+permissions:
+  contents: write
+jobs:
+  apply:
+    if: github.ref == 'refs/heads/perf/bounded-incremental-index'
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      PCRE2_SYS_STATIC: "1"
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      FILESEARCH_COMPILE_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
+      - name: Apply guarded source changes
+        run: python3 scripts/_apply_incremental_patch.py
+      - name: Format and validate the actual implementation
+        run: |
+          cargo fmt --manifest-path core/Cargo.toml
+          git diff --check
+          cargo test --locked --manifest-path core/Cargo.toml -- --test-threads=1
+          cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
+          ./build.sh
+      - name: Publish only validated source changes to the PR branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add core/src/index_store.rs core/src/cache_journal.rs core/src/change_reader.rs core/src/ordered_merge.rs core/src/bounded_cache_tests.rs README.md core/README.md
+          git diff --cached --stat
+          git commit -m 'perf: replay bounded cache deltas and batch sorted slot updates'
+          git push origin HEAD:refs/heads/perf/bounded-incremental-index
