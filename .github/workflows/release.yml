@@ -1,0 +1,54 @@
+name: Signed macOS release
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit or tag to release
+        required: true
+        default: main
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Import Developer ID certificates
+        env:
+          CERTIFICATES_P12: ${{ secrets.FILESEARCH_CERTIFICATES_P12 }}
+          CERTIFICATES_PASSWORD: ${{ secrets.FILESEARCH_CERTIFICATES_PASSWORD }}
+        run: |
+          test -n "$CERTIFICATES_P12"
+          KEYCHAIN="$RUNNER_TEMP/filesearch-signing.keychain-db"
+          security create-keychain -p "$RUNNER_TEMP" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$RUNNER_TEMP" "$KEYCHAIN"
+          printf '%s' "$CERTIFICATES_P12" | base64 --decode > "$RUNNER_TEMP/certificates.p12"
+          security import "$RUNNER_TEMP/certificates.p12" -k "$KEYCHAIN" -P "$CERTIFICATES_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productbuild
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$RUNNER_TEMP" "$KEYCHAIN"
+      - name: Build, sign, notarize, and verify installer
+        env:
+          PCRE2_SYS_STATIC: "1"
+          FILESEARCH_SIGN_IDENTITY: ${{ secrets.FILESEARCH_SIGN_IDENTITY }}
+          FILESEARCH_INSTALLER_IDENTITY: ${{ secrets.FILESEARCH_INSTALLER_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          FILESEARCH_RELEASE_DIR: ${{ runner.temp }}/release
+        run: ./scripts/release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notarized-installer
+          path: |
+            ${{ runner.temp }}/release/*.pkg
+            ${{ runner.temp }}/release/*.sha256
+          if-no-files-found: error
+          retention-days: 14
