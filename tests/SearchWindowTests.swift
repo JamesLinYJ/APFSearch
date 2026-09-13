@@ -225,7 +225,7 @@ enum SearchWindowTests {
             c.updateStatus()
             await settle("status_\(iteration)", duration: 0.02)
         }
-        c.queryTimer?.invalidate(); c.historyTimer?.invalidate(); c.statusTimer?.invalidate()
+        c.queryTimer?.invalidate(); c.historyTimer?.invalidate(); c.stopStatusObservation()
         let requestedSizeWasAccepted = abs(baseline.width - size.width) <= 0.5 && abs(baseline.height - size.height) <= 0.5
         check("window_outer_frame_stays_fixed_\(Int(size.width))x\(Int(size.height))", requestedSizeWasAccepted && maxDelta <= 0.5, ["requested_width": size.width, "requested_height": size.height, "baseline": NSStringFromRect(baseline), "samples": samples, "max_frame_delta_points": maxDelta, "first_changed_action": firstChange, "sidebar_actions": 20, "sidebar_samples": sidebarSamples])
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -261,6 +261,7 @@ enum SearchWindowTests {
             only.window?.orderOut(nil)
             exit(0)
         }
+        await featureIntegrationRegression()
         await startupTablePreferencesRegression()
         let c = await controller(base)
         let incompleteDuplicateReport = c.duplicateReport(["groups": [], "hardlinks": [], "errors": ["/UIRegression/unreadable.txt: denied"], "partial": true])
@@ -405,7 +406,11 @@ enum SearchWindowTests {
         let selectedCount = large.table.selectedRowIndexes.count
         check("partially_cached_selection_is_not_actionable", !large.selectionIsComplete && !large.canUseSelection, ["selected_count": selectedCount, "loaded_selected_paths": large.selectedPaths.count])
         large.openSelection(nil); large.trashSelection(nil); large.indexContent(nil)
-        check("partial_selection_file_actions_send_no_operation", SearchClient.shared.pending.isEmpty, ["operation_count": SearchClient.shared.pending.count])
+        check("expired_partial_selection_sends_no_file_or_content_mutation", !SearchClient.shared.pending.contains { ["files", "content_index"].contains($0.request["op"] as? String ?? "") }, ["requests": SearchClient.shared.pending.map { $0.request["op"] as? String ?? "" }])
+        // An expired lease may request a fresh query, but cannot act on its
+        // loaded subset. Reset only this controlled fixture for anchor tests.
+        large.cancelQueries(); large.queryPending = false; large.resultsAreCurrent = true
+        SearchClient.shared.clear()
         let loadedRow = large.cachedRows.keys.min()!
         check("partial_selection_cannot_start_file_drag", large.tableView(large.table, pasteboardWriterForRow: loadedRow) == nil)
 
@@ -483,7 +488,7 @@ enum SearchWindowTests {
         await windowFrameRegression(NSSize(width: 850, height: 600))
         await windowFrameRegression(NSSize(width: 1150, height: 740))
         for controller in controllers {
-            controller.queryTimer?.invalidate(); controller.historyTimer?.invalidate(); controller.statusTimer?.invalidate()
+            controller.queryTimer?.invalidate(); controller.historyTimer?.invalidate(); controller.stopStatusObservation()
             controller.window?.orderOut(nil)
         }
         let passed = assertions.filter { $0["passed"] as? Bool == true }.count

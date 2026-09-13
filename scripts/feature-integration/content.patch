@@ -1,9 +1,115 @@
-diff --git a/macos/ContentIndexer.swift b/macos/ContentIndexer.swift
-index aad182a..0000000 100644
 --- a/macos/ContentIndexer.swift
 +++ b/macos/ContentIndexer.swift
-@@ -260,3 +260,3 @@ final class ContentIndexer {
+@@ -125,6 +125,31 @@
+       inCell = false
+     }
+     if local == "row" { text += "\n" }
++  }
++}
++/// Small OOXML metadata parts use the same entity-rejecting XML parser as text.
++final class OfficeProperties: NSObject, XMLParserDelegate {
++  let fields: [String: String]
++  var values = [String: String]()
++  private var capture: String?, value = "", depth = 0, captureDepth = 0
++  init(fields: [String: String]) { self.fields = fields }
++  func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
++    qualifiedName: String?, attributes: [String: String]) {
++    depth += 1
++    if depth > 32 { parser.abortParsing(); return }
++    let key = name.split(separator: ":").last.map(String.init) ?? name
++    if capture == nil, let field = fields[key] { capture = field; captureDepth = depth; value = "" }
++  }
++  func parser(_ parser: XMLParser, foundCharacters string: String) {
++    guard capture != nil else { return }
++    if value.utf8.count + string.utf8.count > 65_536 { parser.abortParsing() } else { value += string }
++  }
++  func parser(_ parser: XMLParser, foundCDATA data: Data) { self.parser(parser, foundCharacters: String(decoding: data, as: UTF8.self)) }
++  func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
++    if depth == captureDepth, let capture {
++      values[capture] = value.trimmingCharacters(in: .whitespacesAndNewlines); self.capture = nil
++    }
++    depth -= 1
+   }
+ }
+ struct MediaProperties: Sendable {
+@@ -301,7 +326,13 @@
+       props["pages"] = pdf.pageCount
+       if let attributes = pdf.documentAttributes {
          props["title"] = attributes[PDFDocumentAttribute.titleAttribute] as? String
 -        props["artist"] = attributes[PDFDocumentAttribute.authorAttribute] as? String
 +        props["author"] = attributes[PDFDocumentAttribute.authorAttribute] as? String
++        props["subject"] = attributes[PDFDocumentAttribute.subjectAttribute] as? String
++        props["creator"] = attributes[PDFDocumentAttribute.creatorAttribute] as? String
++        props["producer"] = attributes[PDFDocumentAttribute.producerAttribute] as? String
++        if let keywords = attributes[PDFDocumentAttribute.keywordsAttribute] as? [String] {
++          props["keywords"] = keywords.joined(separator: "; ")
++        } else { props["keywords"] = attributes[PDFDocumentAttribute.keywordsAttribute] as? String }
        }
+       for n in 0..<pdf.pageCount {
+         if isCancelled() { throw LT("status.cancelled") }
+@@ -309,7 +340,7 @@
+         if text.utf8.count > 32 * 1024 * 1024 { throw LT("error.pdf_text_limit") }
+       }
+     } else if ["docx", "xlsx", "pptx"].contains(ext) {
+-      text = try extractOffice(url, ext: ext)
++      text = try extractOffice(url, ext: ext, properties: &props)
+     } else if textExtensions.contains(ext) {
+       guard st.st_size <= 32 * 1024 * 1024 else {
+         throw LT("error.text_file_size_limit")
+@@ -328,8 +359,18 @@
+     {
+       props["width"] = metadata[kCGImagePropertyPixelWidth as String]
+       props["height"] = metadata[kCGImagePropertyPixelHeight as String]
++      props["orientation"] = metadata[kCGImagePropertyOrientation as String]
++      if let tiff = metadata[kCGImagePropertyTIFFDictionary as String] as? [String: Any] {
++        props["cameramake"] = tiff[kCGImagePropertyTIFFMake as String]
++        props["cameramodel"] = tiff[kCGImagePropertyTIFFModel as String]
++        props["copyright"] = tiff[kCGImagePropertyTIFFCopyright as String]
++      }
+       if let exif = metadata[kCGImagePropertyExifDictionary as String] as? [String: Any] {
+         props["exif"] = exif.filter { JSONSerialization.isValidJSONObject([$0.value]) }
++        props["iso"] = (exif[kCGImagePropertyExifISOSpeedRatings as String] as? [NSNumber])?.first
++        props["focallength"] = exif[kCGImagePropertyExifFocalLength as String]
++        props["aperture"] = exif[kCGImagePropertyExifFNumber as String]
++        props["exposuretime"] = exif[kCGImagePropertyExifExposureTime as String]
+       }
+     } else if ["mp4", "mov", "m4v", "mkv", "mp3", "m4a", "wav", "flac", "aiff"].contains(ext) {
+       let media = try mediaProperties(url)
+@@ -376,10 +417,26 @@
+     guard parser.parse() else { throw LT("error.xml_parse_or_limit") }
+   }
+   func extractOffice(_ url: URL, ext: String) throws -> String {
++    var ignored = [String: Any]()
++    return try extractOffice(url, ext: ext, properties: &ignored)
++  }
++  private func extractOffice(_ url: URL, ext: String, properties: inout [String: Any]) throws -> String {
+     let names = try runUnzip(["-Z1", url.path], limit: 2 * 1024 * 1024)
+     let all = String(decoding: names, as: UTF8.self).split(separator: "\n").map(String.init)
+     guard all.count <= 10000 else { throw LT("error.archive_entry_limit") }
+     guard Set(all).count == all.count else { throw LT("error.archive_duplicate_entries") }
++    for (part, fields) in [
++      ("docProps/core.xml", ["creator": "author", "title": "title", "subject": "subject", "keywords": "keywords"]),
++      ("docProps/app.xml", ["Application": "creator", "Pages": "pages"])
++    ] where all.contains(part) {
++      if isCancelled() { throw LT("status.cancelled") }
++      let metadata = OfficeProperties(fields: fields)
++      try parseXML(runUnzip(["-p", url.path, part], limit: 1024 * 1024), delegate: metadata)
++      for (key, value) in metadata.values where !value.isEmpty {
++        if key == "pages" { if let pages = Int(value), pages >= 0 { properties[key] = pages } }
++        else { properties[key] = value }
++      }
++    }
+     let pattern: String
+     switch ext {
+     case "docx": pattern = #"^word/(document|header[0-9]+|footer[0-9]+)\.xml$"#
+@@ -441,7 +498,9 @@
+         let metadata = try await asset.load(.commonMetadata)
+         for (key, name) in [
+           (AVMetadataKey.commonKeyTitle, "title"), (.commonKeyArtist, "artist"),
+-          (.commonKeyAlbumName, "album"),
++          (.commonKeyAlbumName, "album"), (.commonKeyAuthor, "author"),
++          (.commonKeyCreator, "creator"), (.commonKeySubject, "subject"),
++          (.commonKeyCopyrights, "copyright"),
+         ] {
+           if let item = AVMetadataItem.metadataItems(
+             from: metadata, withKey: key, keySpace: .common

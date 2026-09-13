@@ -22,24 +22,13 @@ FILESEARCH_FLAGS=(-module-cache-path "$FILESEARCH_BUILD/ModuleCache" -swift-vers
 FILESEARCH_LIB="$FILESEARCH_ROOT/core/target/release/libfilesearch_core.a"
 swiftc "${FILESEARCH_FLAGS[@]}" "$FILESEARCH_ROOT/macos/ApplicationIdentity.swift" "$FILESEARCH_ROOT/macos/LegacyDataMigration.swift" "$FILESEARCH_ROOT/macos/SearchProtocol.swift" "$FILESEARCH_ROOT/macos/Localization.swift" "$FILESEARCH_ROOT/macos/SearchService.swift" "$FILESEARCH_ROOT/macos/ContentIndexer.swift" "$FILESEARCH_ROOT/macos/FileOperations.swift" "$FILESEARCH_LIB" -framework AppKit -framework PDFKit -framework AVFoundation -framework ImageIO -framework Security -framework DiskArbitration -framework CoreServices -framework CoreFoundation -lc++ -o "$FILESEARCH_APP/Contents/MacOS/$FILESEARCH_SERVICE_EXECUTABLE"
 swiftc "${FILESEARCH_FLAGS[@]}" "$FILESEARCH_ROOT/macos/ApplicationIdentity.swift" "$FILESEARCH_ROOT/macos/LegacyDataMigration.swift" "$FILESEARCH_ROOT/macos/SearchProtocol.swift" "$FILESEARCH_ROOT/macos/Localization.swift" "$FILESEARCH_ROOT/macos/SearchClient.swift" "$FILESEARCH_ROOT/macos/CLI.swift" -framework ServiceManagement -o "$FILESEARCH_APP/Contents/MacOS/$FILESEARCH_CLI_EXECUTABLE"
-swiftc "${FILESEARCH_FLAGS[@]}" "$FILESEARCH_ROOT/macos/ApplicationIdentity.swift" "$FILESEARCH_ROOT/macos/LegacyDataMigration.swift" "$FILESEARCH_ROOT/macos/SearchProtocol.swift" "$FILESEARCH_ROOT/macos/Localization.swift" "$FILESEARCH_ROOT/macos/SearchClient.swift" "$FILESEARCH_ROOT/macos/UpdateManager.swift" "$FILESEARCH_ROOT/macos/Application.swift" "$FILESEARCH_ROOT/macos/DuplicateResultsWindow.swift" "$FILESEARCH_ROOT/macos/SettingsWindow.swift" -framework AppKit -framework SwiftUI -framework ServiceManagement -framework Quartz -framework Carbon -framework CryptoKit -o "$FILESEARCH_APP/Contents/MacOS/$FILESEARCH_EXECUTABLE"
+swiftc "${FILESEARCH_FLAGS[@]}" "$FILESEARCH_ROOT/macos/ApplicationIdentity.swift" "$FILESEARCH_ROOT/macos/LegacyDataMigration.swift" "$FILESEARCH_ROOT/macos/SearchProtocol.swift" "$FILESEARCH_ROOT/macos/Localization.swift" "$FILESEARCH_ROOT/macos/SearchClient.swift" "$FILESEARCH_ROOT/macos/UpdateManager.swift" "$FILESEARCH_ROOT/macos/UpdateUI.swift" "$FILESEARCH_ROOT/macos/SelectionResolver.swift" "$FILESEARCH_ROOT/macos/FileOperationReview.swift" "$FILESEARCH_ROOT/macos/Application.swift" "$FILESEARCH_ROOT/macos/DuplicateResultsWindow.swift" "$FILESEARCH_ROOT/macos/SettingsWindow.swift" -framework AppKit -framework SwiftUI -framework ServiceManagement -framework Quartz -framework Carbon -framework CryptoKit -o "$FILESEARCH_APP/Contents/MacOS/$FILESEARCH_EXECUTABLE"
 python3 "$FILESEARCH_ROOT/scripts/build_identity.py" --bundle "$FILESEARCH_APP"
 xcrun xcstringstool compile "$FILESEARCH_ROOT/Resources/Localizable.xcstrings" --output-directory "$FILESEARCH_APP/Contents/Resources"
+xcrun xcstringstool compile "$FILESEARCH_ROOT/Resources/Features.xcstrings" --output-directory "$FILESEARCH_APP/Contents/Resources"
 xcrun xcstringstool compile "$FILESEARCH_ROOT/Resources/InfoPlist.xcstrings" --output-directory "$FILESEARCH_APP/Contents/Resources"
 cp "$FILESEARCH_ROOT/THIRD_PARTY_NOTICES.txt" "$FILESEARCH_APP/Contents/Resources/ThirdPartyNotices.txt"
-if [[ -n "${FILESEARCH_UPDATE_PUBLIC_KEY:-}" ]]; then
-  python3 - "$FILESEARCH_UPDATE_PUBLIC_KEY" "$FILESEARCH_APP/Contents/Resources/UpdatePublicKey.txt" <<'PY'
-import base64, pathlib, sys
-encoded, destination = sys.argv[1:]
-try:
-    raw = base64.b64decode(encoded, validate=True)
-except Exception as exc:
-    raise SystemExit(f"Invalid FILESEARCH_UPDATE_PUBLIC_KEY base64: {exc}")
-if len(raw) != 32:
-    raise SystemExit("FILESEARCH_UPDATE_PUBLIC_KEY must encode exactly 32 Ed25519 public-key bytes")
-pathlib.Path(destination).write_text(encoded + "\n")
-PY
-fi
+python3 "$FILESEARCH_ROOT/scripts/build_update_config.py" "$FILESEARCH_APP"
 xattr -cr "$FILESEARCH_APP"
 if [[ "${FILESEARCH_COMPILE_ONLY:-0}" == "1" || -z "$FILESEARCH_IDENTITY" ]]; then
   printf 'Compilation complete; no distribution signature, not installed: %s\n' "$FILESEARCH_APP"

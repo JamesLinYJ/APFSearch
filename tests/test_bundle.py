@@ -29,7 +29,7 @@ def create_test_bundle(executable, app):
         'NSHighResolutionCapable': True,
     }
     (contents / 'Info.plist').write_bytes(plistlib.dumps(info))
-    for table in ['Localizable', 'InfoPlist']:
+    for table in ['Localizable', 'Features', 'InfoPlist']:
         subprocess.run(['xcrun', 'xcstringstool', 'compile', str(PROJECT / f'Resources/{table}.xcstrings'),
                         '--output-directory', str(resources)], check=True)
     return bundled_executable

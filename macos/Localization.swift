@@ -5,16 +5,27 @@ import Foundation
 /// The user's system/App Language preference selects the bundle localization.
 /// Dynamic arguments use positional printf placeholders in the catalog, so each
 /// translation can reorder arguments without string concatenation or patching.
+/// Both are native String Catalog tables selected by Bundle, not a runtime
+/// language switch or a reverse mapping of already rendered prose.
+func catalogString(_ key: String, bundle: Bundle = .main, fallback: String? = nil) -> String {
+    let missing = "\u{1f}FileSearchMissingLocalization\u{1f}"
+    for table in ["Localizable", "Features"] {
+        let text = NSLocalizedString(key, tableName: table, bundle: bundle, value: missing, comment: "")
+        if text != missing { return text }
+    }
+    return fallback ?? key
+}
+
 @inline(__always)
 func L(_ key: String, _ arguments: CVarArg...) -> String {
-    let translated = NSLocalizedString(key, tableName: "Localizable", bundle: .main, value: key, comment: "")
+    let translated = catalogString(key)
     guard !arguments.isEmpty else { return translated }
     return String(format: translated, locale: Locale.current, arguments: arguments)
 }
 
 @inline(__always)
 func LF(_ key: String, _ arguments: CVarArg...) -> String {
-    let translated = NSLocalizedString(key, tableName: "Localizable", bundle: .main, value: key, comment: "")
+    let translated = catalogString(key)
     return String(format: translated, locale: Locale.current, arguments: arguments)
 }
 
@@ -71,7 +82,7 @@ struct LocalizedText: Error, LocalizedError {
     var wire: [String: Any] { ["key": key, "args": arguments.map(\.wire), "text": render()] }
     func render(bundle: Bundle = .main, locale: Locale = .current, fallback: String? = nil) -> String {
         let missing = "\u{1f}FileSearchMissingLocalization\u{1f}"
-        let found = NSLocalizedString(key, tableName: "Localizable", bundle: bundle, value: missing, comment: "")
+        let found = catalogString(key, bundle: bundle, fallback: missing)
         if found == missing, let fallback = fallback { return fallback }
         let format = found == missing ? key : found
         guard !arguments.isEmpty else { return format }
@@ -145,7 +156,18 @@ func localizedServiceResponse(_ response: [String: Any], bundle: Bundle = .main,
         if let messages = response[source] as? [[String: Any]] { result[destination] = messages.map(message) }
     }
     if let errors = response["error_messages"] as? [[String: Any]] { result["error"] = errors.map(message).joined(separator: "\n") }
-    if let skipped = response["skipped"] as? [[String: Any]] { result["skipped"] = skipped.map { fields($0, names: ["reason"]) } }
-    if let preview = response["preview"] as? [[String: Any]] { result["preview"] = preview.map { fields($0, names: ["destination"]) } }
+    // Only these documented operation-presentation arrays are interpreted.
+    // Identity dictionaries, properties and arbitrary user values remain opaque.
+    for key in ["preview", "results", "skipped", "failures"] {
+        if let rows = response[key] as? [[String: Any]] {
+            result[key] = rows.map { row -> [String: Any] in
+                var localized = fields(row, names: ["destination", "reason", "error"])
+                if let conflicts = row["conflict_messages"] as? [[String: Any]] {
+                    localized["conflicts"] = conflicts.map(message)
+                }
+                return localized
+            }
+        }
+    }
     return result
 }

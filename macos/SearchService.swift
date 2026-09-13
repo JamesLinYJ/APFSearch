@@ -83,7 +83,7 @@ final class SearchEngine {
 
 final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtocol {
   let engine = SearchEngine()
-  lazy var files = FileOperations(directory: engine.directory)
+  private(set) var files: FileOperations!
   var daSession: DASession?
   private let work = DispatchQueue(label: ApplicationIdentity.serviceIdentifier + ".auxiliary", qos: .utility)
   private let listLock = NSLock()
@@ -94,6 +94,7 @@ final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtoco
   private var exportJobs = [String: ExportJob]()
   override init() {
     super.init()
+    files = FileOperations(directory: engine.directory)
     watchVolumes()
   }
   func watchVolumes() {
@@ -150,6 +151,7 @@ final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtoco
       let export = exportJobs[id]
       jobLock.unlock()
       export?.cancel()
+      files.cancel(id)
     }
     if let id = req["list_id"] as? String {
       guard ["query", "cancel", "status", "export_list", "retain_snapshot", "renew_snapshot", "release_snapshot"].contains(op) else {
@@ -173,7 +175,13 @@ final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtoco
       return
     }
     if op == "files" {
-      work.async { reply(jsonData(self.files.perform(req))) }
+      var request = req
+      let id = request["request_id"] as? String ?? UUID().uuidString
+      guard files.register(id) else {
+        reply(jsonData(localizedErrorResponse(LT("files.busy")))); return
+      }
+      request["request_id"] = id
+      work.async { reply(jsonData(self.files.perform(request))) }
       return
     }
     if op == "content_index" {

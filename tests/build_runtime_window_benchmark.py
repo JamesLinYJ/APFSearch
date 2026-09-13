@@ -30,7 +30,6 @@ patches = [
     ('''        pollStatus()
         refreshShortcuts()
         runQuery()
-        if offlineListID == nil { statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.pollStatus() } }
 ''', '', 'Suppress automatic initializer requests so each measured query starts at its text notification'),
     ('                self.recordHistory()', '                self.recordHistory()\n                self.historyTimer?.invalidate() // Test-only side-effect isolation, after measured display submission.', 'Immediately cancel history persistence after production completion, outside the measured interval'),
 ]
@@ -40,11 +39,13 @@ if args.phase_timing:
         ('    func runQuery() {', '    func runQuery() {\n        WindowBenchmarkPhases.mark("run_query_enter")', 'Timestamp actual debounce completion and query entry'),
         ('        updateStatus(); requestPage(0)', '        updateStatus(); WindowBenchmarkPhases.mark("query_status_ready"); requestPage(0)', 'Timestamp pre-request status work'),
         ('''        SearchClient.shared.call(request) { [weak self] reply in
+            let incomingLease = (reply["snapshot_lease"] as? String).map { SearchSnapshotLease(token: $0, listID: leaseListID) }
             guard let self else { return }
             self.afterResultAnimation { [weak self] in
 ''', '''        WindowBenchmarkPhases.mark("request_dispatch")
         SearchClient.shared.call(request) { [weak self] reply in
             WindowBenchmarkPhases.mark("reply_delivered")
+            let incomingLease = (reply["snapshot_lease"] as? String).map { SearchSnapshotLease(token: $0, listID: leaseListID) }
             guard let self else { return }
             self.afterResultAnimation { [weak self] in
                 WindowBenchmarkPhases.mark("reply_apply_begin")
@@ -64,13 +65,13 @@ for old, new, description in patches:
     source = source.replace(old, new, 1)
 application = work / 'ApplicationUnderTest.swift'
 application.write_text(source)
-sources = [project / 'macos' / name for name in ['ApplicationIdentity.swift', 'LegacyDataMigration.swift', 'SearchProtocol.swift', 'Localization.swift', 'SettingsWindow.swift', 'SearchClient.swift']]
+sources = [project / 'macos' / name for name in ['ApplicationIdentity.swift', 'LegacyDataMigration.swift', 'SearchProtocol.swift', 'Localization.swift', 'SettingsWindow.swift', 'SelectionResolver.swift', 'FileOperationReview.swift', 'DuplicateResultsWindow.swift', 'UpdateManager.swift', 'UpdateUI.swift', 'SearchClient.swift']]
 sources += [application, project / 'tests/RuntimeWindowBenchmark.swift']
 executable = work / 'RuntimeWindowBenchmark'
 command = ['swiftc', '-module-cache-path', str(work / 'ModuleCache'), '-swift-version', '5', '-O', '-target', 'arm64-apple-macos15.0'] + list(map(str, sources))
 if args.phase_timing:
     command += ['-D', 'BENCHMARK_PHASE_TIMING']
-for framework in ['AppKit', 'SwiftUI', 'ServiceManagement', 'Quartz', 'Carbon']:
+for framework in ['AppKit', 'SwiftUI', 'ServiceManagement', 'Quartz', 'Carbon', 'CryptoKit']:
     command += ['-framework', framework]
 command += ['-o', str(executable)]
 subprocess.run(command, check=True)

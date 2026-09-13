@@ -1,0 +1,207 @@
+--- a/core/src/lib.rs
++++ b/core/src/lib.rs
+@@ -359,6 +359,7 @@
+         status["scanning"] = json!(self.scanning.load(Ordering::Relaxed));
+         status["updating"] = json!(status["state"] == "updating");
+         status["status_revision"] = json!(revision);
++        status["scope_token"] = json!(self.relation_coverage(snapshot.generation).to_string());
+         status
+     }
+     fn wait_status(&self, request: &Value) -> Result<Value, String> {
+@@ -389,7 +390,7 @@
+                 let snapshot = self.pin(request["generation"].as_u64())?;
+                 let generation = snapshot.generation;
+                 let mut preferences = self.preferences.read().unwrap().clone();
+-                preferences["_snapshot_coverage"] = self.relation_coverage();
++                preferences["_snapshot_coverage"] = self.relation_coverage(snapshot.generation);
+                 preferences["_snapshot_query_time_millis"] =
+                     json!(chrono::Local::now().timestamp_millis());
+                 let token = self.leases.retain(snapshot, preferences)?;
+@@ -553,11 +554,16 @@
+             .and_then(|snapshot| snapshot.snapshot.upgrade())
+             .ok_or("Requested generation expired; restart query at offset 0".into())
+     }
+-    fn relation_coverage(&self) -> Value {
++    fn relation_coverage(&self, generation: u64) -> Value {
+         let state = self.state.lock().unwrap();
+-        json!({"roots":state["roots"], "uncovered":state["uncovered"],
+-            "complete":!self.offline.load(Ordering::Relaxed) && !self.scanning.load(Ordering::Relaxed)
+-                && state["initial_scan_complete"] == true})
++        // Never apply the latest completed coverage proof to an older snapshot,
++        // or to a publication whose reconciliation has not finished yet.
++        let complete = !self.offline.load(Ordering::Acquire)
++            && !self.scanning.load(Ordering::Acquire)
++            && self.snapshot.load().generation == generation
++            && state["initial_scan_complete"] == true
++            && matches!(state["state"].as_str(), Some("ready" | "watching"));
++        json!({"roots":state["roots"], "uncovered":state["uncovered"], "complete":complete})
+     }
+     fn directory_info(&self, request: &Value) -> Result<Value, String> {
+         let paths: Vec<String> = serde_json::from_value(request["paths"].clone()).map_err(|_| "paths must be an array")?;
+@@ -569,7 +575,7 @@
+             }
+             context.snapshot.clone()
+         } else { self.pin(request["generation"].as_u64())? };
+-        let coverage = lease.as_ref().map(|context| context.preferences["_snapshot_coverage"].clone()).unwrap_or_else(|| self.relation_coverage());
++        let coverage = lease.as_ref().map(|context| context.preferences["_snapshot_coverage"].clone()).unwrap_or_else(|| self.relation_coverage(snapshot.generation));
+         let cancelled = Arc::new(AtomicBool::new(false));
+         let id = request["request_id"].as_str().map(str::to_owned);
+         if let Some(id) = &id {
+@@ -588,13 +594,15 @@
+         let snapshot = self.pin(request["generation"].as_u64())?;
+         let mut preferences = self.preferences.read().unwrap().clone();
+         preferences["_snapshot_query_time_millis"] = json!(chrono::Local::now().timestamp_millis());
+-        preferences["_snapshot_coverage"] = self.relation_coverage();
++        preferences["_snapshot_coverage"] = self.relation_coverage(snapshot.generation);
++        let scope_token = preferences["_snapshot_coverage"].to_string();
+         let token = self.leases.retain(snapshot, preferences)?;
+         let mut leased = request.clone();
+         leased["snapshot_lease"] = json!(token);
+         match self.query_inner(&leased) {
+             Ok(mut response) => {
+                 response["snapshot_lease"] = json!(token);
++                response["scope_token"] = json!(scope_token);
+                 Ok(response)
+             }
+             Err(error) => { self.leases.release(&token); Err(error) }
+@@ -648,7 +656,7 @@
+             .collect::<Result<_, _>>()?;
+         let relational = parsed_query.requires_relations() || excludes.iter().any(query::Query::requires_relations);
+         let coverage = if relational {
+-            lease.as_ref().map(|context| context.preferences["_snapshot_coverage"].clone()).unwrap_or_else(|| self.relation_coverage())
++            lease.as_ref().map(|context| context.preferences["_snapshot_coverage"].clone()).unwrap_or_else(|| self.relation_coverage(snapshot.generation))
+         } else { Value::Null };
+         let offline = self.offline.load(Ordering::Relaxed);
+         let mut offset = request["offset"].as_u64().unwrap_or(0) as usize;
+--- a/core/src/query.rs
++++ b/core/src/query.rs
+@@ -174,8 +174,17 @@
+ /// Preserve old PDF indexes without rewriting the database or re-reading files.
+ fn property<'a>(file: &'a IndexedFile, key: &str) -> Option<&'a Value> {
+     file.properties.get(key).or_else(|| {
+-        (key == "author" && file.extension.eq_ignore_ascii_case("pdf"))
+-            .then(|| file.properties.get("artist")).flatten()
++        if key == "author" && file.extension.eq_ignore_ascii_case("pdf") {
++            return file.properties.get("artist");
++        }
++        let exif = file.properties.get("exif")?;
++        match key {
++            "iso" => exif.get("ISOSpeedRatings")?.as_array()?.first(),
++            "focallength" => exif.get("FocalLength"),
++            "aperture" => exif.get("FNumber"),
++            "exposuretime" => exif.get("ExposureTime"),
++            _ => None,
++        }
+     })
+ }
+ fn modifier(options: &mut MatchOptions, key: &str) -> bool {
+@@ -1474,7 +1483,7 @@
+                 let unknown = match field.as_str() {
+                     "size" => file.is_dir,
+                     "modified" | "created" => false,
+-                    other => file.properties.get(other).and_then(Value::as_f64).is_none(),
++                    other => property(file, other).and_then(Value::as_f64).is_none(),
+                 };
+                 if *negate {
+                     !unknown
+@@ -1500,7 +1509,7 @@
+                     }
+                     "modified" => Some(file.modified as f64),
+                     "created" => Some(file.created as f64),
+-                    other => file.properties.get(other).and_then(Value::as_f64),
++                    other => property(file, other).and_then(Value::as_f64),
+                 };
+                 n.is_some_and(|n| {
+                     let inside = (if *include_low { n >= *low } else { n > *low })
+--- a/core/src/relations.rs
++++ b/core/src/relations.rs
+@@ -120,17 +120,19 @@
+     pub(crate) fn info(&self, snapshot: &SearchSnapshot, coverage: &Value, paths: &[String], cancelled: &AtomicBool) -> Result<Value, String> {
+         let incomplete = self.incomplete(snapshot, coverage, cancelled)?;
+         let requested: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+-        let mut rows = Vec::new();
++        let mut found = HashMap::new();
+         for (index, &slot) in self.directory_slots.iter().enumerate() {
+             check(cancelled)?;
+             let file = &snapshot.entries[slot as usize];
+             if !requested.contains(file.path.as_str()) { continue }
+             let complete = !incomplete[index] && self.sizes[index].is_some();
+-            rows.push(json!({"path":file.path, "complete":complete,
++            found.insert(file.path.as_str(), json!({"path":file.path, "complete":complete,
+                 "recursive_size":if complete { self.sizes[index] } else { None },
+                 "indexed_logical_size":self.sizes[index], "child_count":self.own_files[index]+self.own_folders[index],
+                 "descendant_count":self.all_files[index]+self.all_folders[index]}));
+         }
++        let rows: Vec<_> = paths.iter().map(|path| found.get(path.as_str()).cloned().unwrap_or_else(||
++            json!({"path":path,"complete":false,"recursive_size":null,"reason":"not_an_indexed_directory"}))).collect();
+         Ok(json!({"rows":rows,"generation":snapshot.generation,"size_semantics":"logical directory-entry sum; not physical or reclaimable bytes"}))
+     }
+ }
+--- a/core/tests/feature_contracts.rs
++++ b/core/tests/feature_contracts.rs
+@@ -87,3 +87,65 @@
+     assert_ne!(latest["rows"], pinned["rows"]);
+     success(&engine, json!({"op":"release_snapshot","snapshot_lease":initial["snapshot_lease"]}));
+ }
++
++#[test]
++fn directory_information_preserves_missing_and_repeated_requests() {
++    let temporary = tempfile::tempdir().unwrap();
++    let root = temporary.path().join("files");
++    std::fs::create_dir(&root).unwrap();
++    let root = root.canonicalize().unwrap();
++    let engine = SearchEngine::open(&temporary.path().join("db/index.sqlite")).unwrap();
++    success(&engine, json!({"op":"scan","roots":[root],"watch":false,"wait":true}));
++    let result = success(&engine, json!({"op":"directory_info","paths":[root, root.join("missing"), root]}));
++    assert_eq!(result["rows"].as_array().unwrap().len(), 3);
++    assert_eq!(result["rows"][0], result["rows"][2]);
++    assert_eq!(result["rows"][1]["complete"], false);
++    assert!(result["rows"][1]["recursive_size"].is_null());
++}
++
++#[test]
++fn latest_coverage_is_never_applied_to_a_newly_retained_older_snapshot() {
++    let temporary = tempfile::tempdir().unwrap();
++    let root = temporary.path().join("files");
++    std::fs::create_dir(&root).unwrap();
++    std::fs::write(root.join("sample.txt"), "fixture").unwrap();
++    let root = root.canonicalize().unwrap();
++    let engine = SearchEngine::open(&temporary.path().join("db/index.sqlite")).unwrap();
++    success(&engine, json!({"op":"scan","roots":[root],"watch":false,"wait":true}));
++    let page = success(&engine, json!({"op":"query","text":"","retain_snapshot":true}));
++    let status = success(&engine, json!({"op":"status"}));
++    assert_eq!(page["scope_token"], status["scope_token"]);
++    success(&engine, json!({"op":"put_content","path":root.join("sample.txt"),"text":"fixture","properties":{"title":"changed"}}));
++    let newer = success(&engine, json!({"op":"status"}));
++    assert_ne!(page["generation"], newer["generation"]);
++    let old = success(&engine, json!({"op":"retain_snapshot","generation":page["generation"]}));
++    let result = success(&engine, json!({"op":"directory_info","paths":[root],"snapshot_lease":old["snapshot_lease"]}));
++    assert_eq!(result["rows"][0]["complete"], false);
++    let original = success(&engine, json!({"op":"directory_info","paths":[root],"snapshot_lease":page["snapshot_lease"]}));
++    assert_eq!(original["rows"][0]["complete"], true, "already captured coverage remains pinned");
++    success(&engine, json!({"op":"release_snapshot","snapshot_lease":old["snapshot_lease"]}));
++    success(&engine, json!({"op":"release_snapshot","snapshot_lease":page["snapshot_lease"]}));
++}
++
++#[test]
++fn legacy_property_mappings_remain_searchable_without_rewriting_indexed_rows() {
++    use filesearch_core::{index_store::IndexedFile, query};
++    use std::collections::HashMap;
++    let mut file: IndexedFile = serde_json::from_value(json!({
++        "id":1,"path":"/fixture/legacy.pdf","name":"legacy.pdf","extension":"pdf",
++        "size":42,"modified":0,"created":0,"changed":0,"is_dir":false,"is_symlink":false,
++        "file_id":1,"parent_id":0,"volume_id":"fixture","flags":0,
++        "properties":{"artist":"Legacy Author","exif":{"ISOSpeedRatings":[200],"FocalLength":50,"FNumber":2.8,"ExposureTime":0.01}}
++    })).unwrap();
++    file.prepare();
++    let before = file.properties.clone();
++    for expression in ["author:legacy", "iso:200", "focallength:50", "aperture:>=2", "exposuretime:<1"] {
++        assert!(query::parse(expression, &HashMap::new()).unwrap().matches(&file, None).unwrap(), "{expression}");
++    }
++    assert_eq!(file.properties, before);
++    file.properties["author"] = json!("Corrected Author");
++    assert!(!query::parse("author:legacy", &HashMap::new()).unwrap().matches(&file, None).unwrap());
++    file.extension = "mp3".into();
++    file.properties.as_object_mut().unwrap().remove("author");
++    assert!(!query::parse("author:legacy", &HashMap::new()).unwrap().matches(&file, None).unwrap());
++}

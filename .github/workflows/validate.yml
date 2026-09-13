@@ -54,3 +54,25 @@ jobs:
       - name: Build app, XPC service, and CLI without signing or installation
         if: ${{ !cancelled() }}
         run: ./build.sh
+      - name: Release configuration and independent audit fixtures
+        if: ${{ !cancelled() }}
+        run: |
+          python3 tests/test_release_and_audit.py
+          bash -n scripts/release.sh
+      - name: Swift service and content regression fixtures
+        if: ${{ !cancelled() }}
+        run: FILESEARCH_SWIFT_ONLY=1 ./tests/run.sh
+      - name: Selection, file safety, properties, and update transport fixtures
+        if: ${{ !cancelled() }}
+        run: python3 tests/run_feature_tests.py
+      - name: AppKit controller regression fixtures
+        if: ${{ !cancelled() }}
+        run: python3 tests/run_search_window_tests.py --report validation/search-window.json
+      - name: Preserve isolated validation reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-reports
+          path: validation/*.json
+          if-no-files-found: error
+          retention-days: 7

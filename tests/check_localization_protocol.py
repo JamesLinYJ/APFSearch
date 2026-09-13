@@ -8,6 +8,7 @@ from test_bundle import create_test_bundle
 
 root = pathlib.Path(__file__).resolve().parents[1]
 catalog = json.loads((root / 'Resources/Localizable.xcstrings').read_text())
+catalog['strings'].update(json.loads((root / 'Resources/Features.xcstrings').read_text())['strings'])
 pattern = re.compile(r'\bLT\(\s*("(?:[^"\\]|\\.)*")')
 keys = set()
 for source in (root / 'macos').glob('*.swift'):
@@ -21,7 +22,8 @@ for key in keys:
 with tempfile.TemporaryDirectory(prefix='FileSearch-wire-localization-') as tmp:
     tmp = pathlib.Path(tmp)
     resources = tmp / 'Resources'; resources.mkdir()
-    subprocess.run(['xcrun', 'xcstringstool', 'compile', str(root/'Resources/Localizable.xcstrings'), '--output-directory', str(resources)], check=True)
+    for table in ['Localizable', 'Features']:
+        subprocess.run(['xcrun', 'xcstringstool', 'compile', str(root/f'Resources/{table}.xcstrings'), '--output-directory', str(resources)], check=True)
     test_bundle = tmp/'Reordered.bundle'; test_bundle.mkdir()
     (test_bundle/'Info.plist').write_bytes(plistlib.dumps({'CFBundleIdentifier':'local.filesearch.app.localized-wire-test'}))
     (test_bundle/'Localizable.strings').write_bytes(plistlib.dumps({'test.reorder':'%2$@ before %1$@', 'test.invalid.format':'%n'}, fmt=plistlib.FMT_BINARY))

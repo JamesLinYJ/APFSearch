@@ -38,3 +38,6 @@ SOURCE_MANIFEST.json
 *.cer
 *.mobileprovision
 *.provisionprofile
+
+# Versioned release outputs and signed update manifests
+dist/

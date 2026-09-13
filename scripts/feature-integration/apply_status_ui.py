@@ -1,76 +1,17 @@
+"""Integrate reviewed source patches; no network calls or branch mutations."""
 from pathlib import Path
+import hashlib
+import json
+import subprocess
 
-path = Path("macos/Application.swift")
-text = path.read_text()
+for name in ('application-final.patch', 'property-compat.patch'):
+    path = Path(__file__).with_name(name)
+    subprocess.run(['git', 'apply', '--check', str(path)], check=True)
+    subprocess.run(['git', 'apply', str(path)], check=True)
 
-def replace_once(old: str, new: str) -> None:
-    global text
-    count = text.count(old)
-    if count != 1:
-        raise SystemExit(f"expected exactly one Application.swift anchor, found {count}: {old[:140]!r}")
-    text = text.replace(old, new, 1)
-
-# Event-driven status observation.
-replace_once(
-    "    var historyTimer: Timer?\n    var statusTimer: Timer?\n    var elapsed: Double = 0\n",
-    "    var historyTimer: Timer?\n    let statusRequestID = UUID().uuidString\n    var elapsed: Double = 0\n",
-)
-replace_once(
-    '''        pollStatus()\n        refreshShortcuts()\n        runQuery()\n        if offlineListID == nil { statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.pollStatus() } }\n    }\n    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }\n    deinit { progressDelay?.invalidate(); queryTimer?.invalidate(); historyTimer?.invalidate(); statusTimer?.invalidate(); liveScrollObservers.forEach { NotificationCenter.default.removeObserver($0) } }\n''',
-    '''        pollStatus()\n        refreshShortcuts()\n        runQuery()\n    }\n    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }\n    deinit {\n        progressDelay?.invalidate(); queryTimer?.invalidate(); historyTimer?.invalidate()\n        if offlineListID == nil { SearchClient.shared.call(["op": "cancel", "request_id": statusRequestID]) { _ in } }\n        liveScrollObservers.forEach { NotificationCenter.default.removeObserver($0) }\n    }\n''',
-)
-replace_once(
-    '''        statusRequestPending = true\n        SearchClient.shared.call(["op": "status"]) { [weak self] reply in\n            guard let self else { return }\n            self.statusRequestPending = false\n            self.currentStatus = reply\n''',
-    '''        statusRequestPending = true\n        let revision = (currentStatus["status_revision"] as? NSNumber)?.uint64Value\n        let request: [String: Any] = revision.map {\n            ["op": "wait_status", "after": $0, "timeout_ms": 30_000, "request_id": statusRequestID]\n        } ?? ["op": "status"]\n        SearchClient.shared.call(request) { [weak self] reply in\n            guard let self else { return }\n            self.statusRequestPending = false\n            guard reply["success"] as? Bool != false else {\n                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.pollStatus() }\n                return\n            }\n            self.currentStatus = reply\n''',
-)
-replace_once(
-    '''                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.chooseVolumes(nil) }\n                }\n            }\n        }\n    }\n    func requestProgress''',
-    '''                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.chooseVolumes(nil) }\n                }\n            }\n            self.pollStatus()\n        }\n    }\n    func requestProgress''',
-)
-
-# Pin metadata + macros + relative-date clock for every displayed result set.
-replace_once(
-    "    var generation: Any?\n    var querySequence = 0\n",
-    "    var generation: Any?\n    var snapshotLease: String?\n    var querySequence = 0\n",
-)
-replace_once(
-    '''    func cancelQueries() {\n        for id in requestIDs {\n''',
-    '''    func cancelQueries() {\n        if let lease = snapshotLease {\n            var release: [String: Any] = ["op": "release_snapshot", "snapshot_lease": lease]\n            if let offlineListID { release["list_id"] = offlineListID }\n            SearchClient.shared.call(release) { _ in }\n            snapshotLease = nil\n        }\n        for id in requestIDs {\n''',
-)
-replace_once(
-    '''        var request: [String: Any] = ["op": "query", "text": queryText, "offset": page * pageSize, "limit": pageSize, "request_id": id, "sort": table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] }]\n        if let generation { request["generation"] = generation }\n''',
-    '''        var request: [String: Any] = ["op": "query", "text": queryText, "offset": page * pageSize, "limit": pageSize, "request_id": id, "sort": table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] }]\n        if isInitialQuery { request["retain_snapshot"] = true }\n        else if let snapshotLease { request["snapshot_lease"] = snapshotLease }\n        if let generation { request["generation"] = generation }\n''',
-)
-replace_once(
-    '''                self.queryWarnings = [error]; self.updateStatus(); return\n            }\n            self.generation = reply["generation"] ?? self.generation\n''',
-    '''                self.queryWarnings = [error]; self.updateStatus(); return\n            }\n            if isInitialQuery { self.snapshotLease = reply["snapshot_lease"] as? String }\n            self.generation = reply["generation"] ?? self.generation\n''',
-)
-replace_once(
-    '''        var request: [String: Any] = ["op": "query", "text": queryText, "offset": offset, "limit": limit, "request_id": id, "sort": table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] }]\n        if let anchor {\n''',
-    '''        var request: [String: Any] = ["op": "query", "text": queryText, "offset": offset, "limit": limit, "request_id": id, "sort": table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] }]\n        request["retain_snapshot"] = true\n        if let anchor {\n''',
-)
-replace_once(
-    '''            guard self.table.selectedRowIndexes.count == self.selectedPaths.count else { return }\n            let selection = Set(self.selectedPaths)\n            self.cancelQueries(); self.querySequence += 1\n            self.generation = reply["generation"]\n''',
-    '''            guard self.table.selectedRowIndexes.count == self.selectedPaths.count else { return }\n            let selection = Set(self.selectedPaths)\n            let incomingLease = reply["snapshot_lease"] as? String\n            self.cancelQueries(); self.querySequence += 1\n            self.snapshotLease = incomingLease\n            self.generation = reply["generation"]\n''',
-)
-
-# Resolve selected rows that are not currently cached against the pinned snapshot.
-replace_once(
-    '''    var canUseSelection: Bool { resultsAreCurrent && !table.selectedRowIndexes.isEmpty && selectionIsComplete }\n    func boolValue''',
-    '''    var canUseSelection: Bool { resultsAreCurrent && !table.selectedRowIndexes.isEmpty && selectionIsComplete }\n    func withResolvedSelection(_ completion: @escaping ([String]) -> Void) {\n        guard resultsAreCurrent, offlineListID == nil, !table.selectedRowIndexes.isEmpty else { return }\n        let selected = table.selectedRowIndexes\n        if selectionIsComplete { completion(selectedPaths); return }\n        guard let lease = snapshotLease else { runQuery(); return }\n        let sequence = querySequence\n        let batch = 1000\n        let pages = Array(Set(selected.map { $0 / batch })).sorted()\n        var resolved = [Int: String]()\n        for index in selected {\n            if let path = cachedRows[index]?["path"] as? String { resolved[index] = path }\n        }\n        func finishOrFail() {\n            guard sequence == self.querySequence else { return }\n            let paths = selected.compactMap { resolved[$0] }\n            guard paths.count == selected.count else {\n                self.checkResult(["success": false, "error": L("error.operation_incomplete")])\n                return\n            }\n            completion(paths)\n        }\n        func fetch(_ position: Int) {\n            guard sequence == self.querySequence else { return }\n            guard position < pages.count else { finishOrFail(); return }\n            let page = pages[position]\n            let lower = page * batch\n            let needed = selected.intersection(IndexSet(integersIn: lower..<(lower + batch)))\n            if needed.allSatisfy({ resolved[$0] != nil }) { fetch(position + 1); return }\n            let id = UUID().uuidString\n            self.requestIDs.insert(id)\n            var request: [String: Any] = [\n                "op": "query", "text": self.queryText, "offset": lower, "limit": batch,\n                "request_id": id, "snapshot_lease": lease,\n                "sort": self.table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] },\n            ]\n            if let generation = self.generation { request["generation"] = generation }\n            SearchClient.shared.call(request) { reply in\n                self.requestIDs.remove(id)\n                guard sequence == self.querySequence else { return }\n                guard reply["success"] as? Bool == true else { self.checkResult(reply); return }\n                let rows = reply["rows"] as? [[String: Any]] ?? []\n                for (offset, row) in rows.enumerated() {\n                    let index = lower + offset\n                    if selected.contains(index), let path = row["path"] as? String { resolved[index] = path }\n                }\n                fetch(position + 1)\n            }\n        }\n        fetch(0)\n    }\n    func boolValue''',
-)
-
-replace_once(
-    '''    @objc func copyPaths(_ sender: Any?) {\n        guard canUseSelection else { return }\n        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(selectedPaths.joined(separator: "\\n"), forType: .string)\n    }\n''',
-    '''    @objc func copyPaths(_ sender: Any?) {\n        withResolvedSelection { paths in\n            NSPasteboard.general.clearContents()\n            NSPasteboard.general.setString(paths.joined(separator: "\\n"), forType: .string)\n        }\n    }\n''',
-)
-replace_once(
-    '''    @objc func renameSelection(_ sender: Any?) {\n        guard canUseSelection, selectedPaths.count == 1, let path = selectedPaths.first else { return }\n        let alert = NSAlert(); alert.messageText = L("files.rename_title"); alert.informativeText = path\n        let field = NSTextField(string: URL(fileURLWithPath: path).lastPathComponent); field.frame = NSRect(x: 0, y: 0, width: 380, height: 25); alert.accessoryView = field\n        alert.addButton(withTitle: L("action.rename")); alert.addButton(withTitle: L("action.cancel"))\n        guard alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty, !field.stringValue.contains("/") else { return }\n        confirmFileOperation(["op": "files", "action": "rename", "paths": [path], "new_name": field.stringValue], title: L("files.rename_confirmation", String(describing: field.stringValue)))\n    }\n''',
-    '''    @objc func renameSelection(_ sender: Any?) {\n        withResolvedSelection { paths in\n            guard !paths.isEmpty else { return }\n            let alert = NSAlert(); alert.messageText = L("files.rename_title")\n            if paths.count == 1 {\n                let field = NSTextField(string: URL(fileURLWithPath: paths[0]).lastPathComponent)\n                field.frame = NSRect(x: 0, y: 0, width: 380, height: 25); alert.accessoryView = field\n                alert.addButton(withTitle: L("action.rename")); alert.addButton(withTitle: L("action.cancel"))\n                guard alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty, !field.stringValue.contains("/") else { return }\n                self.confirmFileOperation(["op": "files", "action": "rename", "paths": paths, "new_name": field.stringValue], title: L("files.rename_confirmation", String(describing: field.stringValue)))\n                return\n            }\n            alert.informativeText = "\\(paths.count) files"\n            let search = NSTextField(); search.placeholderString = "Find in name"\n            let replace = NSTextField(); replace.placeholderString = "Replace with"\n            let prefix = NSTextField(); prefix.placeholderString = "Prefix"\n            let suffix = NSTextField(); suffix.placeholderString = "Suffix"\n            let numbering = NSButton(checkboxWithTitle: "Append sequence number", target: nil, action: nil)\n            let stack = NSStackView(views: [search, replace, prefix, suffix, numbering])\n            stack.orientation = .vertical; stack.spacing = 7; stack.frame = NSRect(x: 0, y: 0, width: 400, height: 130)\n            alert.accessoryView = stack\n            alert.addButton(withTitle: L("action.rename")); alert.addButton(withTitle: L("action.cancel"))\n            guard alert.runModal() == .alertFirstButtonReturn else { return }\n            var rule: [String: Any] = ["search": search.stringValue, "replace": replace.stringValue,\n                "prefix": prefix.stringValue, "suffix": suffix.stringValue]\n            if numbering.state == .on { rule["number_start"] = 1; rule["number_padding"] = String(paths.count).count }\n            self.confirmFileOperation(["op": "files", "action": "rename", "paths": paths,\n                "rename_rule": rule, "conflict_policy": "skip"], title: L("files.rename_title"))\n        }\n    }\n''',
-)
-replace_once(
-    '''    func chooseDestination(_ action: String) {\n        guard canUseSelection else { return }\n        let paths = selectedPaths\n        let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true\n        panel.title = action == "copy" ? L("files.copy_folder_title") : L("files.move_folder_title"); panel.prompt = L("action.choose")\n        guard panel.runModal() == .OK, let destination = panel.url?.path else { return }\n        confirmFileOperation(["op": "files", "action": action, "paths": paths, "destination": destination], title: L("files.destination_confirmation", String(describing: action == "copy" ? L("action.copy") : L("action.move")), (paths.count).formatted(), String(describing: destination)))\n    }\n    @objc func trashSelection(_ sender: Any?) {\n        guard canUseSelection else { return }\n        confirmFileOperation(["op": "files", "action": "trash", "paths": selectedPaths], title: L("files.trash_confirmation", (selectedPaths.count).formatted()))\n    }\n''',
-    '''    func chooseDestination(_ action: String) {\n        guard resultsAreCurrent, !table.selectedRowIndexes.isEmpty else { return }\n        withResolvedSelection { paths in\n            let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true\n            panel.title = action == "copy" ? L("files.copy_folder_title") : L("files.move_folder_title"); panel.prompt = L("action.choose")\n            guard panel.runModal() == .OK, let destination = panel.url?.path else { return }\n            self.confirmFileOperation(["op": "files", "action": action, "paths": paths, "destination": destination], title: L("files.destination_confirmation", String(describing: action == "copy" ? L("action.copy") : L("action.move")), (paths.count).formatted(), String(describing: destination)))\n        }\n    }\n    @objc func trashSelection(_ sender: Any?) {\n        withResolvedSelection { paths in\n            self.confirmFileOperation(["op": "files", "action": "trash", "paths": paths], title: L("files.trash_confirmation", paths.count.formatted()))\n        }\n    }\n''',
-)
-
-path.write_text(text)
+expected = json.loads(Path(__file__).with_name('expected-sources.json').read_text())
+for name, digest in expected.items():
+    actual = hashlib.sha256(Path(name).read_bytes()).hexdigest()
+    if actual != digest:
+        raise SystemExit(f'Source differs from the reviewed implementation: {name}: {actual}')
+print(f'Validated {len(expected)} reviewed source digests before formatting')
