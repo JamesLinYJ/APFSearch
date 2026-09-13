@@ -1,0 +1,441 @@
+{
+  "files": {
+    "alpha.txt": "alpha beta",
+    "alphabet.txt": "alpha\nbeta",
+    "myalpha.txt": "none",
+    "my alpha.txt": "Alpha BETA",
+    "alpha-beta.txt": "alpha gamma",
+    "betaalpha.txt": "beta",
+    "café.txt": "café",
+    "cafe.txt": "cafe",
+    "gray.txt": "gray",
+    "grey.txt": "grey",
+    "alpha_beta.txt": "alpha_beta",
+    "中文.txt": "中文",
+    "README.TXT": "README",
+    "file2.txt": "2",
+    "file10.txt": "10"
+  },
+  "results": [
+    {
+      "query": "whole-words:alpha",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "alpha_beta.txt"
+        },
+        {
+          "name": "alpha-beta.txt"
+        },
+        {
+          "name": "my alpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "prefix:alpha",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "alpha_beta.txt"
+        },
+        {
+          "name": "alphabet.txt"
+        },
+        {
+          "name": "alpha-beta.txt"
+        },
+        {
+          "name": "my alpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "suffix:alpha",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "alpha_beta.txt"
+        },
+        {
+          "name": "alpha-beta.txt"
+        },
+        {
+          "name": "betaalpha.txt"
+        },
+        {
+          "name": "my alpha.txt"
+        },
+        {
+          "name": "myalpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "whole:alpha.txt",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "start-with:alpha",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "alpha_beta.txt"
+        },
+        {
+          "name": "alphabet.txt"
+        },
+        {
+          "name": "alpha-beta.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "end-with:alpha.txt",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "betaalpha.txt"
+        },
+        {
+          "name": "my alpha.txt"
+        },
+        {
+          "name": "myalpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "diacritics:cafe",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "cafe.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "no-diacritics:cafe",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "cafe.txt"
+        },
+        {
+          "name": "café.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "cafe",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "cafe.txt"
+        },
+        {
+          "name": "café.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "CASE:README",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "README.TXT"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "case:ext:TXT",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "README.TXT"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "content:<alpha beta>",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "alpha_beta.txt"
+        },
+        {
+          "name": "alphabet.txt"
+        },
+        {
+          "name": "my alpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "content:<alpha|beta>",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "alpha_beta.txt"
+        },
+        {
+          "name": "alphabet.txt"
+        },
+        {
+          "name": "alpha-beta.txt"
+        },
+        {
+          "name": "betaalpha.txt"
+        },
+        {
+          "name": "my alpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "content:<!alpha !beta>",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "cafe.txt"
+        },
+        {
+          "name": "café.txt"
+        },
+        {
+          "name": "file2.txt"
+        },
+        {
+          "name": "file10.txt"
+        },
+        {
+          "name": "gray.txt"
+        },
+        {
+          "name": "grey.txt"
+        },
+        {
+          "name": "myalpha.txt"
+        },
+        {
+          "name": "README.TXT"
+        },
+        {
+          "name": "中文.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "case:content:<alpha beta>",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "alpha_beta.txt"
+        },
+        {
+          "name": "alphabet.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "whole-words:content:<alpha beta>",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "alphabet.txt"
+        },
+        {
+          "name": "my alpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "regex:gr(a|e)y",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "gray.txt"
+        },
+        {
+          "name": "grey.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "regex:content:gr(a|e)y",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "gray.txt"
+        },
+        {
+          "name": "grey.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "regex:content:^alpha$",
+      "exit": 0,
+      "rows": [],
+      "error": ""
+    },
+    {
+      "query": "dotall:regex:content:^alpha.*beta$",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "alpha_beta.txt"
+        },
+        {
+          "name": "alphabet.txt"
+        },
+        {
+          "name": "my alpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "multiline:regex:content:^beta$",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alphabet.txt"
+        },
+        {
+          "name": "betaalpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "file:case:<README|alpha>",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "alpha_beta.txt"
+        },
+        {
+          "name": "alphabet.txt"
+        },
+        {
+          "name": "alpha-beta.txt"
+        },
+        {
+          "name": "betaalpha.txt"
+        },
+        {
+          "name": "my alpha.txt"
+        },
+        {
+          "name": "myalpha.txt"
+        },
+        {
+          "name": "README.TXT"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "path:<algorithm-fixture alpha>",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "alpha.txt"
+        },
+        {
+          "name": "alpha_beta.txt"
+        },
+        {
+          "name": "alphabet.txt"
+        },
+        {
+          "name": "alpha-beta.txt"
+        },
+        {
+          "name": "betaalpha.txt"
+        },
+        {
+          "name": "my alpha.txt"
+        },
+        {
+          "name": "myalpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "regex:content:\"^(alpha|beta)$\"",
+      "exit": 0,
+      "rows": [
+        {
+          "name": "betaalpha.txt"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "query": "unknown:foo",
+      "exit": 0,
+      "rows": [],
+      "error": ""
+    }
+  ],
+  "reference": "Everything 1.5.0.1423b ARM64"
+}

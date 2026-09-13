@@ -1,0 +1,40 @@
+# Build products and editor state
+target/
+build/
+.build/
+.swiftpm/
+.DS_Store
+__pycache__/
+*.pyc
+*.app/
+*.dSYM/
+*.xcuserstate
+xcuserdata/
+
+# Local validation, indexes, and filesystem captures
+validation/
+reports/
+artifacts/
+SOURCE_MANIFEST.json
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.snapshot.bin
+*.log
+*.jsonl
+*.efu
+*.zip
+*.dmg
+*.pkg
+
+# Local credentials and signing material
+.env
+.env.*
+*.p12
+*.pfx
+*.key
+*.pem
+*.cer
+*.mobileprovision
+*.provisionprofile
