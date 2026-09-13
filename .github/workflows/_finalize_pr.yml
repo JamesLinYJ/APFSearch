@@ -26,6 +26,15 @@ jobs:
       - uses: actions/checkout@v4
       - name: Apply exact final source transformations
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("tests/SearchWindowTests.swift")
+          text = path.read_text()
+          old = "c.statusTimer?.invalidate()"
+          if old not in text:
+              raise SystemExit("expected stale status timer reference before finalization")
+          path.write_text(text.replace(old, ""))
+          PY
           python3 scripts/finalize_pr.py
           cargo fmt --manifest-path core/Cargo.toml
           git diff --check
