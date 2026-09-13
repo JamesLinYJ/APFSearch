@@ -51,5 +51,6 @@ text = text.replace(old, new, 1)
 
 if "statusTimer" in text:
     raise SystemExit("stale statusTimer reference remains after migration")
+text = "\n".join(line.rstrip() for line in text.splitlines()) + "\n"
 path.write_text(text)
 print("AppKit tests migrated to event-driven status and cross-page actions")
