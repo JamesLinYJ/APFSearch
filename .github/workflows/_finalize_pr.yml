@@ -1,0 +1,64 @@
+name: Finalize PR source wiring
+
+on:
+  push:
+    branches: [perf/bounded-incremental-index]
+    paths:
+      - .github/workflows/_finalize_pr.yml
+      - scripts/finalize_pr.py
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-pr-source
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    runs-on: macos-15
+    timeout-minutes: 35
+    env:
+      PCRE2_SYS_STATIC: "1"
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      FILESEARCH_COMPILE_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply exact final source transformations
+        run: |
+          python3 scripts/finalize_pr.py
+          cargo fmt --manifest-path core/Cargo.toml
+          git diff --check
+      - name: Rust regressions
+        run: cargo test --locked --no-fail-fast --manifest-path core/Cargo.toml -- --test-threads=1
+      - name: Clippy
+        run: cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
+      - name: Repository consistency
+        run: |
+          python3 tests/check_localization.py
+          python3 tests/check_localization_protocol.py
+          python3 tests/check_legacy_migration.py
+          python3 tests/check_application_identity.py
+      - name: Complete macOS build
+        run: ./build.sh
+      - name: Swift service and file-operation fixtures
+        run: ./tests/run.sh
+      - name: AppKit search-window regression harness
+        run: python3 tests/run_search_window_tests.py --report "$RUNNER_TEMP/search-window-report.json"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: final-ui-report
+          path: ${{ runner.temp }}/search-window-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Commit exact validated source
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add macos/Application.swift macos/SearchService.swift build.sh .github/workflows/release.yml tests/run_search_window_tests.py tests/SearchWindowTests.swift
+          git diff --cached --check
+          git commit -m 'feat: finish cross-page operations, duplicate management and updates'
+          git fetch origin perf/bounded-incremental-index
+          git rebase origin/perf/bounded-incremental-index
+          git push origin HEAD:refs/heads/perf/bounded-incremental-index
