@@ -28,8 +28,18 @@ jobs:
           test "$(git hash-object core/src/lib.rs)" = fc17aa63d4bc8d3496fcb39f7b4e66a6c877f87e
           test "$(git hash-object macos/Application.swift)" = beb9535eef36128ed1eab6c16bcac381e96eea96
           test "$(git hash-object macos/ContentIndexer.swift)" = aad182acf9352ff7e477e9a5dde284302bd53c72
-          git apply --check scripts/feature-integration/engine.patch scripts/feature-integration/query.patch scripts/feature-integration/index.patch scripts/feature-integration/ui.patch scripts/feature-integration/selection.patch scripts/feature-integration/selection-actions.patch scripts/feature-integration/content.patch
-          git apply scripts/feature-integration/engine.patch scripts/feature-integration/query.patch scripts/feature-integration/index.patch scripts/feature-integration/ui.patch scripts/feature-integration/selection.patch scripts/feature-integration/selection-actions.patch scripts/feature-integration/content.patch
+          for patch in \
+            scripts/feature-integration/engine.patch \
+            scripts/feature-integration/query.patch \
+            scripts/feature-integration/index.patch \
+            scripts/feature-integration/ui.patch \
+            scripts/feature-integration/selection.patch \
+            scripts/feature-integration/selection-actions.patch \
+            scripts/feature-integration/content.patch
+          do
+            git apply --check "$patch"
+            git apply "$patch"
+          done
           cargo fmt --manifest-path core/Cargo.toml
           git diff --check
       - name: All Rust regressions
