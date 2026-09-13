@@ -7,7 +7,7 @@ index beb9535..0000000 100644
 -    var statusTimer: Timer?
 +    let statusRequestID = UUID().uuidString
      var elapsed: Double = 0
-@@ -292,5 +292,8 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+@@ -292,6 +292,9 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
          refreshShortcuts()
          runQuery()
 -        if offlineListID == nil { statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.pollStatus() } }
@@ -19,7 +19,7 @@ index beb9535..0000000 100644
 +        if offlineListID == nil { SearchClient.shared.call(["op": "cancel", "request_id": statusRequestID]) { _ in } }
 +        liveScrollObservers.forEach { NotificationCenter.default.removeObserver($0) }
 +    }
-@@ -987,8 +990,16 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+@@ -987,9 +990,17 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
      }
      func pollStatus() {
          guard offlineListID == nil, !statusRequestPending else { return }
