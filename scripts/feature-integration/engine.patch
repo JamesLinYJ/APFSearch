@@ -41,7 +41,7 @@ index fc17aa6..6386ad2 100644
 +        status
 +    }
 +    fn wait_status(&self, request: &Value) -> Result<Value, String> {
-+        if let token = request["snapshot_lease"].as_str() { self.leases.get(token)?; }
++        if let Some(token) = request["snapshot_lease"].as_str() { self.leases.get(token)?; }
 +        let after = request["after"].as_u64().ok_or("Missing status revision")?;
 +        let id = request["request_id"].as_str().filter(|id| !id.is_empty() && id.len() <= 128)
 +            .ok_or("Status observation requires a bounded request_id")?.to_owned();
