@@ -1,3 +1,10 @@
+#[path = "cache_journal.rs"]
+mod cache_journal;
+#[path = "change_reader.rs"]
+mod change_reader;
+#[path = "ordered_merge.rs"]
+mod ordered_merge;
+
 use crate::{
     metadata_postings::MetadataPostings,
     numeric_columns::NumericColumns,
@@ -14,7 +21,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
 };
 
@@ -175,6 +182,8 @@ impl FileSlots {
 }
 #[derive(Default)]
 pub struct SearchSnapshot {
+    pub(crate) hierarchy: OnceLock<crate::relations::Hierarchy>,
+    hierarchy_build: Mutex<()>,
     // Stable slots keep postings valid when a directory entry is deleted. The
     // bitmap determines visibility; a later full rebuild compacts old slots.
     pub entries: Vec<Arc<IndexedFile>>,
@@ -196,6 +205,26 @@ pub struct SearchSnapshot {
     pages: Mutex<VecDeque<(String, Arc<ResultPage>)>>,
 }
 impl SearchSnapshot {
+    pub(crate) fn directory_hierarchy(
+        &self,
+        cancelled: &AtomicBool,
+    ) -> Result<&crate::relations::Hierarchy, String> {
+        if let Some(tree) = self.hierarchy.get() {
+            return Ok(tree);
+        }
+        // Only one builder per immutable generation. Failed/cancelled builds do
+        // not poison the lazy cell; successful readers share the dense columns.
+        let _building = self
+            .hierarchy_build
+            .lock()
+            .map_err(|_| "Hierarchy lock poisoned")?;
+        if self.hierarchy.get().is_none() {
+            let tree = crate::relations::Hierarchy::build(self, cancelled)?;
+            let _ = self.hierarchy.set(tree);
+        }
+        Ok(self.hierarchy.get().expect("hierarchy was initialized"))
+    }
+
     pub(crate) fn from_prepared_cache(parts: crate::snapshot_cache::PreparedSnapshot) -> Self {
         let path_rank = Arc::new(order_ranks(parts.entries.len(), &parts.path_order));
         // These contiguous numeric blocks are cheap derived columns. Restoring
@@ -203,6 +232,8 @@ impl SearchSnapshot {
         let numeric_columns = NumericColumns::build(&parts.entries);
         let file_slots = parts.file_slots;
         Self {
+            hierarchy: OnceLock::new(),
+            hierarchy_build: Mutex::new(()),
             file_slots,
             entries: parts.entries,
             live: parts.live,
@@ -308,6 +339,8 @@ impl SearchSnapshot {
         }
         record("path_sort_and_ranks", started.elapsed());
         Self {
+            hierarchy: OnceLock::new(),
+            hierarchy_build: Mutex::new(()),
             entries,
             file_slots,
             live,
@@ -424,14 +457,23 @@ impl SearchSnapshot {
         Self::from_changes_with_reason(changes, generation, previous).ok()
     }
     pub(crate) fn from_changes_with_reason(
-        mut changes: Vec<(i64, Option<IndexedFile>)>,
+        changes: Vec<(i64, Option<IndexedFile>)>,
         generation: u64,
         previous: &SearchSnapshot,
     ) -> Result<Self, &'static str> {
         if changes.len() > Self::incremental_limit(previous.len()) {
             return Err("delta_exceeds_incremental_limit");
         }
-        if Self::remap_reason(&changes, previous).is_some() {
+        Self::apply_changes(changes, generation, previous)
+    }
+    /// Callers enforce either the ordinary publication budget or the bounded
+    /// durable-cache journal budget before entering this shared update path.
+    fn apply_changes(
+        mut changes: Vec<SnapshotChange>,
+        generation: u64,
+        previous: &SearchSnapshot,
+    ) -> Result<Self, &'static str> {
+        if previous.entries.len() > previous.len() + previous.len() / 4 + 10_000 {
             return Ok(Self::remap_changes(changes, generation, previous));
         }
         // Stable ordering preserves last-observation-wins for repeated IDs.
@@ -570,6 +612,8 @@ impl SearchSnapshot {
             })
             .collect();
         Ok(Self {
+            hierarchy: OnceLock::new(),
+            hierarchy_build: Mutex::new(()),
             entries,
             file_slots,
             live,
@@ -731,6 +775,7 @@ impl SearchSnapshot {
         match query {
             Query::And(queries) | Query::Or(queries) => queries.iter().all(Self::supports_exact),
             Query::Not(query) => Self::supports_exact(query),
+            Query::Term(crate::query::Term::Resolved(result)) => result.unknown.is_empty(),
             Query::Term(term) if NumericColumns::supports(term) => true,
             _ => MetadataPostings::supports(query),
         }
@@ -776,6 +821,12 @@ impl SearchSnapshot {
                 Ok(result)
             }
             Query::Not(query) => Ok(&self.live - &self.evaluate_exact(query, cancelled)?),
+            Query::Term(crate::query::Term::Resolved(result)) => Ok(result
+                .yes
+                .iter()
+                .filter_map(|id| self.slot_for_id(id as i64).map(|slot| slot as u32))
+                .filter(|slot| self.live.contains(*slot))
+                .collect()),
             Query::Term(term) if NumericColumns::supports(term) => self
                 .numeric_columns
                 .exact(term, &self.live, cancelled)?
@@ -856,46 +907,16 @@ fn updated_order(
     let mut replacements: Vec<_> = changed.iter().filter(|slot| live.contains(*slot)).collect();
     replacements
         .sort_unstable_by(|a, b| order.compare(&entries[*a as usize], &entries[*b as usize]));
-    if replacements.len() <= 32 {
-        // Small event batches need only a linear integer copy and logarithmic
-        // key comparisons. Merging one replacement through millions of paths
-        // would otherwise reread and compare every long string.
-        let mut result = Vec::with_capacity(live.len() as usize);
-        result.extend(
-            previous
-                .iter()
-                .copied()
-                .filter(|slot| !changed.contains(*slot)),
-        );
-        for replacement in replacements {
-            let position = result.partition_point(|slot| {
-                order
-                    .compare(&entries[*slot as usize], &entries[replacement as usize])
-                    .is_lt()
-            });
-            result.insert(position, replacement);
-        }
-        return result;
-    }
-    let mut unchanged = previous
-        .iter()
-        .copied()
-        .filter(|slot| !changed.contains(*slot))
-        .peekable();
-    let mut replacements = replacements.into_iter().peekable();
     let mut result = Vec::with_capacity(live.len() as usize);
-    while let (Some(&left), Some(&right)) = (unchanged.peek(), replacements.peek()) {
-        if order
-            .compare(&entries[left as usize], &entries[right as usize])
-            .is_gt()
-        {
-            result.push(replacements.next().unwrap());
-        } else {
-            result.push(unchanged.next().unwrap());
-        }
-    }
-    result.extend(unchanged);
-    result.extend(replacements);
+    result.extend(
+        previous
+            .iter()
+            .copied()
+            .filter(|slot| !changed.contains(*slot)),
+    );
+    ordered_merge::insert_sorted(&mut result, &replacements, |a, b| {
+        order.compare(&entries[a as usize], &entries[b as usize])
+    });
     result
 }
 fn order_ranks(slot_count: usize, order: &[u32]) -> Vec<u32> {
@@ -1034,7 +1055,7 @@ pub struct IndexStore {
 }
 impl IndexStore {
     pub fn open(path: &Path) -> Result<Self, String> {
-        const SCHEMA_VERSION: i64 = 3;
+        const SCHEMA_VERSION: i64 = 4;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?
         }
@@ -1106,11 +1127,6 @@ impl IndexStore {
                 transaction.execute_batch(r#"
                   CREATE TABLE IF NOT EXISTS snapshot_changes(id INTEGER PRIMARY KEY);
                   CREATE TABLE IF NOT EXISTS cache_changes(id INTEGER PRIMARY KEY);
-                  CREATE TRIGGER IF NOT EXISTS cache_change_limit AFTER INSERT ON cache_changes
-                    WHEN (SELECT count(*) FROM cache_changes)>2000 BEGIN
-                    INSERT INTO settings VALUES('cache_journal_overflow','true') ON CONFLICT(key) DO UPDATE SET value='true';
-                    DELETE FROM cache_changes;
-                  END;
                   DROP TRIGGER IF EXISTS snapshot_file_insert;
                   DROP TRIGGER IF EXISTS snapshot_file_delete;
                   DROP TRIGGER IF EXISTS snapshot_file_update;
@@ -1123,7 +1139,8 @@ impl IndexStore {
                   CREATE TRIGGER IF NOT EXISTS snapshot_content_insert AFTER INSERT ON content BEGIN INSERT INTO snapshot_changes SELECT id FROM files WHERE path=new.path ON CONFLICT(id) DO NOTHING; INSERT INTO cache_changes SELECT id FROM files WHERE path=new.path AND EXISTS(SELECT 1 FROM settings WHERE key='cache_base_revision') AND NOT EXISTS(SELECT 1 FROM settings WHERE key='cache_journal_overflow' AND value='true') ON CONFLICT(id) DO NOTHING; INSERT INTO settings VALUES('content_revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1; END;
                   CREATE TRIGGER IF NOT EXISTS snapshot_content_update AFTER UPDATE ON content BEGIN INSERT INTO snapshot_changes SELECT id FROM files WHERE path=new.path ON CONFLICT(id) DO NOTHING; INSERT INTO cache_changes SELECT id FROM files WHERE path=new.path AND EXISTS(SELECT 1 FROM settings WHERE key='cache_base_revision') AND NOT EXISTS(SELECT 1 FROM settings WHERE key='cache_journal_overflow' AND value='true') ON CONFLICT(id) DO NOTHING; INSERT INTO settings VALUES('content_revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1; END;
                   CREATE TRIGGER IF NOT EXISTS snapshot_content_delete AFTER DELETE ON content BEGIN INSERT INTO snapshot_changes SELECT id FROM files WHERE path=old.path ON CONFLICT(id) DO NOTHING; INSERT INTO cache_changes SELECT id FROM files WHERE path=old.path AND EXISTS(SELECT 1 FROM settings WHERE key='cache_base_revision') AND NOT EXISTS(SELECT 1 FROM settings WHERE key='cache_journal_overflow' AND value='true') ON CONFLICT(id) DO NOTHING; INSERT INTO settings VALUES('content_revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1; END;
-                  PRAGMA user_version=3;"#).map_err(|error| error.to_string())?;
+                  PRAGMA user_version=4;"#).map_err(|error| error.to_string())?;
+                cache_journal::install(&transaction)?;
             }
             transaction.commit().map_err(|error| error.to_string())?;
         }
@@ -1695,37 +1712,16 @@ impl IndexStore {
         self.read_entries("1")
     }
     fn read_entries(&self, predicate: &str) -> Result<Vec<IndexedFile>, String> {
-        let mut select_statement=self.connection.prepare(&format!("SELECT f.id,f.path,f.name,f.extension,f.size,f.modified,f.created,f.changed,f.is_dir,f.is_symlink,f.file_id,f.parent_id,f.volume_id,f.flags,COALESCE(c.properties,'{{}}'),f.modified_ns,f.changed_ns,c.path IS NOT NULL FROM files f LEFT JOIN content c ON f.path=c.path WHERE f.accessible=1 AND ({predicate}) ORDER BY f.id")).map_err(|error| error.to_string())?;
-        let rows = select_statement
-            .query_map([], |row| {
-                Ok(IndexedFile {
-                    id: row.get(0)?,
-                    path: row.get(1)?,
-                    name: row.get(2)?,
-                    extension: row.get(3)?,
-                    size: row.get::<_, i64>(4)? as u64,
-                    modified: row.get(5)?,
-                    created: row.get(6)?,
-                    changed: row.get(7)?,
-                    is_dir: row.get(8)?,
-                    is_symlink: row.get(9)?,
-                    file_id: row.get::<_, i64>(10)? as u64,
-                    parent_id: row.get::<_, i64>(11)? as u64,
-                    volume_id: row.get(12)?,
-                    flags: row.get(13)?,
-                    properties: serde_json::from_str(&row.get::<_, String>(14)?)
-                        .unwrap_or(json!({})),
-                    modified_ns: row.get(15)?,
-                    changed_ns: row.get(16)?,
-                    content_indexed: row.get(17)?,
-                    folded_name: Default::default(),
-                    folded_extension: String::new(),
-                    folded_path: Default::default(),
-                    search_name: Default::default(),
-                    search_path: Default::default(),
-                    parent: Default::default(),
-                })
-            })
+        let sql = format!(
+            "SELECT f.id,{} FROM files f LEFT JOIN content c ON f.path=c.path WHERE f.accessible=1 AND ({predicate}) ORDER BY f.id",
+            change_reader::COLUMNS
+        );
+        let mut statement = self
+            .connection
+            .prepare(&sql)
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], change_reader::decode_file)
             .map_err(|error| error.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())
@@ -1740,28 +1736,7 @@ impl IndexStore {
         if self.get("changes_base_revision", json!(null)).as_u64() != Some(revision) {
             return Ok(None);
         }
-        let mut statement = self
-            .connection
-            .prepare("SELECT id FROM snapshot_changes ORDER BY id LIMIT ?1")
-            .map_err(|error| error.to_string())?;
-        let ids: Vec<i64> = statement
-            .query_map([limit.saturating_add(1) as i64], |row| row.get(0))
-            .map_err(|error| error.to_string())?
-            .collect::<Result<_, _>>()
-            .map_err(|error| error.to_string())?;
-        if ids.is_empty() || ids.len() > limit {
-            return Ok(None);
-        }
-        let mut entries: HashMap<_, _> = self
-            .read_entries("f.id IN (SELECT id FROM snapshot_changes)")?
-            .into_iter()
-            .map(|entry| (entry.id, entry))
-            .collect();
-        Ok(Some(
-            ids.into_iter()
-                .map(|id| (id, entries.remove(&id)))
-                .collect(),
-        ))
+        change_reader::read(&self.connection, change_reader::Journal::Snapshot, limit)
     }
     pub fn clear_changes(&self, revision: u64) -> Result<(), String> {
         let transaction = self
@@ -1856,8 +1831,8 @@ impl IndexStore {
         transaction.commit().map_err(|error| error.to_string())
     }
     pub fn cache_read(&self) -> Option<(SearchSnapshot, u64)> {
-        // Pin all metadata and the latest changed rows to one SQLite read
-        // transaction while another connection may be receiving file events.
+        // Pin metadata, journal IDs and their current rows to one SQLite read
+        // transaction. Replay never checkpoints or rewrites the binary cache.
         let transaction = self.connection.unchecked_transaction().ok()?;
         let generation = self.get("generation", json!(0)).as_u64()?;
         let revision = self.get("revision", json!(0)).as_u64()?;
@@ -1873,28 +1848,15 @@ impl IndexStore {
         let mut snapshot = if revision == base_revision {
             base
         } else {
-            let ids: Vec<i64> = {
-                let mut statement = transaction
-                    .prepare("SELECT id FROM cache_changes ORDER BY id LIMIT 2001")
-                    .ok()?;
-                let rows = statement.query_map([], |row| row.get(0)).ok()?;
-                rows.collect::<Result<_, _>>().ok()?
-            };
-            if ids.is_empty() || ids.len() > 2000 {
-                return None;
-            }
-            let current: HashMap<i64, IndexedFile> = self
-                .read_entries("f.id IN (SELECT id FROM cache_changes)")
-                .ok()?
-                .into_iter()
-                .map(|entry| (entry.id, entry))
-                .collect();
-            let mut current = current;
-            let changes = ids
-                .into_iter()
-                .map(|id| (id, current.remove(&id)))
-                .collect();
-            SearchSnapshot::from_changes(changes, generation, &base)?
+            let changes = change_reader::read(
+                &transaction,
+                change_reader::Journal::Cache,
+                cache_journal::MAX_IDS,
+            )
+            .ok()??;
+            // Startup has its own hard journal bound. Applying the publication
+            // fraction here would reintroduce a 2,000-ID cliff on small indexes.
+            SearchSnapshot::apply_changes(changes, generation, &base).ok()?
         };
         snapshot.generation = generation;
         snapshot.content_revision = self.get("content_revision", json!(0)).as_u64()?;
@@ -1921,3 +1883,7 @@ fn mark_search_changed(connection: &Connection) -> Result<(), String> {
 #[cfg(test)]
 #[path = "namespace_prune_tests.rs"]
 mod namespace_prune_tests;
+
+#[cfg(test)]
+#[path = "bounded_cache_tests.rs"]
+mod bounded_cache_tests;

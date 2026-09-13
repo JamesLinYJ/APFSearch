@@ -18,7 +18,7 @@ APFS enumeration uses `getattrlistbulk`. FSEvents starts before the initial trav
 
 Search uses substring candidates, Roaring bitmaps, numeric columns, Unicode normalization and case folding, and PCRE2 regular expressions. Each query binds to a snapshot generation. Content extraction and hashing run separately from filename search and support cancellation.
 
-See [the core interface](core/README.md) and [localization conventions](docs/LOCALIZATION.md).
+See [the core interface](core/README.md), [incremental-index design](docs/INCREMENTAL_INDEX.md), and [localization conventions](docs/LOCALIZATION.md).
 
 ## Build
 
@@ -69,6 +69,12 @@ The CLI uses the same XPC interface:
 
 `content:` can extract candidate text from supported text/code, PDF, and Office Open XML files. Image and media properties use system frameworks. Unsupported formats, inaccessible files, and cloud placeholders are reported; on-demand search does not implicitly download placeholders. File lists can be imported for offline queries or exported in pages.
 
+Bulk actions resolve selected rows against one retained snapshot before presenting a per-file review. Rename rules, destination conflicts, skipped files, and partial completion are shown explicitly. Operation history records intents and completed changes; hard-link aliases share verified identity updates so a batch and its undo do not mistake their own renames for external edits. Changed files still require review rather than automatic undo.
+
+Window queries share immutable snapshot data and have a separate budget of 128 leases, including replacement pages awaiting adoption. Eight additional leases remain available for concurrent exports and other operations. Closing windows, discarding replies, and finishing operations release their leases; abandoned leases expire after five minutes without renewal.
+
+Configured updates keep one download or Installer session active at a time. Cancelled packages are removed immediately; opened packages remain available until Installer exits. If APFSearch exits first, a later launch or activation reclaims its abandoned download directories once Installer is no longer running.
+
 English, Simplified Chinese, and Traditional Chinese use native String Catalogs and Foundation language selection. English is the fallback language. Number, date, and unit formatting follows the user's region settings.
 
 ## Tests
@@ -78,16 +84,19 @@ cargo fmt --manifest-path core/Cargo.toml --check
 PCRE2_SYS_STATIC=1 MACOSX_DEPLOYMENT_TARGET=15.0 cargo test --locked --manifest-path core/Cargo.toml
 ./tests/run.sh
 python3 tests/run_search_window_tests.py --report validation/search-window.json
+python3 tests/run_feature_tests.py
 ```
 
 Tests use isolated fixtures. GUI tests require WindowServer; controller-level checks do not establish foreground animation or input-method behavior. Tests and benchmarks can produce local validation reports containing paths, so reports are excluded from Git. Large synthetic and live-index benchmarks are opt-in and should not be run as routine checks.
+
+CI builds and tests the committed source directly. No source-generating patch workflow or automatic source commit is required before a checkout can pass validation.
 
 ## Current limitations
 
 - Everything 1.5 syntax, property functions, duplicate handling, and advanced bulk operations are not fully equivalent. Unsupported functions should report errors.
 - The prepared-cache delta journal is bounded. Overflow, incompatible caches, or invalid history can require SQLite recovery and a slower startup.
 - Incremental publication retains shared data, but some snapshot and ordering work still scales with index size. Whole-machine latency and disk activity need continuing measurement.
-- Cross-page bulk file operations are incomplete. Unresolved selections must not silently cause partial operations.
+- Bulk actions are limited to 100,000 selected entries. Quick Look and drag initiation require loaded rows; unresolved selections never silently cause partial file operations.
 - APFS clone relationships are not established by content equality. Hard links and independently stored identical content are reported separately where known.
 - Full authorized-scope enumeration parity, crash/event-loss recovery under real workloads, and final installed-app UI behavior are not fully accepted. The repository contains no claim that all original performance targets have passed.
 - Builds are not notarized releases. Signing and distribution remain the builder's responsibility.

@@ -112,6 +112,60 @@ fn cache_journal_has_bounded_writes_and_rejects_overflow_or_missing_baseline() {
     store.batch(&changed, 2).unwrap();
     assert_eq!(
         store.get("cache_journal_overflow", json!(false)),
+        json!(false)
+    );
+    assert_current(&store);
+    // Fill only disposable tombstone IDs, not a large filesystem or metadata fixture.
+    // Keep positive IDs free so actual file triggers exercise the overflow transition.
+    let pending: i64 = store
+        .connection
+        .query_row("SELECT count(*) FROM cache_changes", [], |r| r.get(0))
+        .unwrap();
+    let transaction = store.connection.transaction().unwrap();
+    {
+        let mut insert = transaction
+            .prepare("INSERT INTO cache_changes VALUES(?1)")
+            .unwrap();
+        for id in 1..=65_536 - pending {
+            insert.execute([-id]).unwrap();
+        }
+    }
+    transaction.commit().unwrap();
+    assert_eq!(
+        store.get("cache_journal_overflow", json!(false)),
+        json!(false)
+    );
+    assert_eq!(
+        store
+            .connection
+            .query_row("SELECT pending_count FROM cache_journal_state", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+        65_536
+    );
+    store
+        .batch(
+            &[
+                row("overflow.txt", 99_999),
+                row("after-overflow.txt", 100_000),
+            ],
+            2,
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .connection
+            .query_row("SELECT pending_count FROM cache_journal_state", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        store.get("cache_journal_overflow", json!(false)),
         json!(true)
     );
     assert_eq!(
@@ -229,7 +283,7 @@ fn opening_current_schema_does_not_write_database_or_wal() {
             .connection
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        3
+        4
     );
     observer
         .connection
@@ -275,7 +329,7 @@ fn schema_two_upgrades_once_without_losing_metadata_content_or_preferences() {
             .connection
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        3
+        4
     );
     assert_eq!(
         serde_json::to_value(upgraded.entries().unwrap()).unwrap(),

@@ -1,0 +1,78 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: Rust tests and macOS application
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      PCRE2_SYS_STATIC: "1"
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      CARGO_TERM_COLOR: always
+      FILESEARCH_COMPILE_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Archive the exact source under validation
+        run: git archive --format=tar.gz --output="$RUNNER_TEMP/validated-source.tar.gz" HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: validated-source
+          path: ${{ runner.temp }}/validated-source.tar.gz
+          retention-days: 3
+      - name: Prepare Rust toolchain
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
+      - name: Check formatting
+        run: cargo fmt --manifest-path core/Cargo.toml --check
+      - name: Rust tests
+        if: ${{ !cancelled() }}
+        run: cargo test --locked --no-fail-fast --manifest-path core/Cargo.toml -- --test-threads=1
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
+      - name: Repository consistency checks
+        if: ${{ !cancelled() }}
+        run: |
+          python3 tests/check_localization.py
+          python3 tests/check_localization_protocol.py
+          python3 tests/check_legacy_migration.py
+          python3 tests/check_application_identity.py
+      - name: Build app, XPC service, and CLI without signing or installation
+        if: ${{ !cancelled() }}
+        run: ./build.sh
+      - name: Release configuration and independent audit fixtures
+        if: ${{ !cancelled() }}
+        run: |
+          python3 tests/test_release_and_audit.py
+          bash -n scripts/release.sh
+      - name: Swift service and content regression fixtures
+        if: ${{ !cancelled() }}
+        run: FILESEARCH_SWIFT_ONLY=1 ./tests/run.sh
+      - name: Selection, file safety, properties, and update transport fixtures
+        if: ${{ !cancelled() }}
+        run: python3 tests/run_feature_tests.py
+      - name: AppKit controller regression fixtures
+        if: ${{ !cancelled() }}
+        run: python3 tests/run_search_window_tests.py --report validation/search-window.json
+      - name: Preserve isolated validation reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-reports
+          path: validation/*.json
+          if-no-files-found: error
+          retention-days: 7

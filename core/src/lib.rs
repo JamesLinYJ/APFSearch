@@ -1,5 +1,6 @@
 //! Thread-safe C ABI. All JSON operations share the same engine used by the GUI and CLI.
 //! Callers must not close an engine handle while another thread is entering filesearch_engine_call.
+mod clone_identity;
 #[cfg(all(test, target_os = "macos"))]
 mod content_read_tests;
 mod duplicates;
@@ -16,11 +17,13 @@ mod numeric_profile_tests;
 pub mod query;
 #[cfg(test)]
 mod query_cache_tests;
+mod relations;
 mod result_order;
 mod scan_resume;
 pub mod scanner;
 mod snapshot_cache;
 mod snapshot_leases;
+mod status_signal;
 use arc_swap::ArcSwap;
 use index_store::{IndexStore, IndexedFile, SearchSnapshot};
 use serde_json::{json, Value};
@@ -71,7 +74,7 @@ pub struct SearchEngine {
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     restart_lock: Mutex<()>,
     refresh_lock: Mutex<()>,
-    state: Mutex<Value>,
+    state: status_signal::StatusSignal,
     index_directory: PathBuf,
     leases: snapshot_leases::SnapshotLeases,
 }
@@ -150,7 +153,7 @@ impl SearchEngine {
             worker: Mutex::new(None),
             restart_lock: Mutex::new(()),
             refresh_lock: Mutex::new(()),
-            state: Mutex::new(
+            state: status_signal::StatusSignal::new(
                 json!({"roots":roots,"uncovered":uncovered,"state":"idle","errors":[],"event_id":0}),
             ),
             index_directory,
@@ -273,6 +276,7 @@ impl SearchEngine {
         let old = self.snapshot.swap(snapshot.clone());
         self.generation.store(generation, Ordering::Relaxed);
         self.published_revision.store(revision, Ordering::Relaxed);
+        self.state.notify();
         let retired = {
             let mut previous = self.previous.lock().unwrap();
             previous.push_back(HistoricalSnapshot::new(old, mode == "incremental"));
@@ -347,26 +351,64 @@ impl SearchEngine {
             }
         }
     }
+    fn status_reply(&self) -> Value {
+        let (mut status, revision) = self.state.snapshot();
+        let snapshot = self.snapshot.load();
+        status["count"] = json!(snapshot.len());
+        status["generation"] = json!(snapshot.generation);
+        status["scanning"] = json!(self.scanning.load(Ordering::Relaxed));
+        status["updating"] = json!(status["state"] == "updating");
+        status["status_revision"] = json!(revision);
+        status["scope_token"] = json!(self.relation_coverage(snapshot.generation).to_string());
+        status
+    }
+    fn wait_status(&self, request: &Value) -> Result<Value, String> {
+        if let Some(token) = request["snapshot_lease"].as_str() {
+            self.leases.get(token)?;
+        }
+        let after = request["after"].as_u64().ok_or("Missing status revision")?;
+        let id = request["request_id"]
+            .as_str()
+            .filter(|id| !id.is_empty() && id.len() <= 128)
+            .ok_or("Status observation requires a bounded request_id")?
+            .to_owned();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        if let Some(previous) = self
+            .requests
+            .lock()
+            .unwrap()
+            .insert(id.clone(), cancelled.clone())
+        {
+            previous.store(true, Ordering::Release);
+            self.state.wake_cancelled();
+        }
+        let _request = RequestGuard {
+            requests: &self.requests,
+            id: Some(id),
+            token: cancelled.clone(),
+        };
+        self.state.wait(
+            after,
+            Duration::from_millis(request["timeout_ms"].as_u64().unwrap_or(30_000)),
+            &cancelled,
+        )?;
+        Ok(self.status_reply())
+    }
     fn dispatch(self: &Arc<Self>, request: &Value) -> Result<Value, String> {
         match request
             .get("op")
             .and_then(Value::as_str)
             .ok_or("Missing op")?
         {
-            "status" => {
-                let mut status = self.state.lock().unwrap().clone();
-                let snapshot = self.snapshot.load();
-                status["count"] = json!(snapshot.len());
-                status["generation"] = json!(snapshot.generation);
-                status["scanning"] = json!(self.scanning.load(Ordering::Relaxed));
-                status["updating"] = json!(status["state"] == "updating");
-                Ok(status)
-            }
+            "status" => Ok(self.status_reply()),
+            "wait_status" => self.wait_status(request),
             "query" => self.query(request),
+            "directory_info" => self.directory_info(request),
             "retain_snapshot" => {
                 let snapshot = self.pin(request["generation"].as_u64())?;
                 let generation = snapshot.generation;
                 let mut preferences = self.preferences.read().unwrap().clone();
+                preferences["_snapshot_coverage"] = self.relation_coverage(snapshot.generation);
                 preferences["_snapshot_query_time_millis"] =
                     json!(chrono::Local::now().timestamp_millis());
                 let token = self.leases.retain(snapshot, preferences)?;
@@ -395,18 +437,20 @@ impl SearchEngine {
                     serde_json::from_value(preferences["macros"].clone())
                         .map_err(|_| "Invalid macros")?;
                 let parsed_query = query::parse(request["text"].as_str().unwrap_or(""), &macros)?;
+                let mut relational = parsed_query.requires_relations();
                 let mut content = parsed_query.requires_content();
                 let mut properties = parsed_query.requires_properties();
                 if let Some(exclusions) = preferences["exclusions"].as_array() {
                     for exclusion in exclusions {
                         let parsed_query =
                             query::parse(exclusion.as_str().ok_or("Invalid exclusion")?, &macros)?;
+                        relational |= parsed_query.requires_relations();
                         content |= parsed_query.requires_content();
                         properties |= parsed_query.requires_properties();
                     }
                 }
                 Ok(
-                    json!({"requires_content":content,"requires_properties":properties,"requires_extraction":content||properties}),
+                    json!({"requires_content":content,"requires_properties":properties,"requires_extraction":(content||properties)&&!relational,"indexed_relations_only":relational}),
                 )
             }
             "volumes" | "volumes_changed" => Ok(
@@ -422,6 +466,17 @@ impl SearchEngine {
                 Ok(json!({}))
             }
             "scan" | "watch" => self.start_scan(request),
+            "quiesce" => {
+                let _restart = self.restart_lock.lock().unwrap();
+                self.stop.store(true, Ordering::Release);
+                self.scan_cancel.store(true, Ordering::Release);
+                if let Some(worker) = self.worker.lock().unwrap().take() {
+                    worker
+                        .join()
+                        .map_err(|_| "Index worker failed during update preparation")?;
+                }
+                Ok(json!({"quiescent":true}))
+            }
             "stop" => {
                 self.stop.store(true, Ordering::Relaxed);
                 self.scan_cancel.store(true, Ordering::Relaxed);
@@ -435,6 +490,7 @@ impl SearchEngine {
                 if let Some(token) = self.requests.lock().unwrap().get(id) {
                     token.store(true, Ordering::Relaxed);
                 }
+                self.state.wake_cancelled();
                 Ok(json!({"cancelled":id}))
             }
             "put_content" => {
@@ -518,7 +574,97 @@ impl SearchEngine {
             .and_then(|snapshot| snapshot.snapshot.upgrade())
             .ok_or("Requested generation expired; restart query at offset 0".into())
     }
+    fn relation_coverage(&self, generation: u64) -> Value {
+        let state = self.state.lock().unwrap();
+        // Never apply the latest completed coverage proof to an older snapshot,
+        // or to a publication whose reconciliation has not finished yet.
+        let complete = !self.offline.load(Ordering::Acquire)
+            && !self.scanning.load(Ordering::Acquire)
+            && self.snapshot.load().generation == generation
+            && state["initial_scan_complete"] == true
+            && matches!(state["state"].as_str(), Some("ready" | "watching"));
+        json!({"roots":state["roots"], "uncovered":state["uncovered"], "complete":complete})
+    }
+    fn directory_info(&self, request: &Value) -> Result<Value, String> {
+        let paths: Vec<String> = serde_json::from_value(request["paths"].clone())
+            .map_err(|_| "paths must be an array")?;
+        if paths.len() > 200 {
+            return Err("Directory information is limited to 200 paths per request".into());
+        }
+        let lease = request["snapshot_lease"]
+            .as_str()
+            .map(|token| self.leases.get(token))
+            .transpose()?;
+        let snapshot = if let Some(context) = &lease {
+            if request["generation"]
+                .as_u64()
+                .is_some_and(|value| value != context.snapshot.generation)
+            {
+                return Err("Snapshot lease generation mismatch".into());
+            }
+            context.snapshot.clone()
+        } else {
+            self.pin(request["generation"].as_u64())?
+        };
+        let coverage = lease
+            .as_ref()
+            .map(|context| context.preferences["_snapshot_coverage"].clone())
+            .unwrap_or_else(|| self.relation_coverage(snapshot.generation));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let id = request["request_id"].as_str().map(str::to_owned);
+        if let Some(id) = &id {
+            if let Some(previous) = self
+                .requests
+                .lock()
+                .unwrap()
+                .insert(id.clone(), cancelled.clone())
+            {
+                previous.store(true, Ordering::Relaxed);
+            }
+        }
+        let _request = RequestGuard {
+            requests: &self.requests,
+            id,
+            token: cancelled.clone(),
+        };
+        snapshot
+            .directory_hierarchy(&cancelled)?
+            .info(&snapshot, &coverage, &paths, &cancelled)
+    }
     fn query(&self, request: &Value) -> Result<Value, String> {
+        if request["retain_snapshot"].as_bool() != Some(true)
+            || request["snapshot_lease"].is_string()
+        {
+            return self.query_inner(request);
+        }
+        // Pin the first page's preferences and relative-date clock together with
+        // its metadata. Retaining just its generation later would let changed
+        // macros or midnight reorder an otherwise same-sized cross-page result.
+        let snapshot = self.pin(request["generation"].as_u64())?;
+        let mut preferences = self.preferences.read().unwrap().clone();
+        preferences["_snapshot_query_time_millis"] = json!(chrono::Local::now().timestamp_millis());
+        preferences["_snapshot_coverage"] = self.relation_coverage(snapshot.generation);
+        let scope_token = preferences["_snapshot_coverage"].to_string();
+        let token = match request["snapshot_owner"].as_str() {
+            Some("window") => self.leases.retain_window(snapshot, preferences),
+            None | Some("operation") => self.leases.retain(snapshot, preferences),
+            Some(_) => return Err("Unknown snapshot owner".into()),
+        }?;
+        let mut leased = request.clone();
+        leased["snapshot_lease"] = json!(token);
+        match self.query_inner(&leased) {
+            Ok(mut response) => {
+                response["snapshot_lease"] = json!(token);
+                response["scope_token"] = json!(scope_token);
+                Ok(response)
+            }
+            Err(error) => {
+                self.leases.release(&token);
+                Err(error)
+            }
+        }
+    }
+    fn query_inner(&self, request: &Value) -> Result<Value, String> {
         let started = Instant::now();
         let text = request["text"].as_str().unwrap_or("");
         if text.len() > 16384 {
@@ -559,11 +705,21 @@ impl SearchEngine {
             .and_then(chrono::DateTime::from_timestamp_millis)
             .map(|time| time.with_timezone(&chrono::Local))
             .unwrap_or_else(chrono::Local::now);
-        let parsed_query = query::parse_at(text, &macros, query_time)?;
-        let excludes: Vec<_> = exclusions
+        let mut parsed_query = query::parse_at(text, &macros, query_time)?;
+        let mut excludes: Vec<_> = exclusions
             .iter()
             .map(|s| query::parse_at(s, &macros, query_time))
             .collect::<Result<_, _>>()?;
+        let relational = parsed_query.requires_relations()
+            || excludes.iter().any(query::Query::requires_relations);
+        let coverage = if relational {
+            lease
+                .as_ref()
+                .map(|context| context.preferences["_snapshot_coverage"].clone())
+                .unwrap_or_else(|| self.relation_coverage(snapshot.generation))
+        } else {
+            Value::Null
+        };
         let offline = self.offline.load(Ordering::Relaxed);
         let mut offset = request["offset"].as_u64().unwrap_or(0) as usize;
         let limit = request["limit"].as_u64().unwrap_or(200).min(10000) as usize;
@@ -583,6 +739,17 @@ impl SearchEngine {
         };
         let mut warnings = HashSet::new();
         let metadata_only = request["metadata_only"].as_bool().unwrap_or(false);
+        if relational {
+            warnings.insert("Directory relationships and sizes use indexed scope. Missing coverage, content or properties remain unknown; sizes are logical, not reclaimable bytes".to_string());
+            if metadata_only {
+                // Extraction needs children rather than only their matching
+                // parents. Returning all entries is conservative, never a false
+                // negative. Native relation searches do not extract implicitly.
+                parsed_query = query::Query::All;
+                excludes.clear();
+            }
+        }
+
         let needs_content = !metadata_only
             && (parsed_query.requires_content()
                 || excludes.iter().any(query::Query::requires_content));
@@ -603,7 +770,8 @@ impl SearchEngine {
                 preferences["macros"],
                 preferences["exclusions"],
                 metadata_only,
-                clock
+                clock,
+                coverage
             ])
             .to_string()
         });
@@ -633,12 +801,35 @@ impl SearchEngine {
                 .map(|slot| snapshot.entries[*slot as usize].as_ref())
                 .collect();
             return Ok(
-                json!({"rows":rows,"offline":offline,"total":page.total,"generation":snapshot.generation,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"warnings":[],"offset":page.offset,"limit":limit,"anchor_index":page.anchor_index,"anchor_found":page.anchor_index.is_some()}),
+                json!({"rows":rows,"offline":offline,"total":page.total,"generation":snapshot.generation,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"warnings":warnings.iter().cloned().collect::<Vec<_>>(),"offset":page.offset,"limit":limit,"anchor_index":page.anchor_index,"anchor_found":page.anchor_index.is_some()}),
             );
         }
         let mut matching = cache_key
             .as_deref()
             .and_then(|key| snapshot.cached_matches(key));
+        if !all_files && matching.is_none() && relational && !metadata_only {
+            let tree = snapshot.directory_hierarchy(&cancelled)?;
+            let mut content =
+                |file: &IndexedFile| self.index_store.lock().unwrap().content_for(&file.path);
+            relations::resolve(
+                &mut parsed_query,
+                &snapshot,
+                tree,
+                &coverage,
+                &cancelled,
+                &mut content,
+            )?;
+            for exclusion in &mut excludes {
+                relations::resolve(
+                    exclusion,
+                    &snapshot,
+                    tree,
+                    &coverage,
+                    &cancelled,
+                    &mut content,
+                )?;
+            }
+        }
         if !all_files && matching.is_none() && !needs_content {
             if let Some(mut matched) = snapshot.exact_matches(&parsed_query, &cancelled)? {
                 let mut complete = true;
@@ -661,6 +852,9 @@ impl SearchEngine {
             }
         }
         if !all_files && matching.is_none() {
+            let row_needs_content = !metadata_only
+                && (parsed_query.requires_content()
+                    || excludes.iter().any(query::Query::requires_content));
             let mut matched = roaring::RoaringBitmap::new();
             let candidates = snapshot.candidates_with_cancellation(&parsed_query, &cancelled)?;
             let iterator: Box<dyn Iterator<Item = u32> + '_> =
@@ -678,10 +872,10 @@ impl SearchEngine {
                     continue;
                 }
                 let file = &snapshot.entries[slot as usize];
-                if needs_content && !parsed_query.may_match_without_content(file)? {
+                if row_needs_content && !parsed_query.may_match_without_content(file)? {
                     continue;
                 }
-                let stored = if needs_content {
+                let stored = if row_needs_content {
                     self.index_store.lock().unwrap().content_for(&file.path)?
                 } else {
                     None
@@ -689,7 +883,7 @@ impl SearchEngine {
                 let extracted;
                 let body = if let Some(body) = stored.as_deref() {
                     Some(body)
-                } else if needs_content && !offline {
+                } else if row_needs_content && !offline {
                     extracted = read_text(file, &mut warnings);
                     extracted.as_deref()
                 } else {
@@ -1644,6 +1838,7 @@ impl SearchEngine {
         }
         self.scanning.store(false, Ordering::SeqCst);
         self.active.store(false, Ordering::SeqCst);
+        self.state.notify();
     }
     fn import_file_list(&self, request: &Value) -> Result<Value, String> {
         if self.active.load(Ordering::SeqCst) {

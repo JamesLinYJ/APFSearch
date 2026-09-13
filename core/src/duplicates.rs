@@ -23,6 +23,7 @@ struct Object {
     identity: Identity,
     rows: Vec<Row>,
     hash: Option<String>,
+    clone_id: Option<u64>,
 }
 #[derive(Debug)]
 enum Failure {
@@ -192,6 +193,7 @@ pub(crate) fn find(
                         identity,
                         rows: vec![row],
                         hash: None,
+                        clone_id: None,
                     });
                 }
             }
@@ -234,10 +236,17 @@ pub(crate) fn find(
                     check_cancel(cancelled)?;
                     let mut file = open_verified(row)?;
                     hash_read_count += 1;
-                    hash_and_validate(&mut file, row, cancelled, &mut buffer)
+                    let digest = hash_and_validate(&mut file, row, cancelled, &mut buffer)?;
+                    let clone_id = crate::clone_identity::read(&file);
+                    validate_descriptor(&file, &row.identity)?;
+                    validate_path(row)?;
+                    Ok::<_, Failure>((digest, clone_id))
                 })();
                 match result {
-                    Ok(hash) => object.hash = Some(hash),
+                    Ok((hash, clone_id)) => {
+                        object.hash = Some(hash);
+                        object.clone_id = clone_id;
+                    }
                     Err(error) => record_error(&mut errors, &row.path, "hash", error)?,
                 }
             }
@@ -312,8 +321,27 @@ pub(crate) fn find(
         let mut group = json!({"kind":if mode=="content" {"same_content"} else {mode},"rows":rows,"distinct_files":members.len()});
         if mode == "content" {
             group["hash"] = json!(key);
-            group["clone_relationship"] =
-                json!("unknown: APFS shared extents are not exposed by public metadata APIs");
+            let mut streams: BTreeMap<(u64, u64), Vec<&Object>> = BTreeMap::new();
+            for object in &members {
+                if let Some(clone_id) = object.clone_id {
+                    streams
+                        .entry((object.identity.device_id, clone_id))
+                        .or_default()
+                        .push(object);
+                }
+            }
+            let clones: Vec<_> = streams.into_iter().filter(|(_, objects)| objects.len() > 1)
+                .map(|((device, clone_id), objects)| json!({
+                    "device_id": device, "clone_id": clone_id, "distinct_files": objects.len(),
+                    "paths": objects.iter().flat_map(|object| object.rows.iter().map(|row| &row.path)).collect::<Vec<_>>()
+                })).collect();
+            group["clone_relationship"] = json!(if clones.is_empty() {
+                "unknown"
+            } else {
+                "verified_pure_clones"
+            });
+            group["clone_groups"] = json!(clones);
+            group["reclaimable_bytes"] = Value::Null;
         }
         groups.push(group);
     }

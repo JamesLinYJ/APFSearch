@@ -31,7 +31,6 @@ source = source.replace("@main\nfinal class AppDelegate", "final class AppDelega
 startup = """        pollStatus()
         refreshShortcuts()
         runQuery()
-        if offlineListID == nil { statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.pollStatus() } }
 """
 if source.count(startup) != 1:
     raise SystemExit("App initializer changed; update the test-only startup isolation boundary")
@@ -58,9 +57,9 @@ if source.count(table_class) != 1:
 source = source.replace(table_class, table_class + instrumentation, 1)
 (work / "ApplicationUnderTest.swift").write_text(source)
 command = ["swiftc", "-module-cache-path", str(work / "ModuleCache"), "-swift-version", "5", "-O", "-target", "arm64-apple-macos15.0"]
-command += [str(project / "macos" / name) for name in ["ApplicationIdentity.swift", "LegacyDataMigration.swift", "SearchProtocol.swift", "Localization.swift", "SettingsWindow.swift"]]
-command += [str(work / "ApplicationUnderTest.swift"), str(project / "tests/SearchWindowTests.swift")]
-for framework in ["AppKit", "SwiftUI", "ServiceManagement", "Quartz", "Carbon"]:
+command += [str(project / "macos" / name) for name in ["ApplicationIdentity.swift", "LegacyDataMigration.swift", "SearchProtocol.swift", "Localization.swift", "SettingsWindow.swift", "SelectionResolver.swift", "FileOperationReview.swift", "DuplicateResultsWindow.swift", "UpdateManager.swift", "UpdateUI.swift"]]
+command += [str(work / "ApplicationUnderTest.swift"), str(project / "tests/SearchWindowTests.swift"), str(project / "tests/SearchFeatureWindowTests.swift")]
+for framework in ["AppKit", "SwiftUI", "ServiceManagement", "Quartz", "Carbon", "CryptoKit"]:
     command += ["-framework", framework]
 executable = work / "SearchWindowTests"
 command += ["-o", str(executable)]

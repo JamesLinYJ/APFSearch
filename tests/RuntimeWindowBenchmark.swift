@@ -77,7 +77,7 @@ enum RuntimeWindowBenchmark {
             check("empty_samples_have_no_percentile", percentile([], 0.95) == nil)
             check("actual_display_available", !NSScreen.screens.isEmpty)
             let controller = SearchWindowController(offlineListID: UUID().uuidString)
-            check("startup_isolated_without_requests", controller.requestIDs.isEmpty && controller.queryTimer == nil && controller.historyTimer == nil && controller.statusTimer == nil)
+            check("startup_isolated_without_requests", controller.requestIDs.isEmpty && controller.queryTimer == nil && controller.historyTimer == nil && !controller.statusRequestPending && controller.statusRetry == nil)
             controller.window?.makeKeyAndOrderFront(nil)
             controller.window?.contentView?.layoutSubtreeIfNeeded(); controller.table.displayIfNeeded()
             check("actual_appkit_window_is_visible", controller.window?.isVisible == true)
@@ -218,7 +218,7 @@ enum RuntimeWindowBenchmark {
                             "statistics": ["measured_samples": measured.count, "p50_ms": percentile(latencies, 0.5).map { $0 as Any } ?? NSNull(), "p95_ms": complete ? (p95.map { $0 as Any } ?? NSNull()) : NSNull(), "completed_samples_p95_ms": p95.map { $0 as Any } ?? NSNull(), "max_ms": latencies.max().map { $0 as Any } ?? NSNull(), "p95_at_most_100ms": targetPassed]])
             report["queries"] = results; save()
         }
-        controller.historyTimer?.invalidate(); controller.queryTimer?.invalidate(); controller.statusTimer?.invalidate(); controller.cancelQueries(); controller.window?.orderOut(nil)
+        controller.historyTimer?.invalidate(); controller.queryTimer?.invalidate(); controller.stopStatusObservation(); controller.cancelQueries(); controller.window?.orderOut(nil)
         let afterPreferences = await request(["op": "preferences", "action": "get"], timeout: setupTimeout)
         let afterValues = afterPreferences["values"] as? [String: Any] ?? afterPreferences
         let afterHistory = afterValues["history"] ?? []

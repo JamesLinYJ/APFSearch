@@ -5,7 +5,9 @@ FILESEARCH_TEST_WORK="${FILESEARCH_TEST_DIR:-$(mktemp -d /private/tmp/FileSearch
 export PCRE2_SYS_STATIC=1
 export MACOSX_DEPLOYMENT_TARGET=15.0
 mkdir -p "$FILESEARCH_TEST_WORK" "$FILESEARCH_PROJECT/validation"
-cargo test --locked --manifest-path "$FILESEARCH_PROJECT/core/Cargo.toml"
+if [[ "${FILESEARCH_SWIFT_ONLY:-0}" != "1" ]]; then
+  cargo test --locked --manifest-path "$FILESEARCH_PROJECT/core/Cargo.toml" -- --test-threads=1
+fi
 cargo build --locked --release --manifest-path "$FILESEARCH_PROJECT/core/Cargo.toml"
 FILESEARCH_SOURCES=("$FILESEARCH_PROJECT/macos/ApplicationIdentity.swift" "$FILESEARCH_PROJECT/macos/LegacyDataMigration.swift" "$FILESEARCH_PROJECT/macos/SearchProtocol.swift" "$FILESEARCH_PROJECT/macos/Localization.swift" "$FILESEARCH_PROJECT/macos/SearchService.swift" "$FILESEARCH_PROJECT/macos/ContentIndexer.swift" "$FILESEARCH_PROJECT/macos/FileOperations.swift")
 FILESEARCH_LINK=("$FILESEARCH_PROJECT/core/target/release/libfilesearch_core.a" -framework AppKit -framework PDFKit -framework AVFoundation -framework ImageIO -framework Security -framework DiskArbitration -framework CoreServices -framework CoreFoundation -lc++)

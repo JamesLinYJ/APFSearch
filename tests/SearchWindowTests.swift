@@ -147,9 +147,24 @@ enum SearchWindowTests {
         c.currentStatus = ["success": true, "generation": 1, "count": rows.count, "scanning": false]
         NSApp.activate(ignoringOtherApps: true)
         c.window?.makeKeyAndOrderFront(nil)
+        // Select a known, on-screen target before asking AppKit to resize.
+        // Hosted macOS displays can be shorter than the nominal test height;
+        // accepting the resulting baseline without an independent target would
+        // conceal an application-driven resize, while an oversized target only
+        // tests the window manager's screen constraint.
+        let screen = c.window!.screen ?? NSScreen.screens[0]
+        let available = screen.visibleFrame.insetBy(dx: 20, dy: 20)
+        let targetSize = NSSize(width: min(size.width, available.width), height: min(size.height, available.height))
+        guard targetSize.width >= c.window!.minSize.width, targetSize.height >= c.window!.minSize.height else {
+            unavailable.append(["test": "window_outer_frame_stays_fixed", "reason": "The available display cannot fit the application's minimum window size."])
+            c.window?.orderOut(nil)
+            return
+        }
+        let targetFrame = NSRect(x: available.midX - targetSize.width / 2, y: available.midY - targetSize.height / 2,
+            width: targetSize.width, height: targetSize.height)
         // This is the user's explicit resize being tested. No subsequent
         // action or observation resets, pins, or restores the window frame.
-        c.window?.setFrame(NSRect(origin: NSPoint(x: 100, y: 100), size: size), display: true)
+        c.window?.setFrame(targetFrame, display: true)
         await pump(0.2)
         let baseline = c.window!.frame
         var maxDelta = 0.0
@@ -225,9 +240,9 @@ enum SearchWindowTests {
             c.updateStatus()
             await settle("status_\(iteration)", duration: 0.02)
         }
-        c.queryTimer?.invalidate(); c.historyTimer?.invalidate(); c.statusTimer?.invalidate()
-        let requestedSizeWasAccepted = abs(baseline.width - size.width) <= 0.5 && abs(baseline.height - size.height) <= 0.5
-        check("window_outer_frame_stays_fixed_\(Int(size.width))x\(Int(size.height))", requestedSizeWasAccepted && maxDelta <= 0.5, ["requested_width": size.width, "requested_height": size.height, "baseline": NSStringFromRect(baseline), "samples": samples, "max_frame_delta_points": maxDelta, "first_changed_action": firstChange, "sidebar_actions": 20, "sidebar_samples": sidebarSamples])
+        c.queryTimer?.invalidate(); c.historyTimer?.invalidate(); c.stopStatusObservation()
+        let requestedSizeWasAccepted = abs(baseline.width - targetSize.width) <= 0.5 && abs(baseline.height - targetSize.height) <= 0.5
+        check("window_outer_frame_stays_fixed_\(Int(targetSize.width))x\(Int(targetSize.height))", requestedSizeWasAccepted && maxDelta <= 0.5, ["nominal_width": size.width, "nominal_height": size.height, "requested_width": targetSize.width, "requested_height": targetSize.height, "screen_visible_frame": NSStringFromRect(screen.visibleFrame), "baseline": NSStringFromRect(baseline), "samples": samples, "max_frame_delta_points": maxDelta, "first_changed_action": firstChange, "sidebar_actions": 20, "sidebar_samples": sidebarSamples])
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
             check("appkit_sidebar_has_intermediate_geometry_\(Int(size.width))", animatedSidebarActions == 20, ["actions": 20, "actions_with_intermediate_frames": animatedSidebarActions, "presentation_layer_samples": presentationSamples, "observation": "Core Animation presentation geometry sampled during AppKit constraint animation; this does not measure compositor frame timing."])
         }
@@ -261,6 +276,7 @@ enum SearchWindowTests {
             only.window?.orderOut(nil)
             exit(0)
         }
+        await featureIntegrationRegression()
         await startupTablePreferencesRegression()
         let c = await controller(base)
         let incompleteDuplicateReport = c.duplicateReport(["groups": [], "hardlinks": [], "errors": ["/UIRegression/unreadable.txt: denied"], "partial": true])
@@ -405,7 +421,11 @@ enum SearchWindowTests {
         let selectedCount = large.table.selectedRowIndexes.count
         check("partially_cached_selection_is_not_actionable", !large.selectionIsComplete && !large.canUseSelection, ["selected_count": selectedCount, "loaded_selected_paths": large.selectedPaths.count])
         large.openSelection(nil); large.trashSelection(nil); large.indexContent(nil)
-        check("partial_selection_file_actions_send_no_operation", SearchClient.shared.pending.isEmpty, ["operation_count": SearchClient.shared.pending.count])
+        check("expired_partial_selection_sends_no_file_or_content_mutation", !SearchClient.shared.pending.contains { ["files", "content_index"].contains($0.request["op"] as? String ?? "") }, ["requests": SearchClient.shared.pending.map { $0.request["op"] as? String ?? "" }])
+        // An expired lease may request a fresh query, but cannot act on its
+        // loaded subset. Reset only this controlled fixture for anchor tests.
+        large.cancelQueries(); large.queryPending = false; large.resultsAreCurrent = true
+        SearchClient.shared.clear()
         let loadedRow = large.cachedRows.keys.min()!
         check("partial_selection_cannot_start_file_drag", large.tableView(large.table, pasteboardWriterForRow: loadedRow) == nil)
 
@@ -483,7 +503,7 @@ enum SearchWindowTests {
         await windowFrameRegression(NSSize(width: 850, height: 600))
         await windowFrameRegression(NSSize(width: 1150, height: 740))
         for controller in controllers {
-            controller.queryTimer?.invalidate(); controller.historyTimer?.invalidate(); controller.statusTimer?.invalidate()
+            controller.queryTimer?.invalidate(); controller.historyTimer?.invalidate(); controller.stopStatusObservation()
             controller.window?.orderOut(nil)
         }
         let passed = assertions.filter { $0["passed"] as? Bool == true }.count

@@ -17,7 +17,11 @@ for source in (root/'macos').glob('*.swift'):
    # Doc comments are not UI strings.
    line=text[text.rfind('\n',0,m.start())+1:m.start()]
    if not line.lstrip().startswith('//'):unwrapped.append({'file':source.name,'line':text.count('\n',0,m.start())+1,'literal':m.group()})
-catalog=json.loads((root/'Resources/Localizable.xcstrings').read_text())
+catalogs={table:json.loads((root/f'Resources/{table}.xcstrings').read_text()) for table in ['Localizable','Features']}
+catalog={'sourceLanguage':'en','strings':{}}
+for table,value in catalogs.items():
+ assert not catalog['strings'].keys() & value['strings'].keys(), 'Duplicate catalog keys'
+ catalog['strings'].update(value['strings'])
 migration=json.loads((root/'Resources/LocalizationKeyMigration.json').read_text())['old_to_new']
 assert len(set(migration.values()))==len(migration),'Migration identifiers must be unique'
 assert set(migration.values())<=catalog['strings'].keys(),'Migrated identifiers must remain in the catalog'
@@ -37,13 +41,14 @@ for key,record in catalog['strings'].items():
   assert signature(unit['value'])==signature(source_value),(key,language,'placeholder mismatch')
 with tempfile.TemporaryDirectory(prefix='FileSearch-l10n-') as tmp:
  tmp=pathlib.Path(tmp);bundle=tmp/'Probe.app';contents=bundle/'Contents';resources=contents/'Resources';macos=contents/'MacOS';resources.mkdir(parents=True);macos.mkdir()
- for name in ['Localizable','InfoPlist']:
+ for name in ['Localizable','Features','InfoPlist']:
   subprocess.run(['xcrun','xcstringstool','compile',str(root/f'Resources/{name}.xcstrings'),'--output-directory',str(resources)],check=True)
  plist={'CFBundleExecutable':'APFSearch','CFBundleIdentifier':'local.filesearch.app.localizationtest','CFBundleName':'APFSearch','CFBundlePackageType':'APPL','CFBundleDevelopmentRegion':'en','CFBundleLocalizations':['en','zh-Hans','zh-Hant']}
  (contents/'Info.plist').write_bytes(plistlib.dumps(plist))
  for language in ['en','zh-Hans','zh-Hant']:
-  compiled=subprocess.check_output(['plutil','-convert','json','-o','-',str(resources/f'{language}.lproj/Localizable.strings')]);strings=json.loads(compiled)
-  assert strings=={key:v['localizations'][language]['stringUnit']['value'] for key,v in catalog['strings'].items()}
+  for table,value in catalogs.items():
+   compiled=subprocess.check_output(['plutil','-convert','json','-o','-',str(resources/f'{language}.lproj/{table}.strings')]);strings=json.loads(compiled)
+   assert strings=={key:v['localizations'][language]['stringUnit']['value'] for key,v in value['strings'].items()}
  probe=tmp/'Probe.swift';probe.write_text('''import Foundation
 @main struct Probe { static func main() throws {
 let output:[String:Any] = ["bundle":Bundle.main.bundlePath,"preferred":Bundle.main.preferredLocalizations,"locale":Locale.current.identifier,"title":L("app.name"),"settings":L("action.open_settings"),"folder":L("filter.folders"),"format":L("status.selected_count",localizedCount(12345)),"number":localizedCount(12345),"decimal":localizedDecimal(12.34,fractionDigits:2),"date":localizedDate(Date(timeIntervalSince1970:0)),"displayName":Bundle.main.object(forInfoDictionaryKey:"CFBundleDisplayName") as? String ?? "missing"]
