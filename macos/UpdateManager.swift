@@ -53,7 +53,8 @@ final class UpdateManager {
       let payload = canonical(manifest),
       let signature = Data(base64Encoded: manifest.signature)
     else { throw UpdateError.invalidManifest }
-    guard publicKey().isValidSignature(signature, for: payload) else {
+    let key = try publicKey()
+    guard key.isValidSignature(signature, for: payload) else {
       throw UpdateError.invalidSignature
     }
     return manifest
