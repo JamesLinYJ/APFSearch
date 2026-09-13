@@ -359,6 +359,7 @@ impl SearchEngine {
         status["scanning"] = json!(self.scanning.load(Ordering::Relaxed));
         status["updating"] = json!(status["state"] == "updating");
         status["status_revision"] = json!(revision);
+        status["scope_token"] = json!(self.relation_coverage(snapshot.generation).to_string());
         status
     }
     fn wait_status(&self, request: &Value) -> Result<Value, String> {
@@ -407,7 +408,7 @@ impl SearchEngine {
                 let snapshot = self.pin(request["generation"].as_u64())?;
                 let generation = snapshot.generation;
                 let mut preferences = self.preferences.read().unwrap().clone();
-                preferences["_snapshot_coverage"] = self.relation_coverage();
+                preferences["_snapshot_coverage"] = self.relation_coverage(snapshot.generation);
                 preferences["_snapshot_query_time_millis"] =
                     json!(chrono::Local::now().timestamp_millis());
                 let token = self.leases.retain(snapshot, preferences)?;
@@ -573,11 +574,16 @@ impl SearchEngine {
             .and_then(|snapshot| snapshot.snapshot.upgrade())
             .ok_or("Requested generation expired; restart query at offset 0".into())
     }
-    fn relation_coverage(&self) -> Value {
+    fn relation_coverage(&self, generation: u64) -> Value {
         let state = self.state.lock().unwrap();
-        json!({"roots":state["roots"], "uncovered":state["uncovered"],
-            "complete":!self.offline.load(Ordering::Relaxed) && !self.scanning.load(Ordering::Relaxed)
-                && state["initial_scan_complete"] == true})
+        // Never apply the latest completed coverage proof to an older snapshot,
+        // or to a publication whose reconciliation has not finished yet.
+        let complete = !self.offline.load(Ordering::Acquire)
+            && !self.scanning.load(Ordering::Acquire)
+            && self.snapshot.load().generation == generation
+            && state["initial_scan_complete"] == true
+            && matches!(state["state"].as_str(), Some("ready" | "watching"));
+        json!({"roots":state["roots"], "uncovered":state["uncovered"], "complete":complete})
     }
     fn directory_info(&self, request: &Value) -> Result<Value, String> {
         let paths: Vec<String> = serde_json::from_value(request["paths"].clone())
@@ -603,7 +609,7 @@ impl SearchEngine {
         let coverage = lease
             .as_ref()
             .map(|context| context.preferences["_snapshot_coverage"].clone())
-            .unwrap_or_else(|| self.relation_coverage());
+            .unwrap_or_else(|| self.relation_coverage(snapshot.generation));
         let cancelled = Arc::new(AtomicBool::new(false));
         let id = request["request_id"].as_str().map(str::to_owned);
         if let Some(id) = &id {
@@ -637,13 +643,15 @@ impl SearchEngine {
         let snapshot = self.pin(request["generation"].as_u64())?;
         let mut preferences = self.preferences.read().unwrap().clone();
         preferences["_snapshot_query_time_millis"] = json!(chrono::Local::now().timestamp_millis());
-        preferences["_snapshot_coverage"] = self.relation_coverage();
+        preferences["_snapshot_coverage"] = self.relation_coverage(snapshot.generation);
+        let scope_token = preferences["_snapshot_coverage"].to_string();
         let token = self.leases.retain(snapshot, preferences)?;
         let mut leased = request.clone();
         leased["snapshot_lease"] = json!(token);
         match self.query_inner(&leased) {
             Ok(mut response) => {
                 response["snapshot_lease"] = json!(token);
+                response["scope_token"] = json!(scope_token);
                 Ok(response)
             }
             Err(error) => {
@@ -704,7 +712,7 @@ impl SearchEngine {
             lease
                 .as_ref()
                 .map(|context| context.preferences["_snapshot_coverage"].clone())
-                .unwrap_or_else(|| self.relation_coverage())
+                .unwrap_or_else(|| self.relation_coverage(snapshot.generation))
         } else {
             Value::Null
         };

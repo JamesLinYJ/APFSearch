@@ -147,3 +147,116 @@ fn initial_page_lease_preserves_macros_and_order_for_later_selected_pages() {
         json!({"op":"release_snapshot","snapshot_lease":initial["snapshot_lease"]}),
     );
 }
+
+#[test]
+fn directory_information_preserves_missing_and_repeated_requests() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("files");
+    std::fs::create_dir(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let engine = SearchEngine::open(&temporary.path().join("db/index.sqlite")).unwrap();
+    success(
+        &engine,
+        json!({"op":"scan","roots":[root],"watch":false,"wait":true}),
+    );
+    let result = success(
+        &engine,
+        json!({"op":"directory_info","paths":[root, root.join("missing"), root]}),
+    );
+    assert_eq!(result["rows"].as_array().unwrap().len(), 3);
+    assert_eq!(result["rows"][0], result["rows"][2]);
+    assert_eq!(result["rows"][1]["complete"], false);
+    assert!(result["rows"][1]["recursive_size"].is_null());
+}
+
+#[test]
+fn latest_coverage_is_never_applied_to_a_newly_retained_older_snapshot() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().join("files");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("sample.txt"), "fixture").unwrap();
+    let root = root.canonicalize().unwrap();
+    let engine = SearchEngine::open(&temporary.path().join("db/index.sqlite")).unwrap();
+    success(
+        &engine,
+        json!({"op":"scan","roots":[root],"watch":false,"wait":true}),
+    );
+    let page = success(
+        &engine,
+        json!({"op":"query","text":"","retain_snapshot":true}),
+    );
+    let status = success(&engine, json!({"op":"status"}));
+    assert_eq!(page["scope_token"], status["scope_token"]);
+    success(
+        &engine,
+        json!({"op":"put_content","path":root.join("sample.txt"),"text":"fixture","properties":{"title":"changed"}}),
+    );
+    let newer = success(&engine, json!({"op":"status"}));
+    assert_ne!(page["generation"], newer["generation"]);
+    let old = success(
+        &engine,
+        json!({"op":"retain_snapshot","generation":page["generation"]}),
+    );
+    let result = success(
+        &engine,
+        json!({"op":"directory_info","paths":[root],"snapshot_lease":old["snapshot_lease"]}),
+    );
+    assert_eq!(result["rows"][0]["complete"], false);
+    let original = success(
+        &engine,
+        json!({"op":"directory_info","paths":[root],"snapshot_lease":page["snapshot_lease"]}),
+    );
+    assert_eq!(
+        original["rows"][0]["complete"], true,
+        "already captured coverage remains pinned"
+    );
+    success(
+        &engine,
+        json!({"op":"release_snapshot","snapshot_lease":old["snapshot_lease"]}),
+    );
+    success(
+        &engine,
+        json!({"op":"release_snapshot","snapshot_lease":page["snapshot_lease"]}),
+    );
+}
+
+#[test]
+fn legacy_property_mappings_remain_searchable_without_rewriting_indexed_rows() {
+    use filesearch_core::{index_store::IndexedFile, query};
+    use std::collections::HashMap;
+    let mut file: IndexedFile = serde_json::from_value(json!({
+        "id":1,"path":"/fixture/legacy.pdf","name":"legacy.pdf","extension":"pdf",
+        "size":42,"modified":0,"created":0,"changed":0,"is_dir":false,"is_symlink":false,
+        "file_id":1,"parent_id":0,"volume_id":"fixture","flags":0,
+        "properties":{"artist":"Legacy Author","exif":{"ISOSpeedRatings":[200],"FocalLength":50,"FNumber":2.8,"ExposureTime":0.01}}
+    })).unwrap();
+    file.prepare();
+    let before = file.properties.clone();
+    for expression in [
+        "author:legacy",
+        "iso:200",
+        "focallength:50",
+        "aperture:>=2",
+        "exposuretime:<1",
+    ] {
+        assert!(
+            query::parse(expression, &HashMap::new())
+                .unwrap()
+                .matches(&file, None)
+                .unwrap(),
+            "{expression}"
+        );
+    }
+    assert_eq!(file.properties, before);
+    file.properties["author"] = json!("Corrected Author");
+    assert!(!query::parse("author:legacy", &HashMap::new())
+        .unwrap()
+        .matches(&file, None)
+        .unwrap());
+    file.extension = "mp3".into();
+    file.properties.as_object_mut().unwrap().remove("author");
+    assert!(!query::parse("author:legacy", &HashMap::new())
+        .unwrap()
+        .matches(&file, None)
+        .unwrap());
+}

@@ -36,7 +36,7 @@ extension SearchWindowTests {
         SearchClient.shared.clear()
         c.currentStatus = ["success": true, "status_revision": 7, "roots": ["/UIRegression"], "generation": 1]
         c.pollStatus(); let status = SearchClient.shared.take("wait_status")
-        check("status_observation_uses_bounded_wait_not_periodic_status_poll", status?.request["after"] as? Int == 7 && status?.request["timeout_ms"] as? Int == 30_000)
+        check("status_observation_uses_bounded_wait_not_periodic_status_poll", (status?.request["after"] as? NSNumber)?.uint64Value == 7 && status?.request["timeout_ms"] as? Int == 30_000)
         c.stopStatusObservation()
         status?.completion(["success": true, "status_revision": 8, "roots": ["/UIRegression"]])
         await pump()

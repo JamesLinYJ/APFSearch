@@ -208,9 +208,17 @@ fn relation_scope(prefix: &str, base: &MatchOptions) -> Option<(bool, Option<boo
 /// Preserve old PDF indexes without rewriting the database or re-reading files.
 fn property<'a>(file: &'a IndexedFile, key: &str) -> Option<&'a Value> {
     file.properties.get(key).or_else(|| {
-        (key == "author" && file.extension.eq_ignore_ascii_case("pdf"))
-            .then(|| file.properties.get("artist"))
-            .flatten()
+        if key == "author" && file.extension.eq_ignore_ascii_case("pdf") {
+            return file.properties.get("artist");
+        }
+        let exif = file.properties.get("exif")?;
+        match key {
+            "iso" => exif.get("ISOSpeedRatings")?.as_array()?.first(),
+            "focallength" => exif.get("FocalLength"),
+            "aperture" => exif.get("FNumber"),
+            "exposuretime" => exif.get("ExposureTime"),
+            _ => None,
+        }
     })
 }
 fn modifier(options: &mut MatchOptions, key: &str) -> bool {
@@ -1551,7 +1559,7 @@ impl Term {
                 let unknown = match field.as_str() {
                     "size" => file.is_dir,
                     "modified" | "created" => false,
-                    other => file.properties.get(other).and_then(Value::as_f64).is_none(),
+                    other => property(file, other).and_then(Value::as_f64).is_none(),
                 };
                 if *negate {
                     !unknown
@@ -1577,7 +1585,7 @@ impl Term {
                     }
                     "modified" => Some(file.modified as f64),
                     "created" => Some(file.created as f64),
-                    other => file.properties.get(other).and_then(Value::as_f64),
+                    other => property(file, other).and_then(Value::as_f64),
                 };
                 n.is_some_and(|n| {
                     let inside = (if *include_low { n >= *low } else { n > *low })

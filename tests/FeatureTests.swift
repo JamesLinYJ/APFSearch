@@ -34,6 +34,58 @@ import PDFKit
     let history = files.perform(["action": "history", "limit": 1])
     check("history is paginated and contains completed identities", (history["operations"] as? [[String: Any]])?.first?["kind"] as? String == "operation" && history["total"] as? Int == 1)
     check("batch rename can be undone without replacing an existing target", files.undo()["success"] as? Bool == true && FileManager.default.fileExists(atPath: b.path))
+
+    // Namespace changes update ctime for every alias of an inode. They must not
+    // make the rest of this batch, or its undo history, look externally modified.
+    let linkDirectory = root.appendingPathComponent("hardlinks")
+    try FileManager.default.createDirectory(at: linkDirectory, withIntermediateDirectories: false)
+    let linkA = linkDirectory.appendingPathComponent("a.txt")
+    let linkB = linkDirectory.appendingPathComponent("b.txt")
+    try Data("hardlink fixture".utf8).write(to: linkA)
+    try FileManager.default.linkItem(at: linkA, to: linkB)
+    let linkFiles = FileOperations(directory: linkDirectory)
+    let linkBatch = linkFiles.perform(["action": "rename", "paths": [linkA.path, linkB.path],
+      "new_names": ["renamed-a.txt", "renamed-b.txt"]])
+    check("batch rename processes both hard-link directory entries", linkBatch["success"] as? Bool == true && linkBatch["completed"] as? Int == 2)
+    let renamedA = linkDirectory.appendingPathComponent("renamed-a.txt")
+    let renamedB = linkDirectory.appendingPathComponent("renamed-b.txt")
+    try check("renaming hard links preserves their shared object", OperationIdentity(renamedA).inode == OperationIdentity(renamedB).inode)
+    // Reopen the journal: in-memory adjustments alone cannot preserve undo.
+    let reopenedLinks = FileOperations(directory: linkDirectory)
+    check("undo latest hard-link rename after journal reopen", reopenedLinks.undo()["success"] as? Bool == true)
+    check("undo earlier alias after the latest undo updates ctime", reopenedLinks.undo()["success"] as? Bool == true)
+    try check("both restored aliases retain the original content", Data(contentsOf: linkA) == Data(contentsOf: linkB))
+    let nextRename = reopenedLinks.perform(["action": "rename", "paths": [linkA.path], "new_name": "renamed-a.txt"])
+    check("independent hard-link batch succeeds", nextRename["success"] as? Bool == true)
+    let linkStamp = try OperationIdentity(renamedA)
+    usleep(20_000)
+    try Data("modified fixture".utf8).write(to: linkB)
+    var linkTimes = [timespec(tv_sec: Int(linkStamp.modified), tv_nsec: Int(linkStamp.modifiedNS)),
+      timespec(tv_sec: Int(linkStamp.modified), tv_nsec: Int(linkStamp.modifiedNS))]
+    let linkTimeResult = linkB.path.withCString { path in
+      linkTimes.withUnsafeMutableBufferPointer { utimensat(AT_FDCWD, path, $0.baseAddress, 0) }
+    }
+    check("external alias edit cannot be hidden by restoring mtime", linkTimeResult == 0 && reopenedLinks.undo()["success"] as? Bool == false)
+
+    let dangling = linkDirectory.appendingPathComponent("dangling-link")
+    try FileManager.default.createSymbolicLink(atPath: dangling.path, withDestinationPath: "missing-target")
+    let movedLink = reopenedLinks.perform(["action": "rename", "paths": [dangling.path], "new_name": "renamed-link"])
+    try check("metadata handle renames the dangling symlink itself", movedLink["success"] as? Bool == true
+      && FileManager.default.destinationOfSymbolicLink(atPath: linkDirectory.appendingPathComponent("renamed-link").path) == "missing-target")
+    try check("undo restores the dangling symlink without following it", reopenedLinks.undo()["success"] as? Bool == true
+      && FileManager.default.destinationOfSymbolicLink(atPath: dangling.path) == "missing-target")
+
+    let missingConflictPath = root.appendingPathComponent("missing中文%@.txt").path
+    let missingRequest: [String: Any] = ["action": "copy", "paths": [missingConflictPath], "destination": root.path]
+    var missingPreview = missingRequest; missingPreview["dry_run"] = true
+    for response in [files.perform(missingPreview), files.perform(missingRequest)] {
+      let message = (response["conflict_messages"] as? [[String: Any]])?.first
+      check("top-level conflict protocol preserves stable keys and opaque paths", message?["key"] as? String == "error.file_not_found"
+        && (message?["args"] as? [[String: Any]])?.first?["value"] as? String == missingConflictPath)
+      if response["success"] as? Bool == false {
+        check("failed batch exposes structured errors for the client locale", (response["error_messages"] as? [[String: Any]])?.first?["key"] as? String == "error.file_not_found")
+      }
+    }
     let beforeNoop = try Data(contentsOf: files.journal)
     check("rename to same name is a no-op", files.perform(["action": "rename", "paths": [a.path], "new_name": a.lastPathComponent])["completed"] as? Int == 0)
     try check("no-op does not append journal rows", Data(contentsOf: files.journal) == beforeNoop)
@@ -177,7 +229,7 @@ import PDFKit
     let view = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
     view.string = "Property fixture"
     let pdf = PDFDocument(data: view.dataWithPDF(inside: view.bounds))!
-    pdf.documentAttributes = [.authorAttribute: "Fixture Author", .titleAttribute: "Fixture Title", .subjectAttribute: "Fixture Subject"]
+    pdf.documentAttributes = [PDFDocumentAttribute.authorAttribute: "Fixture Author", PDFDocumentAttribute.titleAttribute: "Fixture Title", PDFDocumentAttribute.subjectAttribute: "Fixture Subject"]
     check("create property fixture", pdf.write(to: pdfURL))
     let engine = SearchEngine()
     let properties = try ContentIndexer(engine: engine).extract(pdfURL).1

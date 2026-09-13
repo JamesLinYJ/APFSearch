@@ -4,7 +4,7 @@ import Foundation
 
 /// Device/inode plus both nanosecond timestamps. Never treat a failed stat as
 /// a zero-valued identity, and never follow the final symlink for file actions.
-struct OperationIdentity: Equatable {
+struct OperationIdentity: Hashable {
   let device: UInt64
   let inode: UInt64
   let size: Int64
@@ -19,10 +19,27 @@ struct OperationIdentity: Equatable {
     guard url.path.withCString({ lstat($0, &value) }) == 0 else {
       throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
     }
+    self.init(value)
+  }
+  init(_ value: stat) {
     device = UInt64(UInt32(bitPattern: value.st_dev)); inode = UInt64(value.st_ino)
     size = Int64(value.st_size); mode = UInt32(value.st_mode)
     modified = Int64(value.st_mtimespec.tv_sec); modifiedNS = Int64(value.st_mtimespec.tv_nsec)
     changed = Int64(value.st_ctimespec.tv_sec); changedNS = Int64(value.st_ctimespec.tv_nsec)
+  }
+  init?(wire: [String: Any]) {
+    guard let device = wire["device_id"] as? NSNumber, let inode = wire["file_id"] as? NSNumber,
+      let size = wire["size"] as? NSNumber, let mode = wire["mode"] as? NSNumber,
+      let modified = wire["modified"] as? NSNumber, let modifiedNS = wire["modified_nsec"] as? NSNumber,
+      let changed = wire["changed"] as? NSNumber, let changedNS = wire["changed_nsec"] as? NSNumber else { return nil }
+    self.device = device.uint64Value; self.inode = inode.uint64Value
+    self.size = size.int64Value; self.mode = mode.uint32Value
+    self.modified = modified.int64Value; self.modifiedNS = modifiedNS.int64Value
+    self.changed = changed.int64Value; self.changedNS = changedNS.int64Value
+  }
+  func hasSamePayload(as other: Self) -> Bool {
+    device == other.device && inode == other.inode && size == other.size && mode == other.mode
+      && modified == other.modified && modifiedNS == other.modifiedNS
   }
   var wire: [String: Any] {
     ["device_id": device, "file_id": inode, "size": size, "mode": mode,
@@ -58,6 +75,39 @@ struct OperationIdentity: Equatable {
     // Indexed directories deliberately do not expose a POSIX byte size.
     return (mode & UInt32(S_IFMT) == UInt32(S_IFDIR))
       || (value["size"] as? NSNumber)?.int64Value == size
+  }
+}
+
+/// Pin one object at a time, including the final symlink. Metadata-only handles
+/// survive renames and cross-volume unlinking without reading file contents.
+private final class OperationHandle {
+  let descriptor: Int32
+  init(_ url: URL) throws {
+    descriptor = url.path.withCString { Darwin.open($0, O_EVTONLY | O_SYMLINK | O_CLOEXEC) }
+    guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+  }
+  func identity() throws -> OperationIdentity {
+    var value = stat()
+    guard fstat(descriptor, &value) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+    return OperationIdentity(value)
+  }
+  deinit { Darwin.close(descriptor) }
+}
+
+/// Only changes observed across our own successful namespace operations can
+/// advance an expected identity. External ctime changes still fail exact checks.
+/// Path compression makes replay linear even for many operations on one inode.
+private struct OperationIdentityChanges {
+  private var changes = [OperationIdentity: OperationIdentity]()
+  mutating func record(from before: OperationIdentity, to after: OperationIdentity) {
+    guard before != after, before.hasSamePayload(as: after) else { return }
+    changes[before] = after
+  }
+  mutating func current(_ identity: OperationIdentity) -> OperationIdentity {
+    var result = identity, visited = Set<OperationIdentity>()
+    while let next = changes[result], visited.insert(result).inserted { result = next }
+    for earlier in visited { changes[earlier] = result == earlier ? nil : result }
+    return result
   }
 }
 
@@ -97,6 +147,7 @@ final class OperationJournal {
   }
   func history() throws -> [[String: Any]] {
     var ordered = [String](), records = [String: [String: Any]]()
+    var identities = OperationIdentityChanges()
     if FileManager.default.fileExists(atPath: legacyURL.path) {
       let data = try Data(contentsOf: legacyURL)
       guard let old = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
@@ -115,7 +166,11 @@ final class OperationJournal {
     func consume(_ line: Data) {
       guard let row = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
       let kind = row["kind"] as? String ?? "operation"
-      if let target = row["target_id"] as? String, kind == "undo" || kind == "undo_intent" {
+      if kind == "identity_change", let before = row["before"] as? [String: Any],
+        let after = row["after"] as? [String: Any],
+        let original = OperationIdentity(wire: before), let updated = OperationIdentity(wire: after) {
+        identities.record(from: original, to: updated)
+      } else if let target = row["target_id"] as? String, kind == "undo" || kind == "undo_intent" {
         records[target]?["undone"] = kind == "undo"
         records[target]?["undo_pending"] = kind == "undo_intent"
       } else if let id = row["id"] as? String {
@@ -131,7 +186,13 @@ final class OperationJournal {
       guard pending.count <= 4 * 1024 * 1024 else { throw LT("files.invalid_journal") }
     }
     // An unterminated tail was never acknowledged as durable; ignore it.
-    return ordered.compactMap { records[$0] }
+    return ordered.compactMap { id in
+      guard var row = records[id] else { return nil }
+      if let after = row["after"] as? [String: Any], let identity = OperationIdentity(wire: after) {
+        row["after"] = identities.current(identity).wire
+      }
+      return row
+    }
   }
 }
 
@@ -309,14 +370,18 @@ final class FileOperations {
       }
     }
     let conflicts = preview.filter { $0["skipped"] as? Bool != true }.flatMap { $0["conflicts"] as? [String] ?? [] }
+    let conflictMessages = preview.filter { $0["skipped"] as? Bool != true }
+      .flatMap { $0["conflict_messages"] as? [[String: Any]] ?? [] }
     let normalizedExpected: [[String: Any]] = urls.compactMap { source in
       stamps[source.path].map { $0.wire.merging(["path": source.path]) { _, new in new } }
     }
     if request["dry_run"] as? Bool == true {
-      return ["success": true, "conflicts": conflicts, "preview": preview, "expected": normalizedExpected, "warnings": []]
+      return ["success": true, "conflicts": conflicts, "conflict_messages": conflictMessages,
+        "preview": preview, "expected": normalizedExpected, "warnings": []]
     }
     guard policy != "stop" || conflicts.isEmpty else {
-      return ["success": false, "error": conflicts.joined(separator: "\n"), "conflicts": conflicts, "preview": preview]
+      return ["success": false, "error": conflicts.joined(separator: "\n"), "error_messages": conflictMessages,
+        "conflicts": conflicts, "conflict_messages": conflictMessages, "preview": preview]
     }
     let eligible = preview.filter { $0["skipped"] as? Bool != true && $0["noop"] as? Bool != true && ($0["conflicts"] as? [String] ?? []).isEmpty }
     guard !eligible.isEmpty else {
@@ -340,6 +405,7 @@ final class FileOperations {
     }
     try handle.synchronize()
     var results = [[String: Any]](), completed = 0, failures = 0, stopped = false
+    var identities = OperationIdentityChanges()
     for row in preview {
       var result = row
       let source = row["source"] as? String ?? ""
@@ -354,7 +420,11 @@ final class FileOperations {
       }
       let from = URL(fileURLWithPath: source)
       do {
-        guard let expectedStamp = stamps[source], try OperationIdentity(from) == expectedStamp else { throw LT("files.source_changed") }
+        guard let originalStamp = stamps[source] else { throw LT("files.source_changed") }
+        let expectedStamp = identities.current(originalStamp)
+        let sourceHandle = try OperationHandle(from)
+        guard try sourceHandle.identity() == expectedStamp,
+          try OperationIdentity(from) == expectedStamp else { throw LT("files.source_changed") }
         let parent = try OperationIdentity(from.deletingLastPathComponent().resolvingSymlinksInPath())
         guard let previousParent = parents[source], parent.device == previousParent.device,
           parent.inode == previousParent.inode else { throw LT("files.source_changed") }
@@ -376,6 +446,11 @@ final class FileOperations {
             actualParent.inode == expectedParent.inode else { throw LT("files.source_changed") }
           if action == "copy" { try fm.copyItem(at: from, to: actual) } else { try fm.moveItem(at: from, to: actual) }
           completed += 1
+        }
+        let after = try sourceHandle.identity()
+        if action != "copy", expectedStamp != after, expectedStamp.hasSamePayload(as: after) {
+          try history.append(["kind": "identity_change", "before": expectedStamp.wire, "after": after.wire], to: handle)
+          identities.record(from: expectedStamp, to: after)
         }
         result["destination"] = actual.path; result["after"] = try OperationIdentity(actual).wire
         result["before"] = expectedStamp.wire; result["kind"] = "operation"
@@ -408,7 +483,9 @@ final class FileOperations {
     guard let id = record["id"] as? String, let dest = record["destination"] as? String,
       let source = record["source"] as? String, let expected = record["after"] as? [String: Any] else { throw LT("error.operation_record_incomplete") }
     let target = URL(fileURLWithPath: dest), original = URL(fileURLWithPath: source)
-    guard try OperationIdentity(target).matches(expected) else { throw LT("error.undo_destination_changed") }
+    let targetHandle = try OperationHandle(target)
+    let before = try targetHandle.identity()
+    guard before.matches(expected), try OperationIdentity(target) == before else { throw LT("error.undo_destination_changed") }
     if let parent = record["source_parent"] as? [String: Any] {
       let current = try OperationIdentity(original.deletingLastPathComponent().resolvingSymlinksInPath())
       guard (parent["device_id"] as? NSNumber)?.uint64Value == current.device,
@@ -420,6 +497,10 @@ final class FileOperations {
     try handle.synchronize()
     if record["action"] as? String == "copy" { try fm.trashItem(at: target, resultingItemURL: nil) }
     else { try fm.moveItem(at: target, to: original) }
+    let after = try targetHandle.identity()
+    if before != after, before.hasSamePayload(as: after) {
+      try history.append(["kind": "identity_change", "before": before.wire, "after": after.wire], to: handle)
+    }
     try history.append(["kind": "undo", "target_id": id, "time": Date().timeIntervalSince1970], to: handle)
     try handle.synchronize()
     return LT("files.last_file_operation_undone").adding(to: ["success": true])

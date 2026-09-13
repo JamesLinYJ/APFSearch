@@ -185,7 +185,7 @@ impl Hierarchy {
     ) -> Result<Value, String> {
         let incomplete = self.incomplete(snapshot, coverage, cancelled)?;
         let requested: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
-        let mut rows = Vec::new();
+        let mut found = HashMap::new();
         for (index, &slot) in self.directory_slots.iter().enumerate() {
             check(cancelled)?;
             let file = &snapshot.entries[slot as usize];
@@ -193,11 +193,13 @@ impl Hierarchy {
                 continue;
             }
             let complete = !incomplete[index] && self.sizes[index].is_some();
-            rows.push(json!({"path":file.path, "complete":complete,
+            found.insert(file.path.as_str(), json!({"path":file.path, "complete":complete,
                 "recursive_size":if complete { self.sizes[index] } else { None },
                 "indexed_logical_size":self.sizes[index], "child_count":self.own_files[index]+self.own_folders[index],
                 "descendant_count":self.all_files[index]+self.all_folders[index]}));
         }
+        let rows: Vec<_> = paths.iter().map(|path| found.get(path.as_str()).cloned().unwrap_or_else(||
+            json!({"path":path,"complete":false,"recursive_size":null,"reason":"not_an_indexed_directory"}))).collect();
         Ok(
             json!({"rows":rows,"generation":snapshot.generation,"size_semantics":"logical directory-entry sum; not physical or reclaimable bytes"}),
         )
