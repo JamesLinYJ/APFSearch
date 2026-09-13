@@ -1,0 +1,218 @@
+diff --git a/core/src/query.rs b/core/src/query.rs
+index 3384d90..9372c1f 100644
+--- a/core/src/query.rs
++++ b/core/src/query.rs
+@@ -59,2 +59,4 @@ pub enum Term {
+     },
++    Related { recursive: bool, query: Box<Query> },
++    Resolved(crate::relations::ResolvedPredicate),
+     Extension(Vec<String>),
+@@ -63,2 +65,3 @@ pub enum Term {
+     Hidden,
++    Flags(u32),
+     Unknown {
+@@ -142,2 +145,37 @@ fn keyword(s: &str) -> String {
+ }
++fn text_property(key: &str) -> bool {
++    matches!(key, "artist" | "album" | "title" | "kind" | "author" | "subject" | "keywords" |
++        "creator" | "producer" | "genre" | "copyright" | "composer" | "cameramake" | "cameramodel")
++}
++fn numeric_property(key: &str) -> bool {
++    matches!(key, "width" | "height" | "duration" | "pages" | "orientation" | "iso" | "focallength" | "aperture" | "exposuretime")
++}
++fn relation_kind(key: &str) -> Option<(bool, Option<bool>)> {
++    match key {
++        "child" => Some((false, None)), "childfile" => Some((false, Some(false))),
++        "childfolder" => Some((false, Some(true))), "descendant" => Some((true, None)),
++        "descendantfile" => Some((true, Some(false))), "descendantfolder" => Some((true, Some(true))),
++        _ => None,
++    }
++}
++fn relation_scope(prefix: &str, base: &MatchOptions) -> Option<(bool, Option<bool>, MatchOptions)> {
++    let mut options = base.clone();
++    let mut keys = prefix.strip_suffix(':')?.split(':').peekable();
++    while let Some(key) = keys.next() {
++        let key = keyword(key);
++        if keys.peek().is_none() {
++            let (recursive, kind) = relation_kind(&key)?;
++            return Some((recursive, kind, options));
++        }
++        if !modifier(&mut options, &key) { return None; }
++    }
++    None
++}
++/// Preserve old PDF indexes without rewriting the database or re-reading files.
++fn property<'a>(file: &'a IndexedFile, key: &str) -> Option<&'a Value> {
++    file.properties.get(key).or_else(|| {
++        (key == "author" && file.extension.eq_ignore_ascii_case("pdf"))
++            .then(|| file.properties.get("artist")).flatten()
++    })
++}
+ fn modifier(options: &mut MatchOptions, key: &str) -> bool {
+@@ -196,3 +234,3 @@ fn scoped_options(prefix: &str, base: &MatchOptions) -> Option<(MatchOptions, Op
+             "extension" => options.target = Some(TextTarget::Extension),
+-            "artist" | "album" | "title" | "kind" | "author" => {
++            key if text_property(key) => {
+                 options.target = Some(TextTarget::Property(keyword(key)))
+@@ -324,3 +362,3 @@ fn lex(input: &str) -> Result<Vec<Token>, String> {
+                 }
+-                numeric_comparison = matches!(
++                numeric_comparison = numeric_property(&key) || crate::relations::is_metric(&key) || matches!(
+                     key.as_str(),
+@@ -483,2 +521,7 @@ impl Parser<'_> {
+                 if literal_from != Some(0) && self.tokens.get(self.pos) == Some(&Token::L) {
++                    if let Some((recursive, kind, scoped)) = relation_scope(&s, options) {
++                        self.pos += 1;
++                        let query = restrict_type(self.group(&scoped)?, kind);
++                        return Ok(Query::Term(Term::Related { recursive, query: Box::new(query) }));
++                    }
+                     if let Some((scoped, is_dir)) = scoped_options(&s, options) {
+@@ -560,2 +603,6 @@ fn atom_with_options(
+         };
++        if let Some((recursive, kind)) = relation_kind(&keyword(key)) {
++            let inner = restrict_type(text_query(val, &options, TextTarget::Field(options.field))?, kind);
++            return Ok(restrict_type(Query::Term(Term::Related { recursive, query: Box::new(inner) }), is_dir));
++        }
+         if modifier(&mut options, key) {
+@@ -589,3 +636,3 @@ fn atom_with_options(
+             }
+-            "artist" | "album" | "title" | "kind" | "author" => {
++            key if text_property(key) => {
+                 options.target = Some(TextTarget::Property(keyword(key)));
+@@ -616,6 +663,27 @@ fn atom_with_options(
+                 "hidden" if val.is_empty() => Term::Hidden, "symlink" if val.is_empty() => Term::IsSymlink,
+-                "size" | "width" | "height" | "duration" | "pages" => number_term(&key, val, false, options.now)?,
++                "empty" if val.is_empty() => number_term("childcount", "=0", false, options.now)?,
++                "size" => number_term(&key, val, false, options.now)?,
++                key if numeric_property(key) || crate::relations::is_metric(key) => number_term(key, val, false, options.now)?,
+                 "dm" | "datemodified" | "modified" => number_term("modified", val, true, options.now)?,
+                 "dc" | "datecreated" | "created" => number_term("created", val, true, options.now)?,
+-                "attrib" | "attributes" => match val { "h" => Term::Hidden, "l" => Term::IsSymlink, _ => return Err("Only macOS hidden (h) and symlink (l) attributes are supported".into()) },
++                "attrib" | "attributes" => {
++                    let terms = val.chars().map(|c| match c.to_ascii_lowercase() {
++                        'h' => Ok(Query::Term(Term::Hidden)), 'l' => Ok(Query::Term(Term::IsSymlink)),
++                        _ => Err("attrib: supports macOS hidden (h) and symlink (l); use flags: for native flags".to_string()),
++                    }).collect::<Result<Vec<_>, _>>()?;
++                    if terms.is_empty() { return Err("attrib: requires at least one attribute".into()); }
++                    return Ok(restrict_type(Query::And(terms), is_dir));
++                },
++                "flags" => {
++                    let mut flags = 0;
++                    for name in val.split(';') {
++                        flags |= match keyword(name).as_str() {
++                            "hidden" => 0x8000, "immutable" => 0x0002 | 0x0002_0000,
++                            "append" => 0x0004 | 0x0004_0000, "nodump" => 0x0001,
++                            "compressed" => 0x0020, "dataless" | "placeholder" => 0x4000_0000,
++                            _ => return Err(format!("Unsupported native flag '{name}'")),
++                        };
++                    }
++                    Term::Flags(flags)
++                },
+                 _ => return Err(format!("Unsupported search function '{key}:' (Windows-only properties are not silently ignored)")),
+@@ -1086,2 +1154,37 @@ fn number_term(
+ impl Query {
++    pub(crate) fn requires_relations(&self) -> bool {
++        match self {
++            Self::Term(Term::Related { .. } | Term::Resolved(_)) => true,
++            Self::Term(Term::Number { field, .. } | Term::Unknown { field, .. }) => crate::relations::is_metric(field),
++            Self::And(children) | Self::Or(children) => children.iter().any(Self::requires_relations),
++            Self::Not(child) => child.requires_relations(),
++            _ => false,
++        }
++    }
++    /// Snapshot relations must distinguish unknown descendants from absence.
++    /// This evaluator only consults already indexed properties/content.
++    pub(crate) fn indexed_truth(&self, file: &IndexedFile, content: Option<&str>) -> Result<Option<bool>, String> {
++        match self {
++            Self::And(children) | Self::Or(children) => {
++                let and = matches!(self, Self::And(_));
++                let mut unknown = false;
++                for child in children {
++                    match child.indexed_truth(file, content)? {
++                        Some(value) if value != and => return Ok(Some(!and)),
++                        None => unknown = true,
++                        _ => (),
++                    }
++                }
++                Ok((!unknown).then_some(and))
++            }
++            Self::Not(child) => Ok(child.indexed_truth(file, content)?.map(|value| !value)),
++            Self::Term(Term::Resolved(result)) => Ok(result.truth(file)),
++            Self::Term(Term::Related { .. }) => Err("Relationship predicates require a search snapshot".into()),
++            Self::Term(Term::PropertyText(key, _) | Term::Matched { target: TextTarget::Property(key), .. })
++                if property(file, key).is_none() => Ok(None),
++            Self::Term(Term::Number { field, .. }) if numeric_property(field) && property(file, field).and_then(Value::as_f64).is_none() => Ok(None),
++            _ if content.is_none() && self.requires_content() => Ok(None),
++            _ => self.matches_inner(file, content, &OnceCell::new()).map(Some),
++        }
++    }
+     /// Conservative cache hint: date predicates may contain relative periods.
+@@ -1091,2 +1194,3 @@ impl Query {
+         match self {
++            Self::Term(Term::Related { query, .. }) => query.may_depend_on_clock(),
+             Self::Term(Term::Number { field, .. }) => {
+@@ -1102,2 +1206,3 @@ impl Query {
+         match self {
++            Self::Term(Term::Related { query, .. }) => query.requires_properties(),
+             Self::Term(Term::PropertyText(..))
+@@ -1108,3 +1213,3 @@ impl Query {
+             Self::Term(Term::Number { field, .. }) | Self::Term(Term::Unknown { field, .. }) => {
+-                matches!(field.as_str(), "width" | "height" | "duration" | "pages")
++                numeric_property(field)
+             }
+@@ -1120,2 +1225,4 @@ impl Query {
+         match self {
++            Self::Term(Term::Related { .. }) => Ok(None),
++            Self::Term(Term::Resolved(result)) => Ok(result.truth(file)),
+             Self::Term(Term::Content { .. })
+@@ -1127,3 +1234,3 @@ impl Query {
+             Self::Term(Term::Number { field, .. }) | Self::Term(Term::Unknown { field, .. })
+-                if matches!(field.as_str(), "width" | "height" | "duration" | "pages") =>
++                if numeric_property(field) =>
+             {
+@@ -1162,2 +1269,4 @@ impl Query {
+         match self {
++            Self::Term(Term::Related { .. }) => Ok(None),
++            Self::Term(Term::Resolved(result)) => Ok(result.truth(file)),
+             Self::All => Ok(Some(true)),
+@@ -1197,2 +1306,3 @@ impl Query {
+         match self {
++            Self::Term(Term::Related { query, .. }) => query.requires_content(),
+             Self::Term(Term::Content { .. })
+@@ -1218,2 +1328,5 @@ impl Query {
+     pub fn matches(&self, file: &IndexedFile, content: Option<&str>) -> Result<bool, String> {
++        if self.requires_relations() {
++            return Ok(self.indexed_truth(file, content)? == Some(true));
++        }
+         self.matches_inner(file, content, &OnceCell::new())
+@@ -1292,4 +1405,18 @@ impl Query {
+ impl Term {
++    pub(crate) fn matches_numeric_value(&self, value: Option<f64>) -> bool {
++        match self {
++            Self::Unknown { negate, .. } => value.is_none() != *negate,
++            Self::Number { low, high, include_low, include_high, negate, .. } => value.is_some_and(|n| {
++                let inside = (if *include_low { n >= *low } else { n > *low }) &&
++                    (if *include_high { n <= *high } else { n < *high });
++                inside != *negate
++            }),
++            _ => false,
++        }
++    }
+     fn matches(&self, file: &IndexedFile, content: Option<&str>) -> Result<bool, String> {
+         Ok(match self {
++            Self::Related { .. } => return Err("Relationship predicates require a search snapshot".into()),
++            Self::Resolved(result) => result.truth(file) == Some(true),
++            Self::Flags(mask) => file.flags & mask != 0,
+             Self::Text {
+@@ -1321,3 +1448,3 @@ impl Term {
+                 },
+-                TextTarget::Property(key) => match file.properties.get(key).and_then(Value::as_str)
++                TextTarget::Property(key) => match property(file, key).and_then(Value::as_str)
+                 {
+@@ -1342,5 +1469,3 @@ impl Term {
+             }),
+-            Self::PropertyText(key, needle) => file
+-                .properties
+-                .get(key)
++            Self::PropertyText(key, needle) => property(file, key)
+                 .and_then(Value::as_str)

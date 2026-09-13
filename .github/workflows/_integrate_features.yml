@@ -1,0 +1,57 @@
+name: Integrate and validate feature sources
+on:
+  push:
+    branches: [perf/bounded-incremental-index]
+    paths:
+      - .github/workflows/_integrate_features.yml
+      - scripts/feature-integration/**
+permissions:
+  contents: write
+concurrency:
+  group: feature-integration
+  cancel-in-progress: true
+jobs:
+  integrate:
+    if: github.ref == 'refs/heads/perf/bounded-incremental-index'
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      PCRE2_SYS_STATIC: "1"
+      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      FILESEARCH_COMPILE_ONLY: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install formatting and lint tools
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
+      - name: Apply reviewed source patches
+        run: |
+          test "$(git hash-object core/src/lib.rs)" = fc17aa63d4bc8d3496fcb39f7b4e66a6c877f87e
+          git apply --check scripts/feature-integration/engine.patch scripts/feature-integration/query.patch scripts/feature-integration/index.patch
+          git apply scripts/feature-integration/engine.patch scripts/feature-integration/query.patch scripts/feature-integration/index.patch
+          cargo fmt --manifest-path core/Cargo.toml
+          git diff --check
+      - name: All Rust regressions
+        run: cargo test --locked --no-fail-fast --manifest-path core/Cargo.toml -- --test-threads=1
+      - name: Clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
+      - name: Complete macOS build
+        if: ${{ !cancelled() }}
+        run: ./build.sh
+      - name: Preserve formatted source for diagnosis
+        if: ${{ !cancelled() }}
+        run: tar -czf "$RUNNER_TEMP/feature-core-source.tar.gz" core/src core/tests
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: feature-core-source
+          path: ${{ runner.temp }}/feature-core-source.tar.gz
+          retention-days: 3
+      - name: Commit only the validated core sources
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add core/src core/tests
+          git diff --cached --check
+          git commit -m 'feat: integrate indexed directory queries, clone evidence and status notifications'
+          git push origin HEAD:refs/heads/perf/bounded-incremental-index
