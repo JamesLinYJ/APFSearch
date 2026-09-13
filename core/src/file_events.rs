@@ -134,7 +134,7 @@ impl DispatchQueue {
     fn new() -> io::Result<Self> {
         // dispatch_queue_create returns a retained serial queue when attr is NULL.
         let pointer = unsafe {
-            ffi::dispatch_queue_create(c"app.filesearch.filesystem".as_ptr(), ptr::null())
+            ffi::dispatch_queue_create(c"app.apfsearch.filesystem".as_ptr(), ptr::null())
         };
         NonNull::new(pointer)
             .map(Self)

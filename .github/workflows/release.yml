@@ -31,11 +31,13 @@ jobs:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Install universal macOS Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Validate selected source before importing credentials
         env:
           PCRE2_SYS_STATIC: "1"
-          MACOSX_DEPLOYMENT_TARGET: "15.0"
-          FILESEARCH_COMPILE_ONLY: "1"
+          MACOSX_DEPLOYMENT_TARGET: "14.0"
+          APFSEARCH_COMPILE_ONLY: "1"
         run: |
           test "$(git rev-parse HEAD)" = "$RELEASE_COMMIT"
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
@@ -57,11 +59,11 @@ jobs:
           fi
       - name: Import temporary Developer ID keychain
         env:
-          CERTIFICATES_P12: ${{ secrets.FILESEARCH_CERTIFICATES_P12 }}
-          CERTIFICATES_PASSWORD: ${{ secrets.FILESEARCH_CERTIFICATES_PASSWORD }}
+          CERTIFICATES_P12: ${{ secrets.APFSEARCH_CERTIFICATES_P12 }}
+          CERTIFICATES_PASSWORD: ${{ secrets.APFSEARCH_CERTIFICATES_PASSWORD }}
         run: |
           test -n "$CERTIFICATES_P12" && test -n "$CERTIFICATES_PASSWORD"
-          KEYCHAIN="$RUNNER_TEMP/filesearch-signing.keychain-db"
+          KEYCHAIN="$RUNNER_TEMP/apfsearch-signing.keychain-db"
           PASSWORD="$(openssl rand -hex 32)"
           echo "::add-mask::$PASSWORD"
           security list-keychains -d user > "$RUNNER_TEMP/original-keychains.txt"
@@ -76,19 +78,19 @@ jobs:
       - name: Build, notarize and sign update metadata
         env:
           PCRE2_SYS_STATIC: "1"
-          FILESEARCH_SIGN_IDENTITY: ${{ secrets.FILESEARCH_SIGN_IDENTITY }}
-          FILESEARCH_INSTALLER_IDENTITY: ${{ secrets.FILESEARCH_INSTALLER_IDENTITY }}
+          APFSEARCH_SIGN_IDENTITY: ${{ secrets.APFSEARCH_SIGN_IDENTITY }}
+          APFSEARCH_INSTALLER_IDENTITY: ${{ secrets.APFSEARCH_INSTALLER_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          FILESEARCH_UPDATE_PUBLIC_KEY: ${{ secrets.FILESEARCH_UPDATE_PUBLIC_KEY }}
-          FILESEARCH_UPDATE_PRIVATE_KEY: ${{ secrets.FILESEARCH_UPDATE_PRIVATE_KEY }}
-          FILESEARCH_RELEASE_DIR: ${{ runner.temp }}/release
+          APFSEARCH_UPDATE_PUBLIC_KEY: ${{ secrets.APFSEARCH_UPDATE_PUBLIC_KEY }}
+          APFSEARCH_UPDATE_PRIVATE_KEY: ${{ secrets.APFSEARCH_UPDATE_PRIVATE_KEY }}
+          APFSEARCH_RELEASE_DIR: ${{ runner.temp }}/release
         run: |
-          export FILESEARCH_RELEASE_VERSION="${RELEASE_TAG#v}"
+          export APFSEARCH_RELEASE_VERSION="${RELEASE_TAG#v}"
           APP_NAME="$(python3 scripts/build_identity.py applicationExecutable)"
-          export FILESEARCH_UPDATE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${APP_NAME}.pkg"
-          export FILESEARCH_UPDATE_FEED_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/update.json"
+          export APFSEARCH_UPDATE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${APP_NAME}.pkg"
+          export APFSEARCH_UPDATE_FEED_URL="https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/update.json"
           bash scripts/release.sh
       - name: Publish immutable release
         env:
@@ -112,7 +114,7 @@ jobs:
           saved = temp/'original-keychains.txt'
           if saved.exists():
               subprocess.run(['security', 'list-keychains', '-d', 'user', '-s', *shlex.split(saved.read_text())], check=True)
-          keychain = temp/'filesearch-signing.keychain-db'
+          keychain = temp/'apfsearch-signing.keychain-db'
           if keychain.exists():
               subprocess.run(['security', 'delete-keychain', str(keychain)], check=True)
           (temp/'certificates.p12').unlink(missing_ok=True)

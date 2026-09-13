@@ -2,9 +2,9 @@ use super::*;
 use std::os::unix::fs::MetadataExt;
 
 #[test]
-#[ignore = "Read-only existing million-row fixture; requires FILESEARCH_NUMERIC_PROFILE_INDEX"]
+#[ignore = "Read-only existing million-row fixture; requires APFSEARCH_NUMERIC_PROFILE_INDEX"]
 fn numeric_first_queries_on_existing_prepared_fixture() {
-    let path = PathBuf::from(std::env::var("FILESEARCH_NUMERIC_PROFILE_INDEX").unwrap());
+    let path = PathBuf::from(std::env::var("APFSEARCH_NUMERIC_PROFILE_INDEX").unwrap());
     let connection =
         rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
             .unwrap();

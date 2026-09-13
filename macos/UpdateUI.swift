@@ -20,19 +20,19 @@ final class UpdateController: NSObject, NSMenuItemValidation {
     let check = NSMenuItem(title: L("update.check"), action: #selector(checkNow), keyEquivalent: "")
     check.target = self; menu.addItem(check)
     let automatic = NSMenuItem(title: L("update.automatic"), action: #selector(toggleAutomatic), keyEquivalent: "")
-    automatic.target = self; automatic.state = UserDefaults.standard.bool(forKey: "FileSearch.AutomaticUpdates") ? .on : .off
+    automatic.target = self; automatic.state = UserDefaults.standard.bool(forKey: "APFSearch.AutomaticUpdates") ? .on : .off
     automaticItem = automatic; menu.addItem(automatic)
   }
   func applicationBecameActive() {
     if !busy { DownloadedInstaller.removeAbandoned(installerIsRunning: installerIsRunning) }
-    guard UpdateManager.shared.configured, UserDefaults.standard.bool(forKey: "FileSearch.AutomaticUpdates"), !busy else { return }
-    let previous = UserDefaults.standard.double(forKey: "FileSearch.LastUpdateCheck")
+    guard UpdateManager.shared.configured, UserDefaults.standard.bool(forKey: "APFSearch.AutomaticUpdates"), !busy else { return }
+    let previous = UserDefaults.standard.double(forKey: "APFSearch.LastUpdateCheck")
     guard Date().timeIntervalSince1970 - previous >= 86_400 else { return }
     check(interactive: false)
   }
   @objc private func toggleAutomatic() {
-    let enabled = !UserDefaults.standard.bool(forKey: "FileSearch.AutomaticUpdates")
-    UserDefaults.standard.set(enabled, forKey: "FileSearch.AutomaticUpdates")
+    let enabled = !UserDefaults.standard.bool(forKey: "APFSearch.AutomaticUpdates")
+    UserDefaults.standard.set(enabled, forKey: "APFSearch.AutomaticUpdates")
     automaticItem?.state = enabled ? .on : .off
     if enabled { applicationBecameActive() }
   }
@@ -42,7 +42,7 @@ final class UpdateController: NSObject, NSMenuItemValidation {
     guard !busy, !installerIsRunning else { return }
     DownloadedInstaller.removeAbandoned(installerIsRunning: false)
     busy = true
-    if UpdateManager.shared.configured { UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "FileSearch.LastUpdateCheck") }
+    if UpdateManager.shared.configured { UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "APFSearch.LastUpdateCheck") }
     cancellation = UpdateManager.shared.check { [weak self] result in
       guard let self else { return }; self.cancellation = nil
       switch result {

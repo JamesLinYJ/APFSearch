@@ -155,7 +155,7 @@ fn one_thousand_sibling_scopes_require_only_path_depth_probes() {
 #[test]
 fn normalization_cancellation_never_returns_a_partial_scope_set() {
     let roots: Vec<_> = (0..16)
-        .map(|index| format!("/filesearch-cancel-fixture/{index}"))
+        .map(|index| format!("/apfsearch-cancel-fixture/{index}"))
         .collect();
     assert!(scanner::compact_roots(roots.clone(), || true).is_none());
     assert!(scanner::normalize_roots_until(&roots, || true).is_none());

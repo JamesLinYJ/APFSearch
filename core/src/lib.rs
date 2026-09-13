@@ -1,5 +1,5 @@
 //! Thread-safe C ABI. All JSON operations share the same engine used by the GUI and CLI.
-//! Callers must not close an engine handle while another thread is entering filesearch_engine_call.
+//! Callers must not close an engine handle while another thread is entering apfsearch_engine_call.
 mod clone_identity;
 #[cfg(all(test, target_os = "macos"))]
 mod content_read_tests;
@@ -2105,7 +2105,7 @@ impl Drop for RequestGuard<'_> {
 /// `path` must be null or a readable NUL-terminated string that remains valid
 /// for this call. Close a returned non-null handle exactly once.
 #[no_mangle]
-pub unsafe extern "C" fn filesearch_engine_open(path: *const c_char) -> *mut c_void {
+pub unsafe extern "C" fn apfsearch_engine_open(path: *const c_char) -> *mut c_void {
     if path.is_null() {
         return std::ptr::null_mut();
     }
@@ -2121,11 +2121,11 @@ pub unsafe extern "C" fn filesearch_engine_open(path: *const c_char) -> *mut c_v
 /// Execute one JSON operation and return a caller-owned response string.
 ///
 /// # Safety
-/// A non-null `handle` must come from `filesearch_engine_open` and remain open throughout
+/// A non-null `handle` must come from `apfsearch_engine_open` and remain open throughout
 /// this call. `request` must be null or a readable NUL-terminated string. Release
-/// the result with `filesearch_engine_free_string`, never another allocator.
+/// the result with `apfsearch_engine_free_string`, never another allocator.
 #[no_mangle]
-pub unsafe extern "C" fn filesearch_engine_call(
+pub unsafe extern "C" fn apfsearch_engine_call(
     handle: *mut c_void,
     request: *const c_char,
 ) -> *mut c_char {
@@ -2145,13 +2145,13 @@ pub unsafe extern "C" fn filesearch_engine_call(
         .unwrap_or_else(|_| json!({"success":false,"error":"Search engine panic contained at FFI boundary","protocol_version":PROTOCOL_VERSION}));
     CString::new(response.to_string()).unwrap().into_raw()
 }
-/// Release a response allocated by `filesearch_engine_call`.
+/// Release a response allocated by `apfsearch_engine_call`.
 ///
 /// # Safety
 /// `value` must be null or an unmodified, not-yet-freed pointer returned by
-/// `filesearch_engine_call`. No other thread may read it during or after this call.
+/// `apfsearch_engine_call`. No other thread may read it during or after this call.
 #[no_mangle]
-pub unsafe extern "C" fn filesearch_engine_free_string(value: *mut c_char) {
+pub unsafe extern "C" fn apfsearch_engine_free_string(value: *mut c_char) {
     if !value.is_null() {
         drop(CString::from_raw(value));
     }
@@ -2159,10 +2159,10 @@ pub unsafe extern "C" fn filesearch_engine_free_string(value: *mut c_char) {
 /// Close an engine handle and signal its background worker to stop.
 ///
 /// # Safety
-/// `handle` must be null or a live handle from `filesearch_engine_open`, closed exactly
-/// once. No thread may enter or remain in `filesearch_engine_call` with this handle.
+/// `handle` must be null or a live handle from `apfsearch_engine_open`, closed exactly
+/// once. No thread may enter or remain in `apfsearch_engine_call` with this handle.
 #[no_mangle]
-pub unsafe extern "C" fn filesearch_engine_close(handle: *mut c_void) {
+pub unsafe extern "C" fn apfsearch_engine_close(handle: *mut c_void) {
     if !handle.is_null() {
         let engine = Box::from_raw(handle as *mut Arc<SearchEngine>);
         engine.stop.store(true, Ordering::Relaxed);

@@ -4,6 +4,7 @@
 Uses disposable bundles only. A successful Apple-signed XPC connection still
 requires integration testing with an explicitly configured signing identity.
 """
+from test_bundle import MINIMUM_MACOS_VERSION, swift_target
 import importlib.util
 import pathlib
 import subprocess
@@ -19,7 +20,7 @@ SPEC.loader.exec_module(BUILD_IDENTITY)
 
 class ApplicationIdentityTests(unittest.TestCase):
     def test_adhoc_service_cannot_authorize_clients(self):
-        with tempfile.TemporaryDirectory(prefix='FileSearch-identity-') as directory:
+        with tempfile.TemporaryDirectory(prefix='APFSearch-identity-') as directory:
             work = pathlib.Path(directory)
             bundle = work / 'IdentityTest.app'
             binaries = bundle / 'Contents/MacOS'
@@ -34,7 +35,7 @@ class ApplicationIdentityTests(unittest.TestCase):
 }
 ''')
             subprocess.run(['swiftc', '-module-cache-path', str(work / 'ModuleCache'),
-                            '-swift-version', '5', '-target', 'arm64-apple-macos15.0',
+                            '-swift-version', '5', '-target', swift_target(),
                             str(PROJECT / 'macos/ApplicationIdentity.swift'), str(source),
                             '-o', str(executable)], check=True)
             subprocess.run(['codesign', '--force', '--sign', '-', '--identifier',

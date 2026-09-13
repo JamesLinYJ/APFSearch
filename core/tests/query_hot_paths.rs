@@ -1,5 +1,5 @@
 //! Algorithm equivalence and allocation checks for query hot paths.
-use filesearch_core::{index_store::IndexedFile, query};
+use apfsearch_core::{index_store::IndexedFile, query};
 use memchr::memmem::Finder;
 use serde_json::json;
 use std::{
@@ -330,7 +330,7 @@ fn report_query_hot_path_speed() {
     }
     let report = json!({"comparisons":pairs.len()*32,"natural_order":{"before_ms":old_ms,"after_ms":new_ms,"speedup":old_ms/new_ms,"before_samples_ms":old_samples,"after_samples_ms":new_samples,"before_allocations":old_allocations,"after_allocations":new_allocations,"identical_checksum":before==after},"substring_primitives":substrings,"boundary":"Synthetic shared-prefix Unicode paths, isolated release process; excludes index traversal, XPC, paging, and GUI"});
     println!("{report}");
-    if let Ok(path) = std::env::var("FILESEARCH_QUERY_HOT_PATH_REPORT") {
+    if let Ok(path) = std::env::var("APFSEARCH_QUERY_HOT_PATH_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
 }

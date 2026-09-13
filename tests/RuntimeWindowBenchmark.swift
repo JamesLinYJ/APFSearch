@@ -118,7 +118,7 @@ enum RuntimeWindowBenchmark {
             "screen_count": NSScreen.screens.count,
             "screens": NSScreen.screens.map { ["name": $0.localizedName, "scale": $0.backingScaleFactor, "width": $0.frame.width, "height": $0.frame.height] as [String: Any] },
             "defaults_domain": Bundle.main.bundleIdentifier ?? "", "reduce_motion_enabled": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-            "binary_context": ["benchmark": binary(URL(fileURLWithPath: CommandLine.arguments[0])), "application": binary(appURL.appendingPathComponent("Contents/MacOS/APFSearch")), "service": binary(appURL.appendingPathComponent("Contents/MacOS/FileSearchService"))],
+            "binary_context": ["benchmark": binary(URL(fileURLWithPath: CommandLine.arguments[0])), "application": binary(appURL.appendingPathComponent("Contents/MacOS/APFSearch")), "service": binary(appURL.appendingPathComponent("Contents/MacOS/APFSearchService"))],
             "queries": [], "success": false, "complete": false,
             "timeout_policy": "Keep every timeout as a lower bound, cancel only this controller's unique request IDs, and abort further measurements to prevent overlapping heavy work.",
             "history_policy": "Invalidate the production history timer immediately after every reply; confirm the actual service history is identical before and after. No preferences set requests are issued by the driver."

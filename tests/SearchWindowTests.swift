@@ -55,7 +55,7 @@ enum SearchWindowTests {
     static func controller(_ rows: [[String: Any]], count: Int? = nil) async -> SearchWindowController {
         let c = SearchWindowController(offlineListID: UUID().uuidString, count: count ?? rows.count)
         c.window?.setFrame(NSRect(x: 100, y: 100, width: 1000, height: 600), display: false)
-        c.window?.title = "FileSearch UI Regression"
+        c.window?.title = "APFSearch UI Regression"
         // A AppKit test window is needed for real row view/layout materialization.
         // It is not activated and never uses accessibility or the user's window.
         c.window?.orderBack(nil)
@@ -73,6 +73,47 @@ enum SearchWindowTests {
             c.table.rowView(atRow: index, makeIfNecessary: true).map { (index, ObjectIdentifier($0)) }
         })
     }
+    static func topViewportRegression() async {
+        let rows = (0..<287).map { row($0) }
+        let c = await controller(rows)
+        c.offlineListID = nil; c.roots = ["/UIRegression"]
+        c.search.stringValue = "crossover"
+        let scroll = c.table.enclosingScrollView!, clip = scroll.contentView
+        // Let AppKit choose its actual top boundary, including its header and
+        // automatic content insets. Zero is not necessarily the top coordinate.
+        var proposed = clip.bounds; proposed.origin.y = -100_000
+        let top = clip.constrainBoundsRect(proposed).origin
+        clip.scroll(to: top); scroll.reflectScrolledClipView(clip)
+        await pump()
+        let initial = clip.bounds.origin
+        var samples = [Double]()
+        for revision in 2...6 {
+            c.currentStatus = ["success": true, "generation": revision]
+            SearchClient.shared.clear(); c.refreshVisibleResults()
+            guard let request = SearchClient.shared.takeQuery() else {
+                check("top_viewport_refresh_dispatches", false); break
+            }
+            request.completion(reply(rows, generation: revision, anchor: 0))
+            await pump(0.03)
+            samples.append(clip.bounds.origin.y)
+        }
+        checkDisplay("unchanged_background_results_preserve_native_top_boundary",
+            samples.count == 5 && samples.allSatisfy { abs($0 - initial.y) < 0.5 },
+            ["initial_y": initial.y, "refreshed_y": samples, "top_inset": scroll.contentInsets.top,
+             "header_height": c.table.headerView?.frame.height ?? 0])
+        // Scrolling back to the top must remain there after live scrolling ends.
+        NotificationCenter.default.post(name: NSScrollView.willStartLiveScrollNotification, object: scroll)
+        clip.scroll(to: top); scroll.reflectScrolledClipView(clip)
+        c.currentStatus = ["success": true, "generation": 7]
+        SearchClient.shared.clear()
+        NotificationCenter.default.post(name: NSScrollView.didEndLiveScrollNotification, object: scroll)
+        let release = SearchClient.shared.takeQuery()
+        release?.completion(reply(rows, generation: 7, anchor: 0))
+        await pump()
+        checkDisplay("releasing_live_scroll_does_not_hide_first_result", release != nil && abs(clip.bounds.origin.y - initial.y) < 0.5,
+            ["initial_y": initial.y, "after_release_y": clip.bounds.origin.y])
+        c.cancelQueries(); c.window?.orderOut(nil); SearchClient.shared.clear()
+    }
     static func startupTablePreferencesRegression() async {
         // Exercise AppKit's actual autosave format in this test bundle's own
         // preference domain. No production app preferences are read or written.
@@ -84,7 +125,7 @@ enum SearchWindowTests {
             else { defaults.removePersistentDomain(forName: domain) }
         }
         defaults.removePersistentDomain(forName: domain)
-        defaults.set(["created"], forKey: "FileSearch.HiddenColumns")
+        defaults.set(["created"], forKey: "APFSearch.HiddenColumns")
         let saved = NSTableView(frame: NSRect(x: 0, y: 0, width: 1400, height: 400))
         saved.columnAutoresizingStyle = .noColumnAutoresizing
         for (key, width) in [("name", 251.0), ("path", 427.0), ("size", 137.0), ("modified", 191.0), ("created", 143.0)] {
@@ -93,7 +134,7 @@ enum SearchWindowTests {
             column.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
             saved.addTableColumn(column)
         }
-        saved.autosaveName = "FileSearch.Columns"
+        saved.autosaveName = "APFSearch.Columns"
         saved.autosaveTableColumns = true
         saved.moveColumn(1, toColumn: 0)
         saved.tableColumns.first { $0.identifier.rawValue == "created" }!.isHidden = true
@@ -277,6 +318,7 @@ enum SearchWindowTests {
             exit(0)
         }
         await featureIntegrationRegression()
+        await topViewportRegression()
         await startupTablePreferencesRegression()
         let c = await controller(base)
         let incompleteDuplicateReport = c.duplicateReport(["groups": [], "hardlinks": [], "errors": ["/UIRegression/unreadable.txt: denied"], "partial": true])

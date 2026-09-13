@@ -93,8 +93,8 @@ import CryptoKit
             "queries": [], "complete": false, "success": false,
             "binary_context": ["benchmark": executableContext(URL(fileURLWithPath: CommandLine.arguments[0])),
                                "application": executableContext(executableDirectory.appendingPathComponent("APFSearch")),
-                               "service": executableContext(executableDirectory.appendingPathComponent("FileSearchService")),
-                               "cli": executableContext(executableDirectory.appendingPathComponent("filesearch-cli"))],
+                               "service": executableContext(executableDirectory.appendingPathComponent("APFSearchService")),
+                               "cli": executableContext(executableDirectory.appendingPathComponent("apfsearch-cli"))],
             "os_version": ProcessInfo.processInfo.operatingSystemVersionString,
         ]
         func save() throws { try jsonData(report).write(to: outputURL, options: .atomic) }

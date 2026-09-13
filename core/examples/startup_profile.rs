@@ -1,5 +1,5 @@
 //! Read-only startup phase profile. No SearchEngine, schema writes, or watcher.
-use filesearch_core::index_store::{IndexStore, SearchSnapshot};
+use apfsearch_core::index_store::{IndexStore, SearchSnapshot};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::json;
 use std::{path::PathBuf, time::Instant};

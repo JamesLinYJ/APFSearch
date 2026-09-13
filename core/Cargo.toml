@@ -1,12 +1,12 @@
 [package]
-name = "filesearch-core"
+name = "apfsearch-core"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 description = "APFS metadata index and Everything-style query engine"
 
 [lib]
-name = "filesearch_core"
+name = "apfsearch_core"
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [dependencies]

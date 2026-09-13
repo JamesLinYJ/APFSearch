@@ -22,6 +22,36 @@
             "state": "translated",
             "value": "APFSearch"
           }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch"
+          }
         }
       }
     },
@@ -44,6 +74,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "索引文件中的檔案名稱與屬性，以供檔案搜尋。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ローカル検索用に書類のファイル名と属性の索引を作成します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "로컬 검색을 위해 문서의 파일 이름과 속성을 색인화합니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Индексирование имён и свойств файлов в Документах для локального поиска."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indexar nombres y propiedades de los archivos de Documentos para la búsqueda local."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indexar nomes e propriedades dos ficheiros em Documentos para pesquisa local."
           }
         }
       }
@@ -68,6 +128,36 @@
             "state": "translated",
             "value": "索引桌面檔案，以供檔案搜尋。"
           }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ローカル検索用にデスクトップのファイルの索引を作成します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "로컬 검색을 위해 데스크탑 파일을 색인화합니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Индексирование файлов Рабочего стола для локального поиска."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indexar archivos del Escritorio para la búsqueda local."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indexar ficheiros da Secretária para pesquisa local."
+          }
         }
       }
     },
@@ -90,6 +180,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "索引下載的檔案，以供檔案搜尋。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ローカル検索用にダウンロードしたファイルの索引を作成します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "로컬 검색을 위해 다운로드한 파일을 색인화합니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Индексирование загруженных файлов для локального поиска."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indexar archivos descargados para la búsqueda local."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indexar ficheiros descarregados para pesquisa local."
           }
         }
       }
@@ -114,6 +234,36 @@
             "state": "translated",
             "value": "索引你選擇的本機外接卷宗。"
           }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選択したローカル外部ボリュームの索引を作成します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "선택한 로컬 외장 볼륨을 색인화합니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Индексирование выбранных локальных внешних томов."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indexar los volúmenes externos locales que selecciones."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Indexar os volumes externos locais que selecionar."
+          }
         }
       }
     },
@@ -136,6 +286,36 @@
           "stringUnit": {
             "state": "translated",
             "value": "APFSearch 貢獻者。獨立實作；與 voidtools 無關聯。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearchの貢献者。独立した実装であり、voidtoolsとは関係ありません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch 기여자. 독립적으로 구현되었으며 voidtools와 관련이 없습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Участники проекта APFSearch. Независимая реализация, не связанная с voidtools."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Colaboradores de APFSearch. Implementación independiente, sin afiliación con voidtools."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Colaboradores do APFSearch. Implementação independente, sem ligação à voidtools."
           }
         }
       }

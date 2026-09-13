@@ -18,10 +18,10 @@ guard version.range(of: "^[0-9]{1,6}(\\.[0-9]{1,6}){1,3}$", options: .regularExp
   let size = Int64(args[4]), size > 0, size <= 512 * 1024 * 1024
 else { fail("Invalid update manifest fields") }
 let environment = ProcessInfo.processInfo.environment
-guard let encoded = environment["FILESEARCH_UPDATE_PRIVATE_KEY"],
+guard let encoded = environment["APFSEARCH_UPDATE_PRIVATE_KEY"],
   let bytes = Data(base64Encoded: encoded), bytes.count == 32,
   let key = try? Curve25519.Signing.PrivateKey(rawRepresentation: bytes),
-  let expected = environment["FILESEARCH_UPDATE_PUBLIC_KEY"].flatMap({ Data(base64Encoded: $0) }),
+  let expected = environment["APFSEARCH_UPDATE_PUBLIC_KEY"].flatMap({ Data(base64Encoded: $0) }),
   key.publicKey.rawRepresentation == expected
 else { fail("Update signing key must match the public key embedded in the release") }
 let payload = Data("APFSearch update v1\n\(version)\n\(address)\n\(digest)\n\(size)\n".utf8)

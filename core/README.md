@@ -1,4 +1,4 @@
-# FileSearch core
+# APFSearch core
 
 Rust owns metadata persistence, Everything-style query evaluation and immutable search snapshots. `filesystem.rs` reads metadata, directories and mounted volumes; `file_events.rs` owns file-change notifications and their callback lifetimes. `scanner.rs` schedules bounded traversal and reconciles events. The AppKit app, XPC service and CLI use the same JSON C ABI; there is no separate CLI query implementation.
 
@@ -9,14 +9,14 @@ PCRE2_SYS_STATIC=1 MACOSX_DEPLOYMENT_TARGET=15.0 cargo build --release
 PCRE2_SYS_STATIC=1 MACOSX_DEPLOYMENT_TARGET=15.0 cargo test -- --test-threads=1
 ```
 
-PCRE2 must be linked statically for a redistributable application. `.cargo/config.toml` supplies these environment defaults when Cargo is run from this directory; the outer build script also sets them explicitly. Artifacts are `libfilesearch_core.a` and `libfilesearch_core.dylib`. ICU4X case mapping, Unicode NFC normalization, SQLite and Roaring bitmaps are compiled into the core.
+PCRE2 must be linked statically for a redistributable application. `.cargo/config.toml` supplies these environment defaults when Cargo is run from this directory; the outer build script also sets them explicitly. Artifacts are `libapfsearch_core.a` and `libapfsearch_core.dylib`. ICU4X case mapping, Unicode NFC normalization, SQLite and Roaring bitmaps are compiled into the core.
 
 ## ABI and requests
 
-- `filesearch_engine_open(const char *databasePath)` returns an opaque handle or null.
-- `filesearch_engine_call(handle, const char *json)` returns allocated UTF-8 JSON.
-- `filesearch_engine_free_string(char *)` frees every response once.
-- `filesearch_engine_close(handle)` signals background work to stop and releases the caller's handle. The caller must prevent new/overlapping calls during close.
+- `apfsearch_engine_open(const char *databasePath)` returns an opaque handle or null.
+- `apfsearch_engine_call(handle, const char *json)` returns allocated UTF-8 JSON.
+- `apfsearch_engine_free_string(char *)` frees every response once.
+- `apfsearch_engine_close(handle)` signals background work to stop and releases the caller's handle. The caller must prevent new/overlapping calls during close.
 
 Calls are thread safe. Every response contains `success` and `protocol_version: 2`; errors contain a readable `error`. JSON strings are owned by the caller until explicitly freed.
 

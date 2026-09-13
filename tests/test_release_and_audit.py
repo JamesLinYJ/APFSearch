@@ -25,18 +25,18 @@ class ReleaseTests(unittest.TestCase):
             app = Path(temporary)/'Fixture.app'
             (app/'Contents').mkdir(parents=True)
             (app/'Contents/Info.plist').write_bytes(plistlib.dumps({'CFBundleVersion': '0.1'}))
-            environment = {'FILESEARCH_UPDATE_PUBLIC_KEY': base64.b64encode(bytes(range(32))).decode(),
-                           'FILESEARCH_UPDATE_FEED_URL': 'https://example.com/update.json', 'FILESEARCH_RELEASE_VERSION': '1.2.3'}
+            environment = {'APFSEARCH_UPDATE_PUBLIC_KEY': base64.b64encode(bytes(range(32))).decode(),
+                           'APFSEARCH_UPDATE_FEED_URL': 'https://example.com/update.json', 'APFSEARCH_RELEASE_VERSION': '1.2.3'}
             configure(app, environment)
             self.assertEqual(plistlib.loads((app/'Contents/Info.plist').read_bytes())['CFBundleVersion'], '1.2.3')
-            self.assertEqual((app/'Contents/Resources/UpdatePublicKey.txt').read_text().strip(), environment['FILESEARCH_UPDATE_PUBLIC_KEY'])
+            self.assertEqual((app/'Contents/Resources/UpdatePublicKey.txt').read_text().strip(), environment['APFSEARCH_UPDATE_PUBLIC_KEY'])
             configure(app, {})
             self.assertFalse((app/'Contents/Resources/UpdatePublicKey.txt').exists())
             self.assertFalse((app/'Contents/Resources/UpdateFeedURL.txt').exists())
-            for bad in [{'FILESEARCH_UPDATE_FEED_URL': 'https://example.com'},
-                        {'FILESEARCH_RELEASE_VERSION': '../2'},
-                        dict(environment, FILESEARCH_UPDATE_PUBLIC_KEY='short'),
-                        dict(environment, FILESEARCH_UPDATE_FEED_URL='http://example.com')]:
+            for bad in [{'APFSEARCH_UPDATE_FEED_URL': 'https://example.com'},
+                        {'APFSEARCH_RELEASE_VERSION': '../2'},
+                        dict(environment, APFSEARCH_UPDATE_PUBLIC_KEY='short'),
+                        dict(environment, APFSEARCH_UPDATE_FEED_URL='http://example.com')]:
                 with self.assertRaises(ValueError): configure(app, bad)
 
     def test_reference_comparison_rejects_truncation_and_ambiguous_basenames(self):

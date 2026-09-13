@@ -33,7 +33,7 @@ fn file_paths(engine: &Arc<SearchEngine>) -> BTreeSet<String> {
 #[test]
 fn historical_replay_restores_offline_changes_and_unchanged_startup_does_not_rewrite_rows() {
     let temp = tempfile::Builder::new()
-        .prefix("filesearch-resume-")
+        .prefix("apfsearch-resume-")
         .tempdir()
         .unwrap();
     let root = temp.path().join("files");
@@ -702,8 +702,8 @@ fn database_namespace_pruning_never_expands_or_resolves_literal_scopes() {
             .set(
                 "uncovered",
                 &json!([
-                    "/System/Volumes/Data/Users/example/filesearch-missing-coverage",
-                    "/System/Volumes/Data/private/var/filesearch-missing-coverage"
+                    "/System/Volumes/Data/Users/example/apfsearch-missing-coverage",
+                    "/System/Volumes/Data/private/var/apfsearch-missing-coverage"
                 ]),
             )
             .unwrap();
@@ -723,8 +723,8 @@ fn database_namespace_pruning_never_expands_or_resolves_literal_scopes() {
     assert_eq!(
         engine.state.lock().unwrap()["namespace_pruned_scopes"],
         json!([
-            "/System/Volumes/Data/Users/example/filesearch-missing-coverage",
-            "/System/Volumes/Data/private/var/filesearch-missing-coverage"
+            "/System/Volumes/Data/Users/example/apfsearch-missing-coverage",
+            "/System/Volumes/Data/private/var/apfsearch-missing-coverage"
         ])
     );
 }

@@ -1,4 +1,4 @@
-use filesearch_core::{index_store::IndexedFile, query, SearchEngine};
+use apfsearch_core::{index_store::IndexedFile, query, SearchEngine};
 use serde_json::{json, Value};
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 fn entry(name: &str) -> IndexedFile {
@@ -224,7 +224,7 @@ fn watcher_updates_renames_and_can_restart() {
 }
 #[test]
 fn cache_dirty_transaction_wins_after_unpublished_batch() {
-    use filesearch_core::{index_store::IndexStore, scanner};
+    use apfsearch_core::{index_store::IndexStore, scanner};
     let (t, e, root) = setup();
     let path = format!("{root}/one.txt");
     std::fs::write(&path, "one").unwrap();
@@ -250,7 +250,7 @@ fn cache_dirty_transaction_wins_after_unpublished_batch() {
 }
 #[test]
 fn denied_regions_are_retained_but_not_searchable_then_recover() {
-    use filesearch_core::index_store::IndexStore;
+    use apfsearch_core::index_store::IndexStore;
     let (t, e, root) = setup();
     std::fs::write(format!("{root}/secret.txt"), "secret").unwrap();
     scan(&e, &root);
@@ -354,7 +354,7 @@ fn content_case_and_file_prefixes_follow_requested_modifier() {
 }
 #[test]
 fn stale_snapshot_cannot_clear_new_batch_dirty_flag() {
-    use filesearch_core::{
+    use apfsearch_core::{
         index_store::{IndexStore, SearchSnapshot},
         scanner,
     };
@@ -458,7 +458,7 @@ fn binary_cache_preserves_paths_properties_and_rejects_corruption() {
     let reopened = SearchEngine::open(&dbpath).unwrap();
     let actual = call(&reopened, json!({"op":"query","text":""}));
     assert_eq!(actual["rows"], expected["rows"]);
-    let db = filesearch_core::index_store::IndexStore::open(&dbpath).unwrap();
+    let db = apfsearch_core::index_store::IndexStore::open(&dbpath).unwrap();
     let mut bytes = std::fs::read(&db.cache_path).unwrap();
     assert_eq!(&bytes[..8], b"AFSIDX04");
     bytes[55] ^= 1;
@@ -520,7 +520,7 @@ fn unchanged_rescan_and_content_do_not_publish_new_search_generations() {
     assert_eq!(first["scanning"], false);
     assert_eq!(first["initial_scan_complete"], true);
     assert_eq!(first["scan_processed_entries"], 2);
-    let db = filesearch_core::index_store::IndexStore::open(&temp.path().join("db/index.sqlite"))
+    let db = apfsearch_core::index_store::IndexStore::open(&temp.path().join("db/index.sqlite"))
         .unwrap();
     let revision = db.get("revision", json!(0));
     scan(&engine, &root);
@@ -548,7 +548,7 @@ fn unchanged_rescan_and_content_do_not_publish_new_search_generations() {
 
 #[test]
 fn seen_epochs_and_event_cursor_keep_valid_cache_and_generation() {
-    use filesearch_core::{index_store::IndexStore, scanner};
+    use apfsearch_core::{index_store::IndexStore, scanner};
     let (temp, engine, root) = setup();
     let path = format!("{root}/visible.txt");
     std::fs::write(&path, "visible").unwrap();
@@ -570,7 +570,7 @@ fn seen_epochs_and_event_cursor_keep_valid_cache_and_generation() {
 
 #[test]
 fn incremental_snapshot_matches_full_rebuild_for_metadata_and_renames() {
-    use filesearch_core::index_store::SearchSnapshot;
+    use apfsearch_core::index_store::SearchSnapshot;
     let mut entries = vec![
         entry("报告2.txt"),
         entry("café10.txt"),

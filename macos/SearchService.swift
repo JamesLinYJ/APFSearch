@@ -25,7 +25,7 @@ final class FileListOutput {
   private var handle: FileHandle?
   init(destination: URL) throws {
     self.destination = destination
-    temporary = destination.deletingLastPathComponent().appendingPathComponent(".filesearch-export-" + UUID().uuidString)
+    temporary = destination.deletingLastPathComponent().appendingPathComponent(".apfsearch-export-" + UUID().uuidString)
     let descriptor = temporary.path.withCString { open($0, O_CREAT | O_EXCL | O_WRONLY, S_IRUSR | S_IWUSR) }
     guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
     handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
@@ -41,27 +41,27 @@ final class FileListOutput {
   }
 }
 
-@_silgen_name("filesearch_engine_open") func engineOpen(_ path: UnsafePointer<CChar>)
+@_silgen_name("apfsearch_engine_open") func engineOpen(_ path: UnsafePointer<CChar>)
   -> UnsafeMutableRawPointer?
-@_silgen_name("filesearch_engine_call") func engineCall(
+@_silgen_name("apfsearch_engine_call") func engineCall(
   _ engine: UnsafeMutableRawPointer, _ request: UnsafePointer<CChar>
 ) -> UnsafeMutablePointer<CChar>?
-@_silgen_name("filesearch_engine_free_string") func engineFree(_ s: UnsafeMutablePointer<CChar>)
-@_silgen_name("filesearch_engine_close") func engineClose(_ e: UnsafeMutableRawPointer)
+@_silgen_name("apfsearch_engine_free_string") func engineFree(_ s: UnsafeMutablePointer<CChar>)
+@_silgen_name("apfsearch_engine_close") func engineClose(_ e: UnsafeMutableRawPointer)
 
 final class SearchEngine {
   let pointer: UnsafeMutableRawPointer
   let directory: URL
-  init(directory: URL? = nil) {
-    do {
-      if let directory { self.directory = directory }
-      else if let path = ProcessInfo.processInfo.environment[ApplicationIdentity.dataDirectoryEnvironment] {
-        self.directory = URL(fileURLWithPath: path)
-      } else {
-        self.directory = try LegacyDataMigration.dataDirectory(
-          in: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0])
-      }
-    } catch { fatalError("Could not migrate existing index: \(error.localizedDescription)") }
+  init(directory: URL? = nil, applicationSupportDirectory: URL? = nil) {
+    if let directory { self.directory = directory }
+    else if let applicationSupportDirectory {
+      self.directory = applicationSupportDirectory.appendingPathComponent(ApplicationIdentity.dataDirectoryName, isDirectory: true)
+    } else if let path = ProcessInfo.processInfo.environment[ApplicationIdentity.dataDirectoryEnvironment] {
+      self.directory = URL(fileURLWithPath: path)
+    } else {
+      self.directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent(ApplicationIdentity.dataDirectoryName, isDirectory: true)
+    }
     try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
     guard
       let ptr = self.directory.appendingPathComponent("index.sqlite").path.withCString({

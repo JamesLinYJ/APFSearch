@@ -487,11 +487,11 @@ fn storage_delta_limit_uses_snapshot_budget_without_truncating_changes() {
 }
 
 #[test]
-#[ignore = "Read-only large index profile; requires FILESEARCH_PROFILE_INDEX"]
+#[ignore = "Read-only large index profile; requires APFSEARCH_PROFILE_INDEX"]
 fn profile_new_queries_and_in_memory_updates_on_existing_index() {
     let path = PathBuf::from(
-        std::env::var("FILESEARCH_PROFILE_INDEX")
-            .expect("Set FILESEARCH_PROFILE_INDEX to existing isolated index"),
+        std::env::var("APFSEARCH_PROFILE_INDEX")
+            .expect("Set APFSEARCH_PROFILE_INDEX to existing isolated index"),
     );
     let connection = rusqlite::Connection::open_with_flags(
         &path,

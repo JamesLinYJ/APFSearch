@@ -1,4 +1,4 @@
-use filesearch_core::{
+use apfsearch_core::{
     index_store::{IndexStore, SearchSnapshot},
     scanner::ScannedFile,
 };
@@ -185,7 +185,7 @@ fn cache_journal_has_bounded_writes_and_rejects_overflow_or_missing_baseline() {
 
 #[test]
 fn clean_cache_damage_falls_back_marks_dirty_and_repairs_without_metadata_changes() {
-    use filesearch_core::SearchEngine;
+    use apfsearch_core::SearchEngine;
     for remove_cache in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("files");
@@ -241,7 +241,7 @@ fn clean_cache_damage_falls_back_marks_dirty_and_repairs_without_metadata_change
 
 #[test]
 fn cache_write_failure_keeps_committed_results_available_and_reports_cache_error() {
-    use filesearch_core::SearchEngine;
+    use apfsearch_core::SearchEngine;
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path().join("files");
     std::fs::create_dir(&root).unwrap();

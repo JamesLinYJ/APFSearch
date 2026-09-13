@@ -4,21 +4,15 @@ import Security
 /// Identifiers shared by the application, command-line client and indexer.
 enum ApplicationIdentity {
     static let applicationExecutable = "APFSearch"
-    static let serviceExecutable = "FileSearchService"
-    static let cliExecutable = "filesearch-cli"
-    static let bundleIdentifier = "local.filesearch.app"
-    static let serviceIdentifier = "local.filesearch.indexer"
-    static let cliIdentifier = "local.filesearch.cli"
-    static let dataDirectoryName = "FileSearch"
-    static let dataDirectoryEnvironment = "FILESEARCH_DATA_DIR"
-    static let metricsEnvironment = "FILESEARCH_METRICS_PATH"
-    static let preferencePrefix = "FileSearch."
-    static let preferencesMigrationKey = "FileSearch.LegacyPreferencesMigrated"
-
-    // Explicit compatibility identifiers. New preferences and data use FileSearch.
-    static let legacyBundleIdentifier = "local.apfsearch.app"
-    static let legacyDataDirectoryName = "APFSearch"
-    static let legacyPreferencePrefix = "APFSearch."
+    static let serviceExecutable = "APFSearchService"
+    static let cliExecutable = "apfsearch-cli"
+    static let bundleIdentifier = "org.apfsearch.app"
+    static let serviceIdentifier = "org.apfsearch.indexer"
+    static let cliIdentifier = "org.apfsearch.cli"
+    static let dataDirectoryName = "APFSearch"
+    static let dataDirectoryEnvironment = "APFSEARCH_DATA_DIR"
+    static let metricsEnvironment = "APFSEARCH_METRICS_PATH"
+    static let preferencePrefix = "APFSearch."
 
     /// Derive trust from this indexer's verified signature, never preferences or
     /// an environment variable. Unsigned, ad-hoc, and untrusted builds fail closed.

@@ -20,9 +20,9 @@ jobs:
     timeout-minutes: 30
     env:
       PCRE2_SYS_STATIC: "1"
-      MACOSX_DEPLOYMENT_TARGET: "15.0"
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
       CARGO_TERM_COLOR: always
-      FILESEARCH_COMPILE_ONLY: "1"
+      APFSEARCH_COMPILE_ONLY: "1"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,7 +35,7 @@ jobs:
           path: ${{ runner.temp }}/validated-source.tar.gz
           retention-days: 3
       - name: Prepare Rust toolchain
-        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
+        run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy && rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Check formatting
         run: cargo fmt --manifest-path core/Cargo.toml --check
       - name: Rust tests
@@ -49,7 +49,6 @@ jobs:
         run: |
           python3 tests/check_localization.py
           python3 tests/check_localization_protocol.py
-          python3 tests/check_legacy_migration.py
           python3 tests/check_application_identity.py
       - name: Build app, XPC service, and CLI without signing or installation
         if: ${{ !cancelled() }}
@@ -61,7 +60,7 @@ jobs:
           bash -n scripts/release.sh
       - name: Swift service and content regression fixtures
         if: ${{ !cancelled() }}
-        run: FILESEARCH_SWIFT_ONLY=1 ./tests/run.sh
+        run: APFSEARCH_SWIFT_ONLY=1 ./tests/run.sh
       - name: Selection, file safety, properties, and update transport fixtures
         if: ${{ !cancelled() }}
         run: python3 tests/run_feature_tests.py

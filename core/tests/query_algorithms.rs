@@ -1,4 +1,4 @@
-use filesearch_core::{
+use apfsearch_core::{
     index_store::{IndexedFile, SearchSnapshot},
     query::{self, Query},
 };

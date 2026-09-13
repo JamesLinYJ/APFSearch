@@ -1,5 +1,5 @@
 //! Process-death tests touch only one synthetic metadata row in a temporary DB.
-use filesearch_core::{
+use apfsearch_core::{
     index_store::{IndexStore, SearchSnapshot},
     scanner::ScannedFile,
 };
@@ -13,11 +13,11 @@ use std::{
 
 #[test]
 fn crash_fixture_writer() {
-    let Some(path) = std::env::var_os("FILESEARCH_CRASH_FIXTURE_DB") else {
+    let Some(path) = std::env::var_os("APFSEARCH_CRASH_FIXTURE_DB") else {
         return;
     };
     let mut store = IndexStore::open(&PathBuf::from(path)).unwrap();
-    if std::env::var_os("FILESEARCH_CRASH_COMMIT").is_some() {
+    if std::env::var_os("APFSEARCH_CRASH_COMMIT").is_some() {
         store
             .batch(
                 &[ScannedFile {
@@ -36,7 +36,7 @@ fn crash_fixture_writer() {
         store.connection.execute_batch("BEGIN IMMEDIATE; UPDATE files SET size=999 WHERE id=1; UPDATE settings SET value=CAST(value AS INTEGER)+1 WHERE key='revision'; UPDATE settings SET value='true' WHERE key='cache_dirty';").unwrap();
     }
     std::fs::write(
-        std::env::var_os("FILESEARCH_CRASH_FIXTURE_READY").unwrap(),
+        std::env::var_os("APFSEARCH_CRASH_FIXTURE_READY").unwrap(),
         "ready",
     )
     .unwrap();
@@ -77,12 +77,12 @@ fn killed_writer_preserves_atomic_metadata_and_recoverable_cache_history() {
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
             .args(["--exact", "crash_fixture_writer", "--nocapture"])
-            .env("FILESEARCH_CRASH_FIXTURE_DB", &path)
-            .env("FILESEARCH_CRASH_FIXTURE_READY", &ready)
+            .env("APFSEARCH_CRASH_FIXTURE_DB", &path)
+            .env("APFSEARCH_CRASH_FIXTURE_READY", &ready)
             .stdout(Stdio::null())
             .stderr(Stdio::inherit());
         if committed {
-            command.env("FILESEARCH_CRASH_COMMIT", "1");
+            command.env("APFSEARCH_CRASH_COMMIT", "1");
         }
         let mut child = command.spawn().unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);

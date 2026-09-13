@@ -1,7 +1,7 @@
 //! Synthetic metadata benchmark; never reads a user's files or starts a watcher.
 //! cargo run --release --example benchmark -- [--count 1000000] [--runs 30]
 //! Re-run a created database: --reuse /absolute/path/to/benchmark.sqlite3
-use filesearch_core::{index_store::IndexStore, scanner::ScannedFile, SearchEngine};
+use apfsearch_core::{index_store::IndexStore, scanner::ScannedFile, SearchEngine};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -153,7 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
         std::process::id()
     );
-    let work = workspace.join("work/filesearch/benchmark-index");
+    let work = workspace.join("work/apfsearch/benchmark-index");
     std::fs::create_dir_all(&work)?;
     let reuse = argument("--reuse");
     let database = reuse

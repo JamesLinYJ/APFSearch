@@ -8,7 +8,7 @@ import CoreGraphics
  static func main()throws{
     let folder=URL(fileURLWithPath:CommandLine.arguments[1])
     try FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true)
-    setenv("FILESEARCH_DATA_DIR",folder.appendingPathComponent("db").path,1)
+    setenv("APFSEARCH_DATA_DIR",folder.appendingPathComponent("db").path,1)
     let engine=SearchEngine(),content=ContentIndexer(engine:engine),ops=FileOperations(directory:folder)
     var passed=[String](), failed=[String]()
     func check(_ name:String,_ condition:Bool)throws{

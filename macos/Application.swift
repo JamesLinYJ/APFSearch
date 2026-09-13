@@ -19,13 +19,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        LegacyDataMigration.preferences()
         SearchClient.shared.registerService()
         installMenus()
         if let index = CommandLine.arguments.firstIndex(of: "--offline-list-id"), CommandLine.arguments.indices.contains(index + 1) {
             let identifier = CommandLine.arguments[index + 1]
             if UUID(uuidString: identifier) != nil { openDeveloperOfflineList(identifier) }
-            else { NSLog("FileSearch: invalid --offline-list-id UUID"); newWindow(nil) }
+            else { NSLog("APFSearch: invalid --offline-list-id UUID"); newWindow(nil) }
         } else { newWindow(nil) }
         registerShortcut()
         NotificationCenter.default.addObserver(self, selector: #selector(registerShortcut), name: .searchShortcutChanged, object: nil)
@@ -162,7 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let key = choice == 1 ? UInt32(kVK_ANSI_F) : UInt32(kVK_Space)
         let modifiers = choice == 1 ? UInt32(cmdKey | shiftKey) : UInt32(controlKey | optionKey)
         let status = RegisterEventHotKey(key, modifiers, EventHotKeyID(signature: 0x41504653, id: 1), GetApplicationEventTarget(), 0, &hotKey)
-        if status != noErr { NSLog("FileSearch global shortcut unavailable (%d)", status) }
+        if status != noErr { NSLog("APFSearch global shortcut unavailable (%d)", status) }
     }
 }
 
@@ -268,7 +267,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         window.title = L("app.name")
         window.subtitle = ""
         window.minSize = NSSize(width: 850, height: 480)
-        window.tabbingIdentifier = "FileSearch.Search"
+        window.tabbingIdentifier = "APFSearch.Search"
         window.tabbingMode = .preferred
         super.init(window: window)
         self.offlineListID = offlineListID
@@ -286,14 +285,14 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         // trying to preserve the collapsed pane's fitting width.
         sidebar.collapseBehavior = .useConstraints
         sidebar.allowsFullHeightLayout = true; sidebar.titlebarSeparatorStyle = .none
-        sidebar.isCollapsed = !UserDefaults.standard.bool(forKey: "FileSearch.SidebarVisible")
+        sidebar.isCollapsed = !UserDefaults.standard.bool(forKey: "APFSearch.SidebarVisible")
         splitController.addSplitViewItem(sidebar)
         // Even the widest sidebar (250) plus the divider and this minimum fits
         // within the 850-point window minimum. Excess table columns can scroll.
         let results = NSSplitViewItem(viewController: resultsController); results.minimumThickness = 520
         splitController.addSplitViewItem(results)
         window.contentViewController = splitController
-        let toolbar = NSToolbar(identifier: "FileSearch.Toolbar")
+        let toolbar = NSToolbar(identifier: "APFSearch.Toolbar")
         toolbar.delegate = self; toolbar.displayMode = .iconOnly; toolbar.allowsUserCustomization = false
         window.titleVisibility = .hidden
         window.titlebarSeparatorStyle = .automatic
@@ -313,8 +312,8 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         buildInterface()
         // Restore once after installing the complete content hierarchy. Later
         // status/search updates must never choose or restore a window frame.
-        if !window.setFrameUsingName("FileSearch.Main") { window.center() }
-        window.setFrameAutosaveName("FileSearch.Main")
+        if !window.setFrameUsingName("APFSearch.Main") { window.center() }
+        window.setFrameAutosaveName("APFSearch.Main")
         restoreTableConfiguration()
         observeLiveScrolling()
         NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged), name: .searchPreferencesChanged, object: nil)
@@ -356,7 +355,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
             column.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
             table.addTableColumn(column)
         }
-        let hiddenColumns = UserDefaults.standard.stringArray(forKey: "FileSearch.HiddenColumns") ?? ["created"]
+        let hiddenColumns = UserDefaults.standard.stringArray(forKey: "APFSearch.HiddenColumns") ?? ["created"]
         let columnMenu = NSMenu()
         for column in table.tableColumns {
             column.isHidden = hiddenColumns.contains(column.identifier.rawValue) && column.identifier.rawValue != "name"
@@ -421,7 +420,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         // subsequent resizes should redistribute the saved column widths.
         window?.contentView?.layoutSubtreeIfNeeded()
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
-        table.autosaveName = "FileSearch.Columns"
+        table.autosaveName = "APFSearch.Columns"
         table.autosaveTableColumns = true
         if table.sortDescriptors.isEmpty {
             table.sortDescriptors = [NSSortDescriptor(key: "name", ascending: true)]
@@ -438,15 +437,15 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         search.font = .systemFont(ofSize: 14); search.controlSize = .regular
         search.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         search.delegate = self; search.sendsSearchStringImmediately = true; search.sendsWholeSearchString = false
-        search.recentsAutosaveName = "FileSearch.Queries"; search.maximumRecents = 30
+        search.recentsAutosaveName = "APFSearch.Queries"; search.maximumRecents = 30
         search.setAccessibilityLabel(L("search.field_label"))
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [NSToolbarItem.Identifier("FileSearch.Sidebar"), NSToolbarItem.Identifier("FileSearch.SearchField"), .flexibleSpace, NSToolbarItem.Identifier("FileSearch.Preview"), NSToolbarItem.Identifier("FileSearch.Scope"), NSToolbarItem.Identifier("FileSearch.Actions")]
+        [NSToolbarItem.Identifier("APFSearch.Sidebar"), NSToolbarItem.Identifier("APFSearch.SearchField"), .flexibleSpace, NSToolbarItem.Identifier("APFSearch.Preview"), NSToolbarItem.Identifier("APFSearch.Scope"), NSToolbarItem.Identifier("APFSearch.Actions")]
     }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier identifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
-        if identifier.rawValue == "FileSearch.SearchField" {
+        if identifier.rawValue == "APFSearch.SearchField" {
             let item = NSSearchToolbarItem(itemIdentifier: identifier)
             item.label = L("search.title"); item.searchField = search
             // A safe preference, not a required width tied back to window.frame.
@@ -456,7 +455,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
             searchToolbarItem = item
             return item
         }
-        if identifier.rawValue == "FileSearch.Actions" {
+        if identifier.rawValue == "APFSearch.Actions" {
             let item = NSMenuToolbarItem(itemIdentifier: identifier)
             item.label = L("menu.file"); item.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: item.label)
             let menu = NSMenu()
@@ -472,16 +471,16 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         }
         let item = NSToolbarItem(itemIdentifier: identifier); item.target = self
         switch identifier.rawValue {
-        case "FileSearch.Sidebar": item.label = L("action.toggle_sidebar"); item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: item.label); item.action = #selector(toggleSidebar); item.isNavigational = true
-        case "FileSearch.Scope": item.label = offlineListID == nil ? L("index.scope") : L("offline.list_source"); item.image = NSImage(systemSymbolName: offlineListID == nil ? "externaldrive" : "doc.text", accessibilityDescription: item.label); item.action = #selector(showCoverage)
-        case "FileSearch.Preview": item.label = L("action.quick_look"); item.image = NSImage(systemSymbolName: "eye", accessibilityDescription: item.label); item.action = #selector(previewSelection)
+        case "APFSearch.Sidebar": item.label = L("action.toggle_sidebar"); item.image = NSImage(systemSymbolName: "sidebar.left", accessibilityDescription: item.label); item.action = #selector(toggleSidebar); item.isNavigational = true
+        case "APFSearch.Scope": item.label = offlineListID == nil ? L("index.scope") : L("offline.list_source"); item.image = NSImage(systemSymbolName: offlineListID == nil ? "externaldrive" : "doc.text", accessibilityDescription: item.label); item.action = #selector(showCoverage)
+        case "APFSearch.Preview": item.label = L("action.quick_look"); item.image = NSImage(systemSymbolName: "eye", accessibilityDescription: item.label); item.action = #selector(previewSelection)
         default: return nil
         }
         item.toolTip = item.label
         return item
     }
     func validateToolbarItem(_ item: NSToolbarItem) -> Bool {
-        if item.itemIdentifier.rawValue == "FileSearch.Preview" { return canUseSelection && offlineListID == nil }
+        if item.itemIdentifier.rawValue == "APFSearch.Preview" { return canUseSelection && offlineListID == nil }
         return true
     }
     @objc func showSettingsToolbar(_ sender: Any?) { (NSApp.delegate as? AppDelegate)?.showSettings(sender) }
@@ -495,12 +494,12 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         } else {
             splitController.toggleSidebar(sender)
         }
-        UserDefaults.standard.set(!sidebar.isCollapsed, forKey: "FileSearch.SidebarVisible")
+        UserDefaults.standard.set(!sidebar.isCollapsed, forKey: "APFSearch.SidebarVisible")
     }
     @objc func toggleColumn(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String, id != "name", let column = table.tableColumns.first(where: { $0.identifier.rawValue == id }) else { return }
         column.isHidden.toggle(); sender.state = column.isHidden ? .off : .on
-        UserDefaults.standard.set(table.tableColumns.filter(\.isHidden).map { $0.identifier.rawValue }, forKey: "FileSearch.HiddenColumns")
+        UserDefaults.standard.set(table.tableColumns.filter(\.isHidden).map { $0.identifier.rawValue }, forKey: "APFSearch.HiddenColumns")
     }
     @objc func revealPathComponent(_ sender: Any?) {
         guard offlineListID == nil, let path = pathControl.clickedPathItem?.url?.path else { return }
@@ -816,7 +815,11 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
             if selected != self.table.selectedRowIndexes { self.table.selectRowIndexes(selected, byExtendingSelection: false) }
             if let clip = self.table.enclosingScrollView?.contentView, count > 0 {
                 let anchorIndex = min(count - 1, (reply["anchor_index"] as? NSNumber)?.intValue ?? first)
-                let point = NSPoint(x: oldOrigin.x, y: max(0, self.table.rect(ofRow: anchorIndex).minY + pixelOffset))
+                // Headers and automatic insets can place the native top boundary
+                // below zero. Constrain in clip-view coordinates, not row indices.
+                var proposedBounds = clip.bounds
+                proposedBounds.origin = NSPoint(x: oldOrigin.x, y: self.table.rect(ofRow: anchorIndex).minY + pixelOffset)
+                let point = clip.constrainBoundsRect(proposedBounds).origin
                 if abs(clip.bounds.origin.y - point.y) > 0.5 { clip.scroll(to: point); self.table.enclosingScrollView?.reflectScrolledClipView(clip) }
             }
             self.applyingResultChanges = false
@@ -1013,7 +1016,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
             self.updateStatus(); self.refreshVisibleResults()
             if self.initialStatus {
                 self.initialStatus = false
-                if self.roots.isEmpty && (reply["count"] as? NSNumber)?.intValue ?? 0 == 0 && !UserDefaults.standard.bool(forKey: "FileSearch.ScopeChosen") {
+                if self.roots.isEmpty && (reply["count"] as? NSNumber)?.intValue ?? 0 == 0 && !UserDefaults.standard.bool(forKey: "APFSearch.ScopeChosen") {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.chooseVolumes(nil) }
                 }
             }
@@ -1162,7 +1165,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         }
     }
     func startScan(_ paths: [String]) {
-        UserDefaults.standard.set(true, forKey: "FileSearch.ScopeChosen")
+        UserDefaults.standard.set(true, forKey: "APFSearch.ScopeChosen")
         SearchClient.shared.call(["op": "scan", "roots": paths]) { [weak self] reply in self?.checkResult(reply); self?.pollStatus(); self?.runQuery() }
     }
     @objc func rescan(_ sender: Any?) { if roots.isEmpty { chooseVolumes(nil) } else { startScan(roots) } }
@@ -1578,7 +1581,7 @@ private enum SearchMetrics {
                 let handle = try FileHandle(forWritingTo: url)
                 defer { try? handle.close() }
                 try handle.seekToEnd(); try handle.write(contentsOf: line)
-            } catch { NSLog("FileSearch metrics write failed: %@", error.localizedDescription) }
+            } catch { NSLog("APFSearch metrics write failed: %@", error.localizedDescription) }
         }
     }
 }

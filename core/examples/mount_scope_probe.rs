@@ -1,5 +1,5 @@
 //! Metadata-only scope probe; excluded namespaces are never opened.
-use filesearch_core::scanner;
+use apfsearch_core::scanner;
 use std::{sync::atomic::AtomicBool, time::Instant};
 fn main() {
     let roots: Vec<String> = std::env::args().skip(1).collect();

@@ -1,114 +1,163 @@
-# APFSearch
+<p align="center">
+  <img src="Resources/Brand/AppIcon.svg" width="144" height="144" alt="APFSearch icon">
+</p>
+<h1 align="center">APFSearch</h1>
+<p align="center"><strong>Local file search, built for macOS.</strong><br>All-Purpose File Search</p>
+<p align="center"><code>macOS 14+</code> &nbsp; <code>Apple Silicon + Intel</code> &nbsp; <code>Swift + Rust</code> &nbsp; <a href="LICENSE">MIT</a></p>
+<p align="center"><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
+<p align="center"><a href="#features">Features</a> · <a href="#download">Download</a> · <a href="#getting-started">Getting started</a> · <a href="#search">Search</a> · <a href="#documentation">Documentation</a></p>
 
-APFSearch (All-Purpose File Search) is a local file search application for macOS 15 and later on Apple Silicon. Its AppKit interface and command-line client share a versioned XPC service backed by a Rust indexing and query engine. Filename indexing is independent of Spotlight.
+---
 
-This is a development version. It is not a complete Everything replacement and is not affiliated with voidtools. Full-volume correctness, installed-app latency, advanced query compatibility, and signed distribution still need further validation.
+APFSearch brings filename, path, and metadata search to an AppKit interface with a shared command-line client. It builds its own APFS-aware index independently of Spotlight.
 
-## Architecture
+> **In development.** This is not a complete Everything replacement and is not affiliated with voidtools. Full-volume correctness, real-world latency, advanced query compatibility, and minimum-OS hardware compatibility still need validation. See [current limitations](#current-limitations).
 
-| Component | Responsibility |
-| --- | --- |
-| Swift / AppKit | Search window, result table, native menus, Quick Look, and file actions |
-| SwiftUI | Preferences, filters, bookmarks, and indexing scope |
-| Rust | APFS traversal, event reconciliation, query parsing, filtering, sorting, and immutable snapshots |
+## Features
+
+| Find | Work |
+| :--- | :--- |
+| **Flexible queries**<br>Combine names, paths, extensions, sizes, dates, Boolean expressions, and regular expressions. | **Familiar controls**<br>Native result tables, tabs, keyboard shortcuts, Quick Look, and Finder actions. |
+| **Independent indexing**<br>APFS enumeration, incremental file-change monitoring, and visible coverage gaps. | **Reviewable file actions**<br>Rename, copy, move, and trash files with conflict previews and operation history. |
+| **Beyond filenames**<br>On-demand content extraction, image and media properties, duplicate checks, and offline file lists. | **Your language**<br>English, Simplified and Traditional Chinese, Japanese, Korean, Russian, Spanish, and Portuguese through native String Catalogs. |
+
+## Download
+
+**[v0.1.0 pre-release](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.0)** · macOS 14 or later
+
+| Your Mac | Download |
+| :--- | :--- |
+| Universal (both architectures) | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-Universal.zip) |
+| Apple Silicon (M series) | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-AppleSilicon.zip) |
+| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-Intel.zip) |
+
+Choose Universal if you are unsure. Open the DMG and drag APFSearch into Applications, or use the ZIP for manual deployment. Every contained app is Developer ID signed and carries an Apple notarization ticket; the DMG containers are not separately notarized. [SHA-256 checksums](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/SHA256SUMS.txt).
+
+This is a development preview. Intel code has been exercised under Rosetta; physical Intel hardware and macOS 14 still need validation.
+
+## Getting started
+
+### Build from source
+
+Build from source with a **stable Rust toolchain** and **Xcode** containing the macOS SDK, Swift compiler, and `xcstringstool`. The default build is universal (`arm64` + `x86_64`) for macOS 14 or later.
+
+```sh
+# Install both macOS compilation targets once.
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+# Compile the app, service, and CLI without signing or installing.
+APFSEARCH_COMPILE_ONLY=1 ./build.sh
+```
+
+Output: `/private/tmp/APFSearch-build/APFSearch.app`. Set `APFSEARCH_BUILD_DIR` to use another directory. SQLite and PCRE2 are linked statically; Cargo uses the pinned dependencies in `core/Cargo.lock`.
+
+The app, indexer, and CLI each contain both architectures. For a faster local development build, set `APFSEARCH_ARCHITECTURES=arm64` or `APFSEARCH_ARCHITECTURES=x86_64`. The deployment target is shared by the Rust build, Swift compiler, bundle metadata, and test bundles through `scripts/build_configuration.py`. Select a particular Xcode with `DEVELOPER_DIR` if you have multiple installations.
+
+**To run the authenticated service**, build with your own Apple Developer signing identity:
+
+```sh
+APFSEARCH_SIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)' ./build.sh
+```
+
+The app, CLI, and service must use the same trusted team signature. Unsigned or ad-hoc builds are compilation artifacts; they cannot use the production XPC service. Signing configuration is kept outside the repository.
+
+1. Copy the signed `APFSearch.app` to `/Applications` and open it.
+2. Choose the folders or local APFS volumes to index.
+3. If prompted, allow background activity in **System Settings → General → Login Items**. Grant **Full Disk Access** only when your chosen scope needs it.
+
+Indexing does not require root, a kernel extension, or disabled SIP. Cloud placeholders are not downloaded automatically. English is the fallback UI language; number and date formatting follows your region independently.
+
+## Search
+
+| Query | Finds |
+| :--- | :--- |
+| `invoice` | Names containing “invoice” |
+| `ext:pdf;docx` | PDF and Word files |
+| `size:>10mb dm:today` | Files larger than 10 MB modified today |
+| `path:Documents` | Matches in the file path |
+| `"annual report" \| invoice` | Either the phrase or “invoice” |
+| `regex:^report[0-9]+` | Regular-expression matches |
+| `content:"keyword"` | Text in supported file contents; may take longer |
+
+Spaces combine terms with **AND**, `|` means **OR**, and `!` excludes a term. Content extraction supports text/code, PDF, and Office Open XML. Unsupported formats and unreadable files are reported explicitly.
+
+| Shortcut | Action |
+| :--- | :--- |
+| `Space` on a result | Quick Look |
+| `Return` | Open |
+| `⌘⇧C` | Copy path |
+| `⌘D` | Bookmark the current search |
+| `⇧` + column click | Add a sort column |
+
+The CLI uses the same search service:
+
+```sh
+/Applications/APFSearch.app/Contents/MacOS/apfsearch-cli status
+/Applications/APFSearch.app/Contents/MacOS/apfsearch-cli search 'ext:pdf size:>1mb'
+```
+
+<details>
+<summary><strong>How the index works</strong></summary>
+
+| Layer | Responsibility |
+| :--- | :--- |
+| Swift / AppKit | Search window, result table, menus, Quick Look, and file actions |
+| SwiftUI | Preferences, filters, bookmarks, and index scope |
+| Rust | APFS traversal, event reconciliation, query parsing, filtering, and sorting |
 | SQLite WAL | Authoritative metadata, preferences, content, and event progress |
-| Derived cache | Rebuildable prepared search columns, postings, and ordering data |
+| Derived cache | Rebuildable search columns, postings, ordering, and immutable snapshots |
 
-APFS enumeration uses `getattrlistbulk`. FSEvents starts before the initial traversal; events trigger reconciliation with the current filesystem. Hard links retain their individual directory entries, directory symlinks are not followed, and inaccessible locations are reported as uncovered. Indexing does not require root, a kernel extension, or disabled SIP.
+APFS enumeration uses `getattrlistbulk`. FSEvents starts before the first traversal and triggers reconciliation against the filesystem. Hard links retain every directory entry; directory symlinks are not followed. Inaccessible locations appear in the coverage report.
 
-Search uses substring candidates, Roaring bitmaps, numeric columns, Unicode normalization and case folding, and PCRE2 regular expressions. Each query binds to a snapshot generation. Content extraction and hashing run separately from filename search and support cancellation.
+Substring candidates, Roaring bitmaps, numeric columns, Unicode normalization and case folding, and PCRE2 support query evaluation. Each query binds to one snapshot generation. Content extraction and hashing run separately and support cancellation.
 
-See [the core interface](core/README.md), [incremental-index design](docs/INCREMENTAL_INDEX.md), and [localization conventions](docs/LOCALIZATION.md).
+Bundle identifiers are `org.apfsearch.app`, `org.apfsearch.indexer`, and `org.apfsearch.cli`; the Rust package is `apfsearch-core`.
 
-## Build
+Settings belong to the new application identity, and index data lives in `~/Library/Application Support/APFSearch`. This release starts fresh and does not import an earlier development application's settings or index.
 
-Install a Rust stable toolchain and select an Xcode toolchain containing the macOS SDK, Swift compiler, and `xcstringstool`. The build targets ARM64 and macOS 15. SQLite and PCRE2 are linked statically; Cargo resolves the pinned dependencies in `core/Cargo.lock`.
-
-To compile without signing or installing:
-
-```sh
-FILESEARCH_COMPILE_ONLY=1 ./build.sh
-```
-
-The default output is `/private/tmp/FileSearch-build/APFSearch.app`. Set `FILESEARCH_BUILD_DIR` to choose another build directory. Without a signing identity, the build produces a compilation artifact; it does not validate the authenticated XPC connection used by the installed application.
-
-For a signed build, supply your own Apple Developer signing identity:
-
-```sh
-FILESEARCH_SIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)' ./build.sh
-```
-
-Signing configuration is not included in this repository. The app, CLI, and service must be signed consistently. The service derives its team from its own validated Apple signature, then accepts only the designated client identifiers from that team. Unsigned or invalidly signed services refuse production XPC connections.
-
-The neutral bundle identifiers are `local.filesearch.app`, `local.filesearch.indexer`, and `local.filesearch.cli`. The Rust package is `filesearch-core`.
-
-## Use
-
-After building and signing, copy the app to `/Applications` and open it. The application registers a user-level indexer with `SMAppService`. macOS may require approval under System Settings → General → Login Items. Choose the directories to index; grant Full Disk Access through System Settings if coverage of protected directories is needed.
-
-Example queries:
-
-```text
-invoice
-ext:pdf;docx
-size:>10mb
-dm:today
-path:Documents
-"annual report" | invoice
-regex:^report[0-9]+
-```
-
-Space combines terms with AND, `|` means OR, and `!` excludes a term. Space while a result is selected opens Quick Look; Return opens the selected file. Context menus provide reveal, copy path, rename, copy, move, and trash actions.
-
-The CLI uses the same XPC interface:
-
-```sh
-/Applications/APFSearch.app/Contents/MacOS/filesearch-cli status
-/Applications/APFSearch.app/Contents/MacOS/filesearch-cli search 'ext:pdf size:>1mb'
-```
-
-`content:` can extract candidate text from supported text/code, PDF, and Office Open XML files. Image and media properties use system frameworks. Unsupported formats, inaccessible files, and cloud placeholders are reported; on-demand search does not implicitly download placeholders. File lists can be imported for offline queries or exported in pages.
-
-Bulk actions resolve selected rows against one retained snapshot before presenting a per-file review. Rename rules, destination conflicts, skipped files, and partial completion are shown explicitly. Operation history records intents and completed changes; hard-link aliases share verified identity updates so a batch and its undo do not mistake their own renames for external edits. Changed files still require review rather than automatic undo.
-
-Window queries share immutable snapshot data and have a separate budget of 128 leases, including replacement pages awaiting adoption. Eight additional leases remain available for concurrent exports and other operations. Closing windows, discarding replies, and finishing operations release their leases; abandoned leases expire after five minutes without renewal.
-
-Configured updates keep one download or Installer session active at a time. Cancelled packages are removed immediately; opened packages remain available until Installer exits. If APFSearch exits first, a later launch or activation reclaims its abandoned download directories once Installer is no longer running.
-
-English, Simplified Chinese, and Traditional Chinese use native String Catalogs and Foundation language selection. English is the fallback language. Number, date, and unit formatting follows the user's region settings.
-
-## Tests
-
-```sh
-cargo fmt --manifest-path core/Cargo.toml --check
-PCRE2_SYS_STATIC=1 MACOSX_DEPLOYMENT_TARGET=15.0 cargo test --locked --manifest-path core/Cargo.toml
-./tests/run.sh
-python3 tests/run_search_window_tests.py --report validation/search-window.json
-python3 tests/run_feature_tests.py
-```
-
-Tests use isolated fixtures. GUI tests require WindowServer; controller-level checks do not establish foreground animation or input-method behavior. Tests and benchmarks can produce local validation reports containing paths, so reports are excluded from Git. Large synthetic and live-index benchmarks are opt-in and should not be run as routine checks.
-
-CI builds and tests the committed source directly. No source-generating patch workflow or automatic source commit is required before a checkout can pass validation.
+</details>
 
 ## Current limitations
 
-- Everything 1.5 syntax, property functions, duplicate handling, and advanced bulk operations are not fully equivalent. Unsupported functions should report errors.
-- The prepared-cache delta journal is bounded. Overflow, incompatible caches, or invalid history can require SQLite recovery and a slower startup.
-- Incremental publication retains shared data, but some snapshot and ordering work still scales with index size. Whole-machine latency and disk activity need continuing measurement.
-- Bulk actions are limited to 100,000 selected entries. Quick Look and drag initiation require loaded rows; unresolved selections never silently cause partial file operations.
-- APFS clone relationships are not established by content equality. Hard links and independently stored identical content are reported separately where known.
-- Full authorized-scope enumeration parity, crash/event-loss recovery under real workloads, and final installed-app UI behavior are not fully accepted. The repository contains no claim that all original performance targets have passed.
-- Builds are not notarized releases. Signing and distribution remain the builder's responsibility.
+- **Compatibility:** Everything 1.5 syntax, property functions, duplicate handling, and advanced bulk operations are not fully equivalent. Unsupported functions should report errors.
+- **Startup and performance:** Cache-journal overflow or invalid history can require SQLite recovery and a slower startup. Some snapshot and ordering work still scales with index size; whole-machine latency and disk activity need continuing measurement.
+- **File actions:** A batch is limited to 100,000 entries. Quick Look and drag initiation require loaded rows. Unresolved selections never silently turn into partial file operations.
+- **Duplicates:** Identical contents do not establish an APFS clone relationship or reclaimable space. Hard links and independently stored identical files are distinguished where known.
+- **Acceptance:** Full authorized-scope enumeration parity, crash/event-loss recovery under real workloads, and final installed-app UI behavior are not fully accepted. The original performance targets have not all been verified. Compiling for macOS 14 and running Intel code under Rosetta do not replace testing on a physical Intel Mac or macOS 14.
+- **Distribution:** The default source build is for compilation checks. Distribution requires signing and notarizing the actual deliverable; see the [distribution guide](docs/DISTRIBUTION.md).
 
-Runtime data is stored under `~/Library/Application Support/FileSearch`. It is not part of the repository. Unregister the background service and disable login launch before removing an installation; retain the data directory if you want to preserve its index and settings.
+Runtime data lives in `~/Library/Application Support/APFSearch`. Before uninstalling, unregister the background service and disable login launch. Keep the data directory if you want to preserve the index and settings.
 
-## Contributing
+## Documentation
 
-Read [AGENTS.md](AGENTS.md) for architecture, validation, privacy, and implementation guidance. `CLAUDE.md` links to the same file. Use synthetic examples and keep local indexes, runtime logs, file lists, and signing material out of commits.
+| Guide | Contents |
+| :--- | :--- |
+| [Core interface](core/README.md) | Search engine requests and data model |
+| [Incremental indexing](docs/INCREMENTAL_INDEX.md) | Cache recovery and update publication |
+| [Workflow details](docs/WORKFLOWS.md) | File-operation review, query leases, and update lifecycle |
+| [Localization](docs/LOCALIZATION.md) | Stable keys, native language selection, and checks |
+| [Artwork](Resources/Brand/README.md) | Editable SVG icon, monochrome mark, and ICNS generation |
+| [Distribution](docs/DISTRIBUTION.md) | Xcode account upload, notarization, and deliverable verification |
+| [Contributor guidance](AGENTS.md) | Architecture, validation, privacy, and coding standards |
+
+<details>
+<summary><strong>Run validation</strong></summary>
+
+```sh
+cargo fmt --manifest-path core/Cargo.toml --check
+PCRE2_SYS_STATIC=1 MACOSX_DEPLOYMENT_TARGET=14.0 cargo test --locked --manifest-path core/Cargo.toml
+./tests/run.sh
+python3 tests/run_search_window_tests.py --report validation/search-window.json
+python3 tests/run_feature_tests.py
+python3 tests/check_localization.py
+```
+
+Tests use isolated fixtures. GUI tests require WindowServer; controller tests do not establish foreground animation or input-method behavior. Large synthetic and live-index benchmarks are opt-in. Local validation reports may contain paths and are excluded from Git.
+
+CI builds and tests committed source directly, without source-generating patches or automatic source commits. Keep local indexes, logs, file lists, and signing material out of commits. `CLAUDE.md` links to `AGENTS.md`.
+
+</details>
 
 ## License
 
-APFSearch's original code is available under the [MIT License](LICENSE). It may be used, modified, redistributed, and included in commercial or closed-source products, provided the required copyright and permission notices are retained. The software is provided without warranty.
-
-Dependencies retain their own licenses. [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) includes the dependency notices, including licenses for bundled native libraries. See the [Open Source Initiative's MIT text](https://opensource.org/license/mit) for the standard license terms.
+Original code and artwork use the [MIT License](LICENSE). Required copyright and permission notices must be retained; the software is provided without warranty. Dependencies retain their own licenses, listed in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).

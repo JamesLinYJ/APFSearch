@@ -1638,7 +1638,7 @@ mod tests {
             excluded.contains(&link.physical),
             "baseline must not emit the physical alias too"
         );
-        let suffix = "/example/filesearch-identity-probe.txt";
+        let suffix = "/example/apfsearch-identity-probe.txt";
         let logical = format!("{}{suffix}", link.logical);
         let physical = format!("{}{suffix}", link.physical);
         assert_eq!(visible_path(&physical), logical);

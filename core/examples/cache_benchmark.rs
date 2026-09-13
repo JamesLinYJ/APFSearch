@@ -1,5 +1,5 @@
 //! Isolated synthetic-cache comparison. Does not scan files or start a watcher.
-use filesearch_core::{
+use apfsearch_core::{
     index_store::{IndexStore, IndexedFile, SearchSnapshot},
     SearchEngine,
 };

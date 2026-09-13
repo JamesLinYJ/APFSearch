@@ -1,70 +1,3542 @@
-{"sourceLanguage":"en","version":"1.0","strings":{
-  "directory.logical_notice":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Sizes sum indexed directory entries, not physical storage or reclaimable space. Incomplete coverage is shown as unknown."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"大小按已索引的目录项汇总，不代表实际占用或可回收空间。覆盖不完整时显示未知。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"大小依已索引的目錄項目加總，不代表實際占用或可回收空間。涵蓋不完整時顯示未知。"}}}},
-  "directory.show_sizes":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Show Recursive Folder Sizes"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"显示文件夹递归大小"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"顯示資料夾遞迴大小"}}}},
-  "directory.unknown":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Unknown — incomplete coverage"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"未知 — 覆盖不完整"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"未知 — 涵蓋不完整"}}}},
-  "duplicates.group":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Group"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"分组"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"群組"}}}},
-  "duplicates.hardlink_alias":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Hard-link alias (review only)"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"硬链接别名（仅供查看）"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"硬連結別名（僅供檢視）"}}}},
-  "duplicates.keep_one":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Keep at least one verified file in every group."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"每组至少保留一个已验证的文件。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"每組至少保留一個已驗證的檔案。"}}}},
-  "duplicates.manage_selection":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Review Selected Copies…"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"检查所选副本…"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"檢查所選副本…"}}}},
-  "duplicates.partial_label":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Partial results"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"结果不完整"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"結果不完整"}}}},
-  "duplicates.relationship":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Relationship evidence"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"关系证据"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"關係證據"}}}},
-  "duplicates.same_content":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Same content; storage unknown"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"内容相同；存储关系未知"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"內容相同；儲存關係未知"}}}},
-  "duplicates.select_extras":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Select Extra Copies"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"选择多余副本"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"選取多餘副本"}}}},
-  "duplicates.verified_clone":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Verified APFS pure clone"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"已验证的 APFS 纯克隆"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"已驗證的 APFS 純複製檔"}}}},
-  "files.batch_limit":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Select at most 100,000 entries per operation. Nothing was changed."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"每次操作最多选择 100,000 项。未更改任何文件。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"每次操作最多選取 100,000 個項目。未更改任何檔案。"}}}},
-  "files.busy":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Too many pending file operations, or the request identifier is already in use."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"待处理的文件操作过多，或请求标识已在使用中。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"待處理的檔案操作過多，或要求識別碼已在使用中。"}}}},
-  "files.cancelling_batch":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Stopping after the current file…"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"将在当前文件完成后停止…"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"將在目前檔案完成後停止…"}}}},
-  "files.completed":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Completed"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"已完成"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"已完成"}}}},
-  "files.destination":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Destination / new name"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"目标／新名称"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"目的地／新名稱"}}}},
-  "files.history_page_notice":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Showing the latest %@ of %@ operations. Unfinished intents require review; they are not automatically retried."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"显示最近 %@ 项，共 %@ 项。未完成的操作计划需要检查，不会自动重试。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"顯示最近 %@ 個操作，共 %@ 個。未完成的操作計畫需要檢查，不會自動重試。"}}}},
-  "files.include":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Include"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"执行"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"執行"}}}},
-  "files.invalid_conflict_policy":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Unsupported conflict policy. Existing files are never overwritten."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"不支持此冲突策略。不会覆盖已有文件。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"不支援此衝突策略。不會覆寫現有檔案。"}}}},
-  "files.invalid_journal":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The operation journal is invalid or is not a regular file. No operation was started."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"操作日志无效或不是普通文件。未开始执行操作。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"操作記錄無效或不是一般檔案。尚未開始執行操作。"}}}},
-  "files.item_status":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Result / conflict"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"结果／冲突"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"結果／衝突"}}}},
-  "files.needs_review":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Needs review"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"需要检查"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"需要檢查"}}}},
-  "files.next_page":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Next page"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"下一页"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"下一頁"}}}},
-  "files.not_started":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Not started"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"未开始"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"尚未開始"}}}},
-  "files.overlapping_sources":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"A selected folder and one of its descendants overlap. Review or split the selection."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"所选文件夹与其后代项目重叠。请检查或分开操作。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"所選資料夾與其後代項目重疊。請檢查或分開操作。"}}}},
-  "files.page_summary":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"%@ items · page %@/%@ · %@ selected"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"%@ 项 · 第 %@/%@ 页 · 已选 %@ 项"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"%@ 個項目 · 第 %@/%@ 頁 · 已選 %@ 個"}}}},
-  "files.performing_batch":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Applying file operations (stop after current item)"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在执行文件操作（停止将在当前项完成后生效）"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"正在執行檔案操作（停止將在目前項目完成後生效）"}}}},
-  "files.preview_notice":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Uncheck items to skip them. Edit a destination leaf name to resolve a conflict; Continue rechecks edited names before a second confirmation. Existing files will not be overwritten."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"取消勾选可跳过项目。编辑目标文件名可处理冲突；继续后会重新检查，并再次确认。不会覆盖已有文件。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"取消勾選可略過項目。編輯目標檔名可處理衝突；繼續後會重新檢查，並再次確認。不會覆寫現有檔案。"}}}},
-  "files.previous_page":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Previous page"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"上一页"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"上一頁"}}}},
-  "files.protected_root":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The filesystem root cannot be changed by a bulk operation."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"批量操作不能更改文件系统根目录。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"批次操作不能更改檔案系統根目錄。"}}}},
-  "files.ready":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Ready"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"可执行"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"可執行"}}}},
-  "files.rename_count":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Rename %@ files"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"重命名 %@ 个文件"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"重新命名 %@ 個檔案"}}}},
-  "files.rename_find":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Find in name"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"查找名称中的文字"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"尋找名稱中的文字"}}}},
-  "files.rename_numbering":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Append sequence number"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"追加序号"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"附加序號"}}}},
-  "files.rename_prefix":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Prefix"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"前缀"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"前綴"}}}},
-  "files.rename_replace":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Replace with"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"替换为"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"取代為"}}}},
-  "files.rename_suffix":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Suffix"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"后缀"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"後綴"}}}},
-  "files.repeated_source":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The selection contains the same source more than once."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"所选项目重复包含同一个源文件。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"所選項目重複包含同一個來源檔案。"}}}},
-  "files.results_notice":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Completed changes are recorded for undo. Failed or interrupted items need review; partial copies are never deleted or retried automatically."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"已完成的更改有撤销记录。失败或中断的项目需要检查；不会自动删除部分副本或重试。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"已完成的更改有還原記錄。失敗或中斷的項目需要檢查；不會自動刪除部分副本或重試。"}}}},
-  "files.selection_expired":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The selection snapshot expired. Run the search again; no partial operation was performed."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"选择快照已过期。请重新搜索；未执行部分操作。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"選取快照已到期。請重新搜尋；未執行部分操作。"}}}},
-  "files.selection_incomplete":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The service did not return the complete selected page on the expected snapshot. Nothing was changed."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"服务未返回预期快照中完整的所选页面。未更改任何文件。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"服務未傳回預期快照中完整的所選頁面。未更改任何檔案。"}}}},
-  "files.skipped":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Skipped"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"已跳过"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"已略過"}}}},
-  "files.source":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Source"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"来源"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"來源"}}}},
-  "files.source_changed":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The source identity or metadata changed after selection. Review the files and retry."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"选择后源文件的身份或元数据发生变化。请检查文件后重试。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"選取後來源檔案的身分或中繼資料已變更。請檢查檔案後重試。"}}}},
-  "files.survivor_changed":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The duplicate group no longer has its verified retained file. No further cleanup was performed."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"重复组中要保留的文件已无法验证。已停止后续清理。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"重複群組中要保留的檔案已無法驗證。已停止後續清理。"}}}},
-  "files.unchanged":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Unchanged"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"未改变"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"未變更"}}}},
-  "files.undo_needs_review":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"A previous undo was interrupted. Review its source and destination before further changes."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"之前的撤销操作已中断。请先检查源文件和目标文件。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"先前的還原操作已中斷。請先檢查來源檔案及目標檔案。"}}}},
-  "files.unsupported_type":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Only regular files, directories and symbolic links are supported."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"仅支持普通文件、目录和符号链接。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"僅支援一般檔案、目錄及符號連結。"}}}},
-  "update.automatic":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Check for Updates Automatically"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"自动检查更新"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"自動檢查更新"}}}},
-  "update.available":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"APFSearch %@ is available"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"APFSearch %@ 已可更新"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"APFSearch %@ 已可更新"}}}},
-  "update.check":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Check for Updates…"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"检查更新…"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"檢查更新…"}}}},
-  "update.digest_mismatch":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The downloaded installer does not match the signed size or SHA-256 digest."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"下载的安装包大小或 SHA-256 摘要与签名内容不一致。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"下載的安裝套件大小或 SHA-256 摘要與簽章內容不符。"}}}},
-  "update.disabled":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Updates are not configured in this build. A trusted public key and HTTPS feed must be embedded before signing a release."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"此构建尚未配置更新。正式签名前需嵌入可信公钥和 HTTPS 更新源。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"此建置尚未設定更新。正式簽章前需嵌入可信公鑰及 HTTPS 更新來源。"}}}},
-  "update.download":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Download Verified Installer"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"下载并验证安装包"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"下載並驗證安裝套件"}}}},
-  "update.download_notice":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Download %@? The manifest signature, byte limit and SHA-256 digest are checked before opening Installer."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"下载 %@？打开安装器前将检查清单签名、大小限制和 SHA-256 摘要。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"下載 %@？開啟安裝程式前將檢查清單簽章、大小限制及 SHA-256 摘要。"}}}},
-  "update.downloading":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Downloading update"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在下载更新"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"正在下載更新"}}}},
-  "update.install_notice":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The signed download has been verified. Installer will still enforce macOS trust checks. Close APFSearch and restart its background service after installation."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"已验证签名下载。安装器仍会执行 macOS 信任检查。安装后请关闭 APFSearch 并重新启动其后台服务。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"已驗證簽章下載。安裝程式仍會執行 macOS 信任檢查。安裝後請關閉 APFSearch 並重新啟動其背景服務。"}}}},
-  "update.invalid_manifest":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The update manifest is invalid or exceeds the supported limits."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"更新清单无效或超过支持的限制。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"更新清單無效或超過支援的限制。"}}}},
-  "update.invalid_signature":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The update signature could not be verified."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无法验证更新签名。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"無法驗證更新簽章。"}}}},
-  "update.invalid_url":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Updates require an HTTPS URL without embedded credentials."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"更新必须使用不包含凭据的 HTTPS 地址。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"更新必須使用不含憑證資訊的 HTTPS 網址。"}}}},
-  "update.open_installer":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Open Installer"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"打开安装器"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"開啟安裝程式"}}}},
-  "update.ready":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Update verified"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"更新已验证"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"更新已驗證"}}}},
-  "update.title":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"APFSearch Updates"}},"zh-Hans":{"stringUnit":{"state":"translated","value":"APFSearch 更新"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"APFSearch 更新"}}}},
-  "update.too_large":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The response exceeds the signed or configured byte limit. The transfer was stopped."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"响应超过签名或配置的大小限制。已停止传输。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"回應超過簽章或設定的大小限制。已停止傳輸。"}}}},
-  "update.transport_error":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"The update could not be transferred or opened."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"无法传输或打开更新。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"無法傳輸或開啟更新。"}}}},
-  "update.up_to_date":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"This version is up to date."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"当前版本已是最新。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"目前版本已是最新。"}}}},
-  "update.verification_notice":{"localizations":{"en":{"stringUnit":{"state":"translated","value":"Downloading with a fixed byte budget and verifying the signed digest. Cancel removes incomplete data."}},"zh-Hans":{"stringUnit":{"state":"translated","value":"正在按固定大小上限下载并验证签名摘要。取消将移除未完成的数据。"}},"zh-Hant":{"stringUnit":{"state":"translated","value":"正在依固定大小上限下載並驗證簽章摘要。取消將移除未完成的資料。"}}}}
-}}
+{
+  "sourceLanguage": "en",
+  "version": "1.0",
+  "strings": {
+    "directory.logical_notice": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sizes sum indexed directory entries, not physical storage or reclaimable space. Incomplete coverage is shown as unknown."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "大小按已索引的目录项汇总，不代表实际占用或可回收空间。覆盖不完整时显示未知。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "大小依已索引的目錄項目加總，不代表實際占用或可回收空間。涵蓋不完整時顯示未知。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サイズは索引内のディレクトリ項目の合計であり、物理的な使用容量や解放可能な容量ではありません。網羅状況が不完全な場合は不明と表示します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "크기는 색인에 포함된 디렉터리 항목의 합계이며 실제 저장 공간이나 확보 가능한 공간을 뜻하지 않습니다. 포함 현황이 불완전하면 알 수 없음으로 표시됩니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Размеры — сумма записей каталогов в индексе, а не занятое или освобождаемое место. При неполном охвате размер показан как неизвестный."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los tamaños suman las entradas de directorio indexadas, no el almacenamiento físico ni el espacio recuperable. Si la cobertura es incompleta, se muestran como desconocidos."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Os tamanhos somam as entradas de diretório indexadas, não o armazenamento físico nem o espaço recuperável. A cobertura incompleta é indicada como desconhecida."
+          }
+        }
+      }
+    },
+    "directory.show_sizes": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Show Recursive Folder Sizes"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示文件夹递归大小"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "顯示資料夾遞迴大小"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サブフォルダを含むフォルダサイズを表示"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "하위 폴더를 포함한 크기 표시"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Показывать размеры папок с подпапками"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar tamaños de carpetas con subcarpetas"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mostrar tamanhos de pastas com subpastas"
+          }
+        }
+      }
+    },
+    "directory.unknown": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unknown — incomplete coverage"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未知 — 覆盖不完整"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未知 — 涵蓋不完整"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不明 — 網羅状況が不完全です"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "알 수 없음 — 포함 현황 불완전"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Неизвестно — неполный охват"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desconocido — cobertura incompleta"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desconhecido — cobertura incompleta"
+          }
+        }
+      }
+    },
+    "duplicates.group": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Group"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "分组"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "群組"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "グループ"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "그룹"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Группа"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grupo"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Grupo"
+          }
+        }
+      }
+    },
+    "duplicates.hardlink_alias": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hard-link alias (review only)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "硬链接别名（仅供查看）"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "硬連結別名（僅供檢視）"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ハードリンクの別名（確認のみ）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "하드 링크 별칭(검토만 가능)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Псевдоним жёсткой ссылки (только проверка)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alias de enlace físico (solo revisión)"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Alias de ligação física (apenas revisão)"
+          }
+        }
+      }
+    },
+    "duplicates.keep_one": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Keep at least one verified file in every group."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每组至少保留一个已验证的文件。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每組至少保留一個已驗證的檔案。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "各グループに、検証済みのファイルを少なくとも1つ残してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "각 그룹에 검증된 파일을 하나 이상 남겨 두십시오."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Оставьте хотя бы один проверенный файл в каждой группе."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Conserva al menos un archivo verificado en cada grupo."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mantenha pelo menos um ficheiro verificado em cada grupo."
+          }
+        }
+      }
+    },
+    "duplicates.manage_selection": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Review Selected Copies…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查所选副本…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "檢查所選副本…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選択したコピーを確認…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "선택한 사본 검토…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Проверить выбранные копии…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revisar copias seleccionadas…"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rever cópias selecionadas…"
+          }
+        }
+      }
+    },
+    "duplicates.partial_label": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Partial results"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结果不完整"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "結果不完整"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "部分的な結果"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "부분 결과"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Неполные результаты"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resultados parciales"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resultados parciais"
+          }
+        }
+      }
+    },
+    "duplicates.relationship": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relationship evidence"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "关系证据"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "關係證據"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "関連性の根拠"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "관계 근거"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Подтверждение связи"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidencia de relación"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Evidência da relação"
+          }
+        }
+      }
+    },
+    "duplicates.same_content": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Same content; storage unknown"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内容相同；存储关系未知"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "內容相同；儲存關係未知"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "内容は同一、ストレージは不明"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "내용 동일, 저장 공간 관계 알 수 없음"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Содержимое совпадает; хранение неизвестно"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mismo contenido; almacenamiento desconocido"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mesmo conteúdo; armazenamento desconhecido"
+          }
+        }
+      }
+    },
+    "duplicates.select_extras": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select Extra Copies"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择多余副本"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選取多餘副本"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "余分なコピーを選択"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "추가 사본 선택"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Выбрать лишние копии"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Seleccionar copias adicionales"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selecionar cópias adicionais"
+          }
+        }
+      }
+    },
+    "duplicates.verified_clone": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Verified APFS pure clone"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已验证的 APFS 纯克隆"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已驗證的 APFS 純複製檔"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "検証済みのAPFS純粋クローン"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "검증된 APFS 순수 클론"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Подтверждённый чистый клон APFS"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clon puro APFS verificado"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clone puro APFS verificado"
+          }
+        }
+      }
+    },
+    "files.batch_limit": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Select at most 100,000 entries per operation. Nothing was changed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每次操作最多选择 100,000 项。未更改任何文件。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "每次操作最多選取 100,000 個項目。未更改任何檔案。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1回の操作で選択できるのは100,000項目までです。変更は行われていません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "작업당 최대 100,000개 항목을 선택할 수 있습니다. 변경된 내용은 없습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "За одну операцию можно выбрать не более 100 000 записей. Ничего не изменено."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selecciona como máximo 100.000 entradas por operación. No se ha cambiado nada."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Selecione no máximo 100 000 entradas por operação. Nada foi alterado."
+          }
+        }
+      }
+    },
+    "files.busy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Too many pending file operations, or the request identifier is already in use."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待处理的文件操作过多，或请求标识已在使用中。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待處理的檔案操作過多，或要求識別碼已在使用中。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保留中のファイル操作が多すぎるか、リクエスト識別子がすでに使用されています。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "대기 중인 파일 작업이 너무 많거나 요청 식별자가 이미 사용 중입니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Слишком много ожидающих операций, либо идентификатор запроса уже используется."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Hay demasiadas operaciones de archivos pendientes o el identificador de solicitud ya está en uso."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Existem demasiadas operações de ficheiros pendentes ou o identificador do pedido já está em uso."
+          }
+        }
+      }
+    },
+    "files.cancelling_batch": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Stopping after the current file…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将在当前文件完成后停止…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "將在目前檔案完成後停止…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "現在のファイルの処理後に停止します…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "현재 파일 처리 후 중단하는 중…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Остановка после текущего файла…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Deteniendo después del archivo actual…"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A parar após o ficheiro atual…"
+          }
+        }
+      }
+    },
+    "files.completed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Completed"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已完成"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已完成"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完了"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "완료"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завершено"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Completado"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Concluído"
+          }
+        }
+      }
+    },
+    "files.destination": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Destination / new name"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目标／新名称"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目的地／新名稱"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "移動先／新しい名前"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "대상 / 새 이름"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Назначение / новое имя"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Destino / nombre nuevo"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Destino / novo nome"
+          }
+        }
+      }
+    },
+    "files.history_page_notice": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Showing the latest %@ of %@ operations. Unfinished intents require review; they are not automatically retried."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "显示最近 %@ 项，共 %@ 项。未完成的操作计划需要检查，不会自动重试。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "顯示最近 %@ 個操作，共 %@ 個。未完成的操作計畫需要檢查，不會自動重試。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "全%2$@件中、最新の%1$@件の操作を表示しています。未完了の操作予定は確認が必要で、自動的には再実行されません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "전체 %2$@개 중 최근 %1$@개 작업을 표시합니다. 완료되지 않은 작업 의도는 검토가 필요하며 자동으로 재시도되지 않습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Показаны последние %1$@ из %2$@ операций. Незавершённые намерения требуют проверки и не повторяются автоматически."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se muestran las últimas %1$@ de %2$@ operaciones. Las intenciones sin completar requieren revisión y no se reintentan automáticamente."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "São apresentadas as últimas %1$@ de %2$@ operações. As intenções não concluídas requerem revisão e não são repetidas automaticamente."
+          }
+        }
+      }
+    },
+    "files.include": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Include"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "执行"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "執行"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "含める"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "포함"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Включить"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Incluir"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Incluir"
+          }
+        }
+      }
+    },
+    "files.invalid_conflict_policy": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unsupported conflict policy. Existing files are never overwritten."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不支持此冲突策略。不会覆盖已有文件。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不支援此衝突策略。不會覆寫現有檔案。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未対応の競合処理です。既存のファイルは上書きしません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "지원되지 않는 충돌 처리 정책입니다. 기존 파일은 덮어쓰지 않습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Политика конфликтов не поддерживается. Существующие файлы никогда не перезаписываются."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La política de conflictos no es compatible. Nunca se sobrescriben archivos existentes."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A política de conflitos não é suportada. Os ficheiros existentes nunca são substituídos."
+          }
+        }
+      }
+    },
+    "files.invalid_journal": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The operation journal is invalid or is not a regular file. No operation was started."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作日志无效或不是普通文件。未开始执行操作。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作記錄無效或不是一般檔案。尚未開始執行操作。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作ログが無効か、通常のファイルではありません。操作は開始されませんでした。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "작업 저널이 잘못되었거나 일반 파일이 아닙니다. 작업을 시작하지 않았습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Журнал операций недействителен или не является обычным файлом. Операция не начата."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El diario de operaciones no es válido o no es un archivo normal. No se inició ninguna operación."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O diário de operações é inválido ou não é um ficheiro regular. Nenhuma operação foi iniciada."
+          }
+        }
+      }
+    },
+    "files.item_status": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Result / conflict"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "结果／冲突"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "結果／衝突"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "結果／競合"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "결과 / 충돌"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Результат / конфликт"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resultado / conflicto"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Resultado / conflito"
+          }
+        }
+      }
+    },
+    "files.needs_review": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Needs review"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要检查"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "需要檢查"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "確認が必要"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "검토 필요"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Требуется проверка"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requiere revisión"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Requer revisão"
+          }
+        }
+      }
+    },
+    "files.next_page": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Next page"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一页"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下一頁"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "次のページ"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "다음 페이지"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Следующая страница"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Página siguiente"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Página seguinte"
+          }
+        }
+      }
+    },
+    "files.not_started": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Not started"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未开始"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尚未開始"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未開始"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "시작되지 않음"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не начато"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin iniciar"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Não iniciado"
+          }
+        }
+      }
+    },
+    "files.overlapping_sources": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A selected folder and one of its descendants overlap. Review or split the selection."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选文件夹与其后代项目重叠。请检查或分开操作。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所選資料夾與其後代項目重疊。請檢查或分開操作。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選択したフォルダとその配下の項目が重複しています。選択内容を確認するか、分けて操作してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "선택한 폴더와 그 하위 항목이 겹칩니다. 선택을 검토하거나 나누십시오."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Выбранная папка пересекается с одним из её потомков. Проверьте или разделите выборку."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Una carpeta seleccionada se solapa con uno de sus elementos descendientes. Revisa o divide la selección."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uma pasta selecionada sobrepõe-se a um dos seus descendentes. Reveja ou divida a seleção."
+          }
+        }
+      }
+    },
+    "files.page_summary": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ items · page %@/%@ · %@ selected"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 项 · 第 %@/%@ 页 · 已选 %@ 项"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ 個項目 · 第 %@/%@ 頁 · 已選 %@ 個"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@項目 · %2$@/%3$@ページ · %4$@項目を選択"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@개 항목 · %2$@/%3$@페이지 · %4$@개 선택"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Объектов: %1$@ · страница %2$@/%3$@ · выбрано: %4$@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Elementos: %1$@ · página %2$@/%3$@ · seleccionados: %4$@"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Itens: %1$@ · página %2$@/%3$@ · selecionados: %4$@"
+          }
+        }
+      }
+    },
+    "files.performing_batch": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Applying file operations (stop after current item)"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在执行文件操作（停止将在当前项完成后生效）"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在執行檔案操作（停止將在目前項目完成後生效）"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ファイル操作を適用中（現在の項目の処理後に停止できます）"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파일 작업 적용 중(현재 항목 처리 후 중단 가능)"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Выполнение операций (остановка после текущего объекта)"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Aplicando operaciones de archivos (detener después del elemento actual)"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A aplicar operações de ficheiros (parar após o item atual)"
+          }
+        }
+      }
+    },
+    "files.preview_notice": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uncheck items to skip them. Edit a destination leaf name to resolve a conflict; Continue rechecks edited names before a second confirmation. Existing files will not be overwritten."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消勾选可跳过项目。编辑目标文件名可处理冲突；继续后会重新检查，并再次确认。不会覆盖已有文件。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取消勾選可略過項目。編輯目標檔名可處理衝突；繼續後會重新檢查，並再次確認。不會覆寫現有檔案。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スキップする項目のチェックを外してください。競合を解消するには移動先の末尾の名前を編集します。「続ける」で編集した名前を再確認し、2回目の確認を表示します。既存のファイルは上書きしません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "건너뛸 항목의 체크를 해제하십시오. 충돌을 해결하려면 대상의 마지막 이름을 수정하십시오. '계속'을 누르면 수정한 이름을 다시 검사하고 두 번째 확인을 표시합니다. 기존 파일은 덮어쓰지 않습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Снимите флажки с пропускаемых объектов. Для устранения конфликта измените конечное имя назначения; «Продолжить» перепроверит имена перед повторным подтверждением. Существующие файлы не перезаписываются."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desmarca los elementos que quieras omitir. Edita el nombre final del destino para resolver un conflicto; Continuar volverá a comprobar los nombres antes de una segunda confirmación. No se sobrescribirán archivos existentes."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Desmarque os itens a ignorar. Edite o nome final do destino para resolver um conflito; Continuar verifica novamente os nomes antes de uma segunda confirmação. Os ficheiros existentes não serão substituídos."
+          }
+        }
+      }
+    },
+    "files.previous_page": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Previous page"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一页"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "上一頁"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前のページ"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이전 페이지"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Предыдущая страница"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Página anterior"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Página anterior"
+          }
+        }
+      }
+    },
+    "files.protected_root": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The filesystem root cannot be changed by a bulk operation."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "批量操作不能更改文件系统根目录。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "批次操作不能更改檔案系統根目錄。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一括操作ではファイルシステムのルートを変更できません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "일괄 작업으로 파일 시스템 루트를 변경할 수 없습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Корень файловой системы нельзя изменять массовой операцией."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se puede cambiar la raíz del sistema de archivos mediante una operación por lotes."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A raiz do sistema de ficheiros não pode ser alterada por uma operação em lote."
+          }
+        }
+      }
+    },
+    "files.ready": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ready"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可执行"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "可執行"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "準備完了"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "준비됨"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Готово"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Listo"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pronto"
+          }
+        }
+      }
+    },
+    "files.rename_count": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Rename %@ files"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重命名 %@ 个文件"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重新命名 %@ 個檔案"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@個のファイルの名前を変更"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "파일 %@개 이름 변경"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Переименовать файлы: %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Archivos para renombrar: %@"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ficheiros para alterar o nome: %@"
+          }
+        }
+      }
+    },
+    "files.rename_find": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Find in name"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "查找名称中的文字"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "尋找名稱中的文字"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "名前内を検索"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이름에서 찾기"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Найти в имени"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscar en el nombre"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Procurar no nome"
+          }
+        }
+      }
+    },
+    "files.rename_numbering": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Append sequence number"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "追加序号"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "附加序號"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "連番を追加"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "일련번호 추가"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Добавить порядковый номер"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Añadir número de secuencia"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Adicionar número de sequência"
+          }
+        }
+      }
+    },
+    "files.rename_prefix": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prefix"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前缀"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前綴"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接頭辞"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "접두사"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Префикс"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prefijo"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Prefixo"
+          }
+        }
+      }
+    },
+    "files.rename_replace": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Replace with"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "替换为"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "取代為"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "置き換え後の文字列"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "다음으로 바꾸기"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Заменить на"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Reemplazar por"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Substituir por"
+          }
+        }
+      }
+    },
+    "files.rename_suffix": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Suffix"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "后缀"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "後綴"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接尾辞"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "접미사"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Суффикс"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sufijo"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sufixo"
+          }
+        }
+      }
+    },
+    "files.repeated_source": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selection contains the same source more than once."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所选项目重复包含同一个源文件。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "所選項目重複包含同一個來源檔案。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "同じ操作元が複数回選択されています。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "선택에 동일한 원본이 두 번 이상 포함되어 있습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "В выборке один источник указан несколько раз."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La selección contiene el mismo origen más de una vez."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A seleção contém a mesma origem mais de uma vez."
+          }
+        }
+      }
+    },
+    "files.results_notice": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Completed changes are recorded for undo. Failed or interrupted items need review; partial copies are never deleted or retried automatically."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已完成的更改有撤销记录。失败或中断的项目需要检查；不会自动删除部分副本或重试。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已完成的更改有還原記錄。失敗或中斷的項目需要檢查；不會自動刪除部分副本或重試。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完了した変更は取り消し用に記録されます。失敗または中断した項目は確認が必要です。不完全なコピーを自動で削除したり、再試行したりすることはありません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "완료된 변경은 실행 취소를 위해 기록됩니다. 실패하거나 중단된 항목은 검토가 필요하며, 불완전한 사본은 자동으로 삭제하거나 다시 시도하지 않습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Завершённые изменения записаны для отмены. Ошибки и прерванные операции требуют проверки; неполные копии никогда не удаляются и не повторяются автоматически."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Los cambios completados se registran para poder deshacerlos. Los elementos fallidos o interrumpidos requieren revisión; las copias parciales nunca se eliminan ni se reintentan automáticamente."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "As alterações concluídas são registadas para poderem ser desfeitas. Os itens com falhas ou interrompidos requerem revisão; as cópias parciais nunca são eliminadas ou repetidas automaticamente."
+          }
+        }
+      }
+    },
+    "files.selection_expired": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The selection snapshot expired. Run the search again; no partial operation was performed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择快照已过期。请重新搜索；未执行部分操作。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選取快照已到期。請重新搜尋；未執行部分操作。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選択内容のスナップショットが期限切れです。再検索してください。操作の一部だけを実行することはありませんでした。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "선택 스냅샷이 만료되었습니다. 다시 검색하십시오. 일부 항목에만 작업을 수행하지 않았습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Срок снимка выборки истёк. Выполните поиск заново; частичная операция не выполнялась."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La instantánea de la selección caducó. Repite la búsqueda; no se realizó ninguna operación parcial."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O instantâneo da seleção expirou. Repita a pesquisa; não foi efetuada nenhuma operação parcial."
+          }
+        }
+      }
+    },
+    "files.selection_incomplete": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The service did not return the complete selected page on the expected snapshot. Nothing was changed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服务未返回预期快照中完整的所选页面。未更改任何文件。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "服務未傳回預期快照中完整的所選頁面。未更改任何檔案。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "想定したスナップショットの選択ページ全体がサービスから返されませんでした。変更は行われていません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "서비스가 예상된 스냅샷에서 선택한 페이지 전체를 반환하지 않았습니다. 변경된 내용은 없습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Служба не вернула полную выбранную страницу ожидаемого снимка. Ничего не изменено."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El servicio no devolvió la página seleccionada completa de la instantánea esperada. No se ha cambiado nada."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O serviço não devolveu a página selecionada completa do instantâneo esperado. Nada foi alterado."
+          }
+        }
+      }
+    },
+    "files.skipped": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Skipped"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已跳过"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已略過"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "スキップ済み"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "건너뜀"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Пропущено"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Omitido"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ignorado"
+          }
+        }
+      }
+    },
+    "files.source": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Source"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "来源"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "來源"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "操作元"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "원본"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Источник"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origen"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Origem"
+          }
+        }
+      }
+    },
+    "files.source_changed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The source identity or metadata changed after selection. Review the files and retry."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择后源文件的身份或元数据发生变化。请检查文件后重试。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選取後來源檔案的身分或中繼資料已變更。請檢查檔案後重試。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "選択後に操作元の識別情報またはメタデータが変わりました。ファイルを確認してやり直してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "선택 후 원본의 식별 정보나 메타데이터가 변경되었습니다. 파일을 검토한 뒤 다시 시도하십시오."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "После выбора изменились идентификатор или метаданные источника. Проверьте файлы и повторите попытку."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La identidad o los metadatos del origen cambiaron tras la selección. Revisa los archivos e inténtalo de nuevo."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A identidade ou os metadados da origem mudaram após a seleção. Reveja os ficheiros e tente novamente."
+          }
+        }
+      }
+    },
+    "files.survivor_changed": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The duplicate group no longer has its verified retained file. No further cleanup was performed."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重复组中要保留的文件已无法验证。已停止后续清理。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重複群組中要保留的檔案已無法驗證。已停止後續清理。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "重複グループに残すはずの検証済みファイルがなくなりました。これ以上の整理は行われていません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "중복 그룹에서 보존하기로 한 검증된 파일이 더 이상 존재하지 않습니다. 추가 정리는 수행하지 않았습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "В группе дубликатов больше нет проверенного сохраняемого файла. Дальнейшая очистка не выполнялась."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El grupo de duplicados ya no contiene el archivo verificado que debía conservarse. No se realizó más limpieza."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O grupo de duplicados já não contém o ficheiro verificado que devia ser mantido. Não foi efetuada mais limpeza."
+          }
+        }
+      }
+    },
+    "files.unchanged": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unchanged"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未改变"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未變更"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "変更なし"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "변경 없음"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Без изменений"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sin cambios"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Sem alterações"
+          }
+        }
+      }
+    },
+    "files.undo_needs_review": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A previous undo was interrupted. Review its source and destination before further changes."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "之前的撤销操作已中断。请先检查源文件和目标文件。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "先前的還原操作已中斷。請先檢查來源檔案及目標檔案。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "前回の取り消しが中断されました。さらに変更する前に、操作元と移動先を確認してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이전 실행 취소가 중단되었습니다. 추가 변경 전에 원본과 대상을 검토하십시오."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Предыдущая отмена была прервана. Перед дальнейшими изменениями проверьте её источник и назначение."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Se interrumpió una acción de deshacer anterior. Revisa su origen y destino antes de hacer más cambios."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Uma ação de desfazer anterior foi interrompida. Reveja a origem e o destino antes de fazer mais alterações."
+          }
+        }
+      }
+    },
+    "files.unsupported_type": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Only regular files, directories and symbolic links are supported."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "仅支持普通文件、目录和符号链接。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "僅支援一般檔案、目錄及符號連結。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "通常のファイル、ディレクトリ、シンボリックリンクのみ対応しています。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "일반 파일, 디렉터리 및 심볼릭 링크만 지원됩니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Поддерживаются только обычные файлы, каталоги и символические ссылки."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Solo se admiten archivos normales, directorios y enlaces simbólicos."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Apenas são suportados ficheiros regulares, diretórios e ligações simbólicas."
+          }
+        }
+      }
+    },
+    "update.automatic": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check for Updates Automatically"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自动检查更新"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自動檢查更新"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アップデートを自動で確認"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "자동으로 업데이트 확인"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Проверять обновления автоматически"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscar actualizaciones automáticamente"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Procurar atualizações automaticamente"
+          }
+        }
+      }
+    },
+    "update.available": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch %@ is available"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch %@ 已可更新"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch %@ 已可更新"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch %@が利用できます"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch %@ 사용 가능"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Доступна версия APFSearch %@"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch %@ está disponible"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch %@ está disponível"
+          }
+        }
+      }
+    },
+    "update.check": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Check for Updates…"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "检查更新…"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "檢查更新…"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アップデートを確認…"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "업데이트 확인…"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Проверить обновления…"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Buscar actualizaciones…"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Procurar atualizações…"
+          }
+        }
+      }
+    },
+    "update.digest_mismatch": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The downloaded installer does not match the signed size or SHA-256 digest."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载的安装包大小或 SHA-256 摘要与签名内容不一致。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下載的安裝套件大小或 SHA-256 摘要與簽章內容不符。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ダウンロードしたインストーラが署名済みのサイズまたはSHA-256ダイジェストと一致しません。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "다운로드한 설치 프로그램이 서명된 크기 또는 SHA-256 다이제스트와 일치하지 않습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Размер или SHA-256 загруженного установщика не совпадает с подписанными данными."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El instalador descargado no coincide con el tamaño o el resumen SHA-256 firmado."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O instalador descarregado não corresponde ao tamanho ou ao resumo SHA-256 assinado."
+          }
+        }
+      }
+    },
+    "update.disabled": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updates are not configured in this build. A trusted public key and HTTPS feed must be embedded before signing a release."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此构建尚未配置更新。正式签名前需嵌入可信公钥和 HTTPS 更新源。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "此建置尚未設定更新。正式簽章前需嵌入可信公鑰及 HTTPS 更新來源。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このビルドではアップデートが構成されていません。リリースの署名前に、信頼できる公開鍵とHTTPSフィードを組み込む必要があります。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "이 빌드에는 업데이트가 구성되지 않았습니다. 릴리스에 서명하기 전에 신뢰할 수 있는 공개 키와 HTTPS 피드를 포함해야 합니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "В этой сборке обновления не настроены. Перед подписью выпуска нужно встроить доверенный открытый ключ и HTTPS-канал."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Las actualizaciones no están configuradas en esta compilación. Antes de firmar una versión, deben integrarse una clave pública de confianza y un canal HTTPS."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "As atualizações não estão configuradas nesta compilação. Antes de assinar uma versão, é necessário incluir uma chave pública de confiança e um canal HTTPS."
+          }
+        }
+      }
+    },
+    "update.download": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download Verified Installer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载并验证安装包"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下載並驗證安裝套件"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "検証済みインストーラをダウンロード"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "검증된 설치 프로그램 다운로드"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Загрузить проверенный установщик"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descargar instalador verificado"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descarregar instalador verificado"
+          }
+        }
+      }
+    },
+    "update.download_notice": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Download %@? The manifest signature, byte limit and SHA-256 digest are checked before opening Installer."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下载 %@？打开安装器前将检查清单签名、大小限制和 SHA-256 摘要。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "下載 %@？開啟安裝程式前將檢查清單簽章、大小限制及 SHA-256 摘要。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@をダウンロードしますか？インストーラを開く前に、マニフェストの署名、バイト上限、SHA-256ダイジェストを確認します。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@을(를) 다운로드하시겠습니까? 설치 프로그램을 열기 전에 매니페스트 서명, 바이트 한도 및 SHA-256 다이제스트를 확인합니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Загрузить %@? Перед открытием установщика проверяются подпись манифеста, лимит байтов и SHA-256."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "¿Descargar %@? Antes de abrir el instalador se comprueban la firma del manifiesto, el límite de bytes y el resumen SHA-256."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descarregar %@? A assinatura do manifesto, o limite de bytes e o resumo SHA-256 são verificados antes de abrir o Instalador."
+          }
+        }
+      }
+    },
+    "update.downloading": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloading update"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在下载更新"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在下載更新"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アップデートをダウンロード中"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "업데이트 다운로드 중"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Загрузка обновления"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descargando actualización"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A descarregar a atualização"
+          }
+        }
+      }
+    },
+    "update.install_notice": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The signed download has been verified. Installer will still enforce macOS trust checks. Close APFSearch and restart its background service after installation."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已验证签名下载。安装器仍会执行 macOS 信任检查。安装后请关闭 APFSearch 并重新启动其后台服务。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "已驗證簽章下載。安裝程式仍會執行 macOS 信任檢查。安裝後請關閉 APFSearch 並重新啟動其背景服務。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "署名付きダウンロードの検証が完了しました。インストーラでもmacOSの信頼性チェックが行われます。インストール後はAPFSearchを閉じ、バックグラウンドサービスを再起動してください。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "서명된 다운로드의 검증이 완료되었습니다. 설치 프로그램에서도 macOS 신뢰 검사를 수행합니다. 설치 후 APFSearch를 닫고 백그라운드 서비스를 재시작하십시오."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Подписанная загрузка проверена. Установщик также выполнит проверки доверия macOS. После установки закройте APFSearch и перезапустите фоновую службу."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La descarga firmada se ha verificado. El instalador seguirá aplicando las comprobaciones de confianza de macOS. Cierra APFSearch y reinicia su servicio en segundo plano después de instalar."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A transferência assinada foi verificada. O Instalador continuará a aplicar as verificações de confiança do macOS. Feche o APFSearch e reinicie o serviço em segundo plano após a instalação."
+          }
+        }
+      }
+    },
+    "update.invalid_manifest": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The update manifest is invalid or exceeds the supported limits."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新清单无效或超过支持的限制。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新清單無效或超過支援的限制。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アップデートのマニフェストが無効か、対応する上限を超えています。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "업데이트 매니페스트가 잘못되었거나 지원 한도를 초과합니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Манифест обновления недействителен или превышает допустимые ограничения."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "El manifiesto de actualización no es válido o supera los límites admitidos."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "O manifesto de atualização é inválido ou excede os limites suportados."
+          }
+        }
+      }
+    },
+    "update.invalid_signature": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The update signature could not be verified."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法验证更新签名。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法驗證更新簽章。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アップデートの署名を検証できませんでした。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "업데이트 서명을 확인할 수 없습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось проверить подпись обновления."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo verificar la firma de la actualización."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Não foi possível verificar a assinatura da atualização."
+          }
+        }
+      }
+    },
+    "update.invalid_url": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Updates require an HTTPS URL without embedded credentials."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新必须使用不包含凭据的 HTTPS 地址。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新必須使用不含憑證資訊的 HTTPS 網址。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アップデートには認証情報を埋め込んでいないHTTPS URLが必要です。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "업데이트에는 자격 증명이 포함되지 않은 HTTPS URL이 필요합니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Для обновлений требуется HTTPS-адрес без встроенных учётных данных."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Las actualizaciones requieren una URL HTTPS sin credenciales incorporadas."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "As atualizações requerem um URL HTTPS sem credenciais incorporadas."
+          }
+        }
+      }
+    },
+    "update.open_installer": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Open Installer"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "打开安装器"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "開啟安裝程式"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "インストーラを開く"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "설치 프로그램 열기"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Открыть установщик"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir instalador"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abrir Instalador"
+          }
+        }
+      }
+    },
+    "update.ready": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Update verified"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新已验证"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "更新已驗證"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アップデートを検証しました"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "업데이트 검증 완료"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Обновление проверено"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualización verificada"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Atualização verificada"
+          }
+        }
+      }
+    },
+    "update.title": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch Updates"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch 更新"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch 更新"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearchのアップデート"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "APFSearch 업데이트"
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Обновления APFSearch"
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Actualizaciones de APFSearch"
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Atualizações do APFSearch"
+          }
+        }
+      }
+    },
+    "update.too_large": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The response exceeds the signed or configured byte limit. The transfer was stopped."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "响应超过签名或配置的大小限制。已停止传输。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "回應超過簽章或設定的大小限制。已停止傳輸。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "応答が署名済みまたは設定済みのバイト上限を超えたため、転送を停止しました。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "응답이 서명되거나 설정된 바이트 한도를 초과하여 전송을 중단했습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ответ превышает подписанный или настроенный лимит байтов. Передача остановлена."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "La respuesta supera el límite de bytes firmado o configurado. Se detuvo la transferencia."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A resposta excede o limite de bytes assinado ou configurado. A transferência foi interrompida."
+          }
+        }
+      }
+    },
+    "update.transport_error": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "The update could not be transferred or opened."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法传输或打开更新。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無法傳輸或開啟更新。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アップデートを転送または開くことができませんでした。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "업데이트를 전송하거나 열 수 없습니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось передать или открыть обновление."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo transferir o abrir la actualización."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Não foi possível transferir ou abrir a atualização."
+          }
+        }
+      }
+    },
+    "update.up_to_date": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This version is up to date."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "当前版本已是最新。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目前版本已是最新。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このバージョンは最新です。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "최신 버전입니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Установлена последняя версия."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta versión está actualizada."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Esta versão está atualizada."
+          }
+        }
+      }
+    },
+    "update.verification_notice": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Downloading with a fixed byte budget and verifying the signed digest. Cancel removes incomplete data."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在按固定大小上限下载并验证签名摘要。取消将移除未完成的数据。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "正在依固定大小上限下載並驗證簽章摘要。取消將移除未完成的資料。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "固定のバイト上限でダウンロードし、署名済みダイジェストを検証します。キャンセルすると未完了のデータは削除されます。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "정해진 바이트 한도 내에서 다운로드하고 서명된 다이제스트를 검증합니다. 취소하면 미완료 데이터가 삭제됩니다."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Загрузка с фиксированным лимитом байтов и проверкой подписанного хеша. При отмене неполные данные удаляются."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Descargando con un límite fijo de bytes y verificando el resumen firmado. Cancelar elimina los datos incompletos."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "A descarregar com um limite fixo de bytes e a verificar o resumo assinado. Cancelar remove os dados incompletos."
+          }
+        }
+      }
+    }
+  }
+}

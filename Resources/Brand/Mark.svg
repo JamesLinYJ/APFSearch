@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>APFSearch mark</title>
+  <desc>A folded file with a search lens. Single-color artwork on a transparent background.</desc>
+  <g fill="none" stroke="#1678EF" stroke-width="28" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M206 418H106C87 418 72 403 72 384V84C72 65 87 50 106 50H246L344 148V198"/>
+    <path d="M246 50V124C246 137 257 148 270 148H344M132 210H218M132 266H174"/>
+    <circle cx="314" cy="318" r="88"/>
+    <path d="M378 382L444 448"/>
+  </g>
+</svg>

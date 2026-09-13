@@ -1,4 +1,4 @@
-use filesearch_core::{index_store::IndexStore, SearchEngine};
+use apfsearch_core::{index_store::IndexStore, SearchEngine};
 use serde_json::{json, Value};
 use std::{
     sync::Arc,
@@ -222,7 +222,7 @@ fn latest_coverage_is_never_applied_to_a_newly_retained_older_snapshot() {
 
 #[test]
 fn legacy_property_mappings_remain_searchable_without_rewriting_indexed_rows() {
-    use filesearch_core::{index_store::IndexedFile, query};
+    use apfsearch_core::{index_store::IndexedFile, query};
     use std::collections::HashMap;
     let mut file: IndexedFile = serde_json::from_value(json!({
         "id":1,"path":"/fixture/legacy.pdf","name":"legacy.pdf","extension":"pdf",

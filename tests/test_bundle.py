@@ -5,9 +5,13 @@ import pathlib
 import plistlib
 import shutil
 import subprocess
+import sys
 import uuid
 
 PROJECT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT / 'scripts'))
+from build_identity import catalog_languages
+from build_configuration import MINIMUM_MACOS_VERSION, swift_target
 
 
 def create_test_bundle(executable, app):
@@ -21,11 +25,11 @@ def create_test_bundle(executable, app):
         shutil.copy2(executable, bundled_executable)
     info = {
         'CFBundleName': executable.name, 'CFBundleExecutable': executable.name,
-        'CFBundleIdentifier': 'local.filesearch.app.tests.' + executable.name.lower() + '.' + uuid.uuid4().hex,
+        'CFBundleIdentifier': 'org.apfsearch.app.tests.' + executable.name.lower() + '.' + uuid.uuid4().hex,
         'CFBundlePackageType': 'APPL', 'CFBundleVersion': '1',
         'CFBundleDevelopmentRegion': 'en',
-        'CFBundleLocalizations': ['en', 'zh-Hans', 'zh-Hant'],
-        'LSMinimumSystemVersion': '15.0', 'LSUIElement': True,
+        'CFBundleLocalizations': catalog_languages(),
+        'LSMinimumSystemVersion': MINIMUM_MACOS_VERSION, 'LSUIElement': True,
         'NSHighResolutionCapable': True,
     }
     (contents / 'Info.plist').write_bytes(plistlib.dumps(info))

@@ -1,4 +1,4 @@
-use filesearch_core::SearchEngine;
+use apfsearch_core::SearchEngine;
 use serde_json::{json, Value};
 use std::{fs, os::unix::fs::MetadataExt, path::Path, sync::Arc};
 

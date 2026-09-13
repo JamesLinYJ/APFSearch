@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise benchmark deadlines and scope handling without contacting a service."""
+from test_bundle import MINIMUM_MACOS_VERSION, swift_target
 import json
 import os
 import pathlib
@@ -47,7 +48,7 @@ with tempfile.TemporaryDirectory(prefix='RuntimeBenchmark-tests-') as directory:
     work = pathlib.Path(directory)
     stub = work/'SearchClient.swift'; stub.write_text(STUB)
     executable = work/'RuntimeBenchmarkTests'
-    subprocess.run(['swiftc','-module-cache-path',str(work/'ModuleCache'),'-swift-version','5','-O','-target','arm64-apple-macos15.0',str(PROJECT/'macos/ApplicationIdentity.swift'),str(PROJECT/'macos/SearchProtocol.swift'),str(stub),str(PROJECT/'tests/RuntimeBenchmark.swift'),'-o',str(executable)],check=True)
+    subprocess.run(['swiftc','-module-cache-path',str(work/'ModuleCache'),'-swift-version','5','-O','-target',swift_target(),str(PROJECT/'macos/ApplicationIdentity.swift'),str(PROJECT/'macos/SearchProtocol.swift'),str(stub),str(PROJECT/'tests/RuntimeBenchmark.swift'),'-o',str(executable)],check=True)
     passed=[]
     def check(name, condition):
         assert condition, name

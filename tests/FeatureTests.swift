@@ -6,10 +6,10 @@ import PDFKit
 
 @main struct FeatureTests {
   static func main() throws {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("FileSearch-features-" + UUID().uuidString)
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("APFSearch-features-" + UUID().uuidString)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
     defer { try? FileManager.default.removeItem(at: root) }
-    setenv("FILESEARCH_DATA_DIR", root.appendingPathComponent("engine").path, 1)
+    setenv("APFSEARCH_DATA_DIR", root.appendingPathComponent("engine").path, 1)
     var passed = [String](), failures = [String]()
     func check(_ name: String, _ condition: @autoclosure () throws -> Bool) rethrows {
       if try condition() { passed.append(name) } else { failures.append(name) }

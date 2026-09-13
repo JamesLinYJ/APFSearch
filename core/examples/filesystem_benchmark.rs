@@ -1,5 +1,5 @@
 //! Real APFS fixture validation. Changes only isolated temporary files below work/.
-use filesearch_core::{scanner, SearchEngine};
+use apfsearch_core::{scanner, SearchEngine};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -217,7 +217,7 @@ fn main() -> Result<()> {
         .unwrap()
         .to_path_buf();
     let workspace = project.parent().unwrap().parent().unwrap();
-    let base = workspace.join("work/filesearch");
+    let base = workspace.join("work/apfsearch");
     fs::create_dir_all(&base)?;
     let temp = tempfile::Builder::new()
         .prefix("filesystem-validation-")

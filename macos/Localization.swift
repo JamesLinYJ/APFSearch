@@ -8,7 +8,7 @@ import Foundation
 /// Both are native String Catalog tables selected by Bundle, not a runtime
 /// language switch or a reverse mapping of already rendered prose.
 func catalogString(_ key: String, bundle: Bundle = .main, fallback: String? = nil) -> String {
-    let missing = "\u{1f}FileSearchMissingLocalization\u{1f}"
+    let missing = "\u{1f}APFSearchMissingLocalization\u{1f}"
     for table in ["Localizable", "Features"] {
         let text = NSLocalizedString(key, tableName: table, bundle: bundle, value: missing, comment: "")
         if text != missing { return text }
@@ -81,7 +81,7 @@ struct LocalizedText: Error, LocalizedError {
     var errorDescription: String? { render() }
     var wire: [String: Any] { ["key": key, "args": arguments.map(\.wire), "text": render()] }
     func render(bundle: Bundle = .main, locale: Locale = .current, fallback: String? = nil) -> String {
-        let missing = "\u{1f}FileSearchMissingLocalization\u{1f}"
+        let missing = "\u{1f}APFSearchMissingLocalization\u{1f}"
         let found = catalogString(key, bundle: bundle, fallback: missing)
         if found == missing, let fallback = fallback { return fallback }
         let format = found == missing ? key : found

@@ -6,9 +6,16 @@ import pathlib
 import plistlib
 import re
 import subprocess
+from build_configuration import MINIMUM_MACOS_VERSION
 
 PROJECT = pathlib.Path(__file__).resolve().parents[1]
 IDENTITY = dict(re.findall(r'^    static let (\w+) = "([^"]*)"$', (PROJECT / 'macos/ApplicationIdentity.swift').read_text(), re.MULTILINE))
+
+
+def catalog_languages():
+    """Use the native permission/display-name catalog for bundle language metadata."""
+    catalog = json.loads((PROJECT / 'Resources/InfoPlist.xcstrings').read_text())
+    return sorted(catalog['strings']['CFBundleDisplayName']['localizations'])
 
 
 def verify_bundle_signatures(bundle):
@@ -42,10 +49,11 @@ def prepare_bundle(bundle):
     info = {key: record['localizations']['en']['stringUnit']['value'] for key, record in info_strings.items()}
     info.update({
         'CFBundleName': IDENTITY['applicationExecutable'], 'CFBundleIdentifier': IDENTITY['bundleIdentifier'],
-        'CFBundleDevelopmentRegion': 'en', 'CFBundleLocalizations': ['en', 'zh-Hans', 'zh-Hant'],
+        'CFBundleDevelopmentRegion': 'en', 'CFBundleLocalizations': catalog_languages(),
         'CFBundleVersion': '13', 'CFBundleShortVersionString': '0.1.0',
         'CFBundleExecutable': IDENTITY['applicationExecutable'], 'CFBundlePackageType': 'APPL',
-        'LSMinimumSystemVersion': '15.0', 'NSHighResolutionCapable': True,
+        'CFBundleIconFile': 'AppIcon',
+        'LSMinimumSystemVersion': MINIMUM_MACOS_VERSION, 'NSHighResolutionCapable': True,
         'NSPrincipalClass': 'NSApplication',
     })
     (contents / 'Info.plist').write_bytes(plistlib.dumps(info))

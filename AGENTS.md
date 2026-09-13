@@ -1,6 +1,6 @@
 # Contributor guidance
 
-APFSearch (All-Purpose File Search) is a macOS file search application under active development. Target macOS 15 or later on Apple Silicon. Use this file as the shared guidance for coding agents; `CLAUDE.md` is a relative symlink to it.
+APFSearch (All-Purpose File Search) is a macOS file search application under active development. Target macOS 14 or later on Apple Silicon and Intel. Use this file as the shared guidance for coding agents; `CLAUDE.md` is a relative symlink to it.
 
 ## Architecture
 
@@ -8,13 +8,13 @@ APFSearch (All-Purpose File Search) is a macOS file search application under act
 - `macos/`: Swift with AppKit for the main interface, SwiftUI for settings, and a versioned XPC interface shared by the app and CLI. Keep search semantics in the shared service/core.
 - `Resources/`: String Catalogs with stable semantic keys. English is the development and fallback language; preserve native Bundle localization and regional formatting.
 - `tests/`: isolated fixtures and integration harnesses. Separate fixture results from installed-app, foreground UI, full-volume, and performance validation.
-- `scripts/` and `build.sh`: bundle metadata, localization maintenance, and builds. `ApplicationIdentity.swift` is the source of truth for neutral application identifiers.
+- `scripts/` and `build.sh`: universal ARM64/Intel builds, bundle metadata, localization maintenance, and builds. `ApplicationIdentity.swift` is the source of truth for neutral application identifiers.
 
 ## Implementation standards
 
 Prefer root-cause fixes and measured algorithms. Preserve query snapshot consistency, every hard-link directory entry, and explicit coverage reporting. Do not follow directory symlinks during traversal. SQLite is authoritative; derived caches must be safe to discard and rebuild. Commit event progress with the reconciled metadata it describes.
 
-Use descriptive English identifiers and neutral package names. Product branding is APFSearch; internal modules use FileSearch or names that describe their responsibility. Do not embed a developer's name, home directory, signing certificate, team identifier, or machine configuration.
+Use descriptive English identifiers and neutral package names. Product branding is APFSearch; internal modules use APFSearch or names that describe their responsibility. Do not embed a developer's name, home directory, signing certificate, team identifier, or machine configuration.
 
 Use native controls with deliberate layout and interaction. Preserve selection, scroll position, input focus, and window size during background updates. Respect Reduce Motion. Avoid periodic table replacement, unrequested resizing, and localization implemented by replacing text at runtime.
 
@@ -26,13 +26,12 @@ Run checks appropriate to the changed layer from the repository root:
 
 ```sh
 cargo fmt --manifest-path core/Cargo.toml --check
-PCRE2_SYS_STATIC=1 MACOSX_DEPLOYMENT_TARGET=15.0 cargo test --locked --manifest-path core/Cargo.toml
-PCRE2_SYS_STATIC=1 MACOSX_DEPLOYMENT_TARGET=15.0 cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
+PCRE2_SYS_STATIC=1 MACOSX_DEPLOYMENT_TARGET=14.0 cargo test --locked --manifest-path core/Cargo.toml
+PCRE2_SYS_STATIC=1 MACOSX_DEPLOYMENT_TARGET=14.0 cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
 python3 tests/check_localization.py
 python3 tests/check_localization_protocol.py
-python3 tests/check_legacy_migration.py
 python3 tests/check_application_identity.py
-FILESEARCH_COMPILE_ONLY=1 ./build.sh
+APFSEARCH_COMPILE_ONLY=1 ./build.sh
 ```
 
 `tests/run.sh` exercises Rust and Swift service/content/file fixtures. `tests/run_search_window_tests.py` exercises AppKit behavior; visible-window checks require a usable WindowServer. Signed XPC integration requires an explicitly configured signing identity. Check each harness's arguments before running it; do not point destructive fixtures at user data or mutate the installed app for a routine test.

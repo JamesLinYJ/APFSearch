@@ -54,7 +54,7 @@ final class SelectionResolver {
       send(pageRequest) { [weak self] reply in
         guard let self, !self.stopped else { return }
         guard reply["success"] as? Bool == true else {
-          self.finish(.failure(NSError(domain: "FileSearch.Selection", code: 1,
+          self.finish(.failure(NSError(domain: "APFSearch.Selection", code: 1,
             userInfo: [NSLocalizedDescriptionKey: reply["error"] as? String ?? L("files.selection_expired")]))); return
         }
         guard (reply["offset"] as? NSNumber)?.intValue == lower,

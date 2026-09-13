@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Compile and execute isolated Swift feature tests, never the installed app."""
+from test_bundle import MINIMUM_MACOS_VERSION, swift_target
+from build_configuration import rust_flags
 from pathlib import Path
 import json
 import os
@@ -8,16 +10,17 @@ import tempfile
 from test_bundle import create_test_bundle
 
 root = Path(__file__).resolve().parents[1]
-env = dict(os.environ, PCRE2_SYS_STATIC='1', MACOSX_DEPLOYMENT_TARGET='15.0')
+env = dict(os.environ, PCRE2_SYS_STATIC='1', MACOSX_DEPLOYMENT_TARGET=MINIMUM_MACOS_VERSION)
+env['CARGO_ENCODED_RUSTFLAGS'] = rust_flags()
 subprocess.run(['cargo', 'build', '--locked', '--release', '--manifest-path', str(root/'core/Cargo.toml')], check=True, env=env)
-with tempfile.TemporaryDirectory(prefix='FileSearch-feature-tests-') as temporary:
+with tempfile.TemporaryDirectory(prefix='APFSearch-feature-tests-') as temporary:
     work = Path(temporary)
-    names = ['ApplicationIdentity', 'LegacyDataMigration', 'SearchProtocol', 'Localization',
+    names = ['ApplicationIdentity', 'SearchProtocol', 'Localization',
              'SearchService', 'ContentIndexer', 'FileOperations', 'SelectionResolver', 'UpdateManager']
     command = ['swiftc', '-module-cache-path', str(work/'ModuleCache'), '-D', 'TEST_BUILD',
-               '-swift-version', '5', '-O', '-target', 'arm64-apple-macos15.0']
+               '-swift-version', '5', '-O', '-target', swift_target()]
     command += [str(root/'macos'/f'{name}.swift') for name in names]
-    command += [str(root/'tests/FeatureTests.swift'), str(root/'tests/UpdateTransportFixture.swift'), str(root/'core/target/release/libfilesearch_core.a')]
+    command += [str(root/'tests/FeatureTests.swift'), str(root/'tests/UpdateTransportFixture.swift'), str(root/'core/target/release/libapfsearch_core.a')]
     for framework in ['AppKit', 'PDFKit', 'AVFoundation', 'ImageIO', 'Security', 'DiskArbitration', 'CoreServices', 'CoreFoundation', 'CryptoKit']:
         command += ['-framework', framework]
     executable = work/'FeatureTests'

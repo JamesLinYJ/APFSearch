@@ -22,11 +22,11 @@ def secure_url(value: str) -> bool:
 
 def configure(app: Path, environ: dict[str, str]) -> None:
     resources = app / 'Contents/Resources'
-    key = environ.get('FILESEARCH_UPDATE_PUBLIC_KEY', '')
-    feed = environ.get('FILESEARCH_UPDATE_FEED_URL', '')
-    version = environ.get('FILESEARCH_RELEASE_VERSION', '')
+    key = environ.get('APFSEARCH_UPDATE_PUBLIC_KEY', '')
+    feed = environ.get('APFSEARCH_UPDATE_FEED_URL', '')
+    version = environ.get('APFSEARCH_RELEASE_VERSION', '')
     if bool(key) != bool(feed):
-        raise ValueError('Set FILESEARCH_UPDATE_PUBLIC_KEY and FILESEARCH_UPDATE_FEED_URL together')
+        raise ValueError('Set APFSEARCH_UPDATE_PUBLIC_KEY and APFSEARCH_UPDATE_FEED_URL together')
     if key and (len(base64.b64decode(key, validate=True)) != 32 or not secure_url(feed)):
         raise ValueError('Update configuration requires a 32-byte Ed25519 public key and HTTPS feed')
     if version and not re.fullmatch(r'[0-9]{1,6}(\.[0-9]{1,6}){1,3}', version):

@@ -34,6 +34,27 @@ import Foundation
         var summaryResponse = summary.adding(to: ["success": true]); summaryResponse["message"] = summary.render(bundle: chinese)
         let englishSummary = decode(summaryResponse)
         check("nested cancellation suffix uses client Bundle", englishSummary["message"] as? String == summary.render(bundle: english, locale: Locale(identifier: "en_US")) && !(englishSummary["message"] as? String ?? "").contains("取消"), englishSummary)
+        for (language, localeName, expectedExport) in [
+            ("ja", "ja_JP", "書き出したレコード数:"),
+            ("ko", "ko_KR", "내보낸 레코드:"),
+            ("ru", "ru_RU", "Экспортировано записей:"),
+            ("es", "es_ES", "Registros exportados:"),
+            ("pt", "pt_PT", "Registos exportados:")
+        ] {
+            let bundle = Bundle(path: resources.appendingPathComponent(language + ".lproj").path)!
+            let locale = Locale(identifier: localeName)
+            let translated = decode(chineseResponse, bundle, locale)["message"] as? String ?? ""
+            check("\(language) client renders a persistent Chinese service reply",
+                  translated.hasPrefix(expectedExport) && translated.contains(12345.formatted(.number.locale(locale))), translated)
+            let translatedSummary = decode(summaryResponse, bundle, locale)["message"] as? String ?? ""
+            check("\(language) client translates nested message arguments",
+                  translatedSummary == summary.render(bundle: bundle, locale: locale)
+                    && translatedSummary.contains(catalogString("status.cancelled_suffix", bundle: bundle)), translatedSummary)
+            let history = LT("files.history_page_notice", .integer(12), .integer(34))
+            let translatedHistory = history.render(bundle: bundle, locale: locale)
+            check("\(language) history placeholders support native reordering",
+                  translatedHistory != history.key && translatedHistory.contains("12") && translatedHistory.contains("34"), translatedHistory)
+        }
         let path = "/tmp/中文已取消%@\".txt"
         let conflict = LT("error.file_not_found", .text(path))
         let conflictResponse: [String: Any] = ["success": false, "error": "服务中文", "conflicts": ["服务中文"], "conflict_messages": [conflict.wire], "error_messages": [conflict.wire], "rows": [["path": path, "name": "已取消"]]]

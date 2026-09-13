@@ -4,6 +4,7 @@
 This entry point never runs Cargo or talks to the installed Mach service. It
 requires the expected static-library hash and uses new disposable fixtures.
 """
+from test_bundle import MINIMUM_MACOS_VERSION, swift_target
 import argparse
 import datetime
 import hashlib
@@ -18,24 +19,24 @@ parser.add_argument('--core-sha256', required=True)
 parser.add_argument('--work', type=pathlib.Path)
 args = parser.parse_args()
 project = pathlib.Path(__file__).resolve().parents[1]
-work = args.work or pathlib.Path(tempfile.mkdtemp(prefix='FileSearch-integration-'))
+work = args.work or pathlib.Path(tempfile.mkdtemp(prefix='APFSearch-integration-'))
 work.mkdir(parents=True, exist_ok=True)
 # Match the scanner's canonical namespace even when tempfile returns /var.
 work = work.resolve()
-library = project / 'core/target/release/libfilesearch_core.a'
+library = project / 'core/target/release/libapfsearch_core.a'
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 if sha(library) != args.core_sha256:
     raise SystemExit('Static library differs from the requested frozen revision; no tests were run.')
-source_names = ['ApplicationIdentity.swift', 'LegacyDataMigration.swift', 'SearchProtocol.swift', 'Localization.swift', 'SearchService.swift', 'ContentIndexer.swift', 'FileOperations.swift']
+source_names = ['ApplicationIdentity.swift', 'SearchProtocol.swift', 'Localization.swift', 'SearchService.swift', 'ContentIndexer.swift', 'FileOperations.swift']
 sources = [project / 'macos' / name for name in source_names]
 source_hashes = {path.name: sha(path) for path in sources}
 executables = {}
 for name in ['ContentAndFileTests', 'ServiceTests']:
     executable = work / name
-    command = ['swiftc', '-module-cache-path', str(work / 'ModuleCache'), '-D', 'TEST_BUILD', '-swift-version', '5', '-O', '-target', 'arm64-apple-macos15.0']
+    command = ['swiftc', '-module-cache-path', str(work / 'ModuleCache'), '-D', 'TEST_BUILD', '-swift-version', '5', '-O', '-target', swift_target()]
     command += list(map(str, sources)) + [str(project / 'tests' / (name + '.swift')), str(library)]
     for framework in ['AppKit', 'PDFKit', 'AVFoundation', 'ImageIO', 'Security', 'DiskArbitration', 'CoreServices', 'CoreFoundation']:
         command += ['-framework', framework]

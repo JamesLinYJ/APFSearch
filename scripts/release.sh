@@ -2,17 +2,17 @@
 # Build in a new child directory; never remove a caller-supplied build root.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-: "${FILESEARCH_SIGN_IDENTITY:?Developer ID Application identity required}"
-: "${FILESEARCH_INSTALLER_IDENTITY:?Developer ID Installer identity required}"
-: "${FILESEARCH_RELEASE_VERSION:?Numeric release version required}"
-: "${FILESEARCH_UPDATE_PUBLIC_KEY:?Embedded update public key required}"
-: "${FILESEARCH_UPDATE_PRIVATE_KEY:?Matching update signing key required}"
-: "${FILESEARCH_UPDATE_FEED_URL:?HTTPS update feed required}"
-: "${FILESEARCH_UPDATE_URL:?HTTPS immutable package URL required}"
-[[ "$FILESEARCH_SIGN_IDENTITY" != '-' ]]
-[[ "$FILESEARCH_RELEASE_VERSION" =~ ^[0-9]{1,6}(\.[0-9]{1,6}){1,3}$ ]]
-BUILD_ROOT="${FILESEARCH_BUILD_DIR:-/private/tmp/FileSearch-release}"
-OUT="${FILESEARCH_RELEASE_DIR:-$ROOT/dist/$FILESEARCH_RELEASE_VERSION}"
+: "${APFSEARCH_SIGN_IDENTITY:?Developer ID Application identity required}"
+: "${APFSEARCH_INSTALLER_IDENTITY:?Developer ID Installer identity required}"
+: "${APFSEARCH_RELEASE_VERSION:?Numeric release version required}"
+: "${APFSEARCH_UPDATE_PUBLIC_KEY:?Embedded update public key required}"
+: "${APFSEARCH_UPDATE_PRIVATE_KEY:?Matching update signing key required}"
+: "${APFSEARCH_UPDATE_FEED_URL:?HTTPS update feed required}"
+: "${APFSEARCH_UPDATE_URL:?HTTPS immutable package URL required}"
+[[ "$APFSEARCH_SIGN_IDENTITY" != '-' ]]
+[[ "$APFSEARCH_RELEASE_VERSION" =~ ^[0-9]{1,6}(\.[0-9]{1,6}){1,3}$ ]]
+BUILD_ROOT="${APFSEARCH_BUILD_DIR:-/private/tmp/APFSearch-release}"
+OUT="${APFSEARCH_RELEASE_DIR:-$ROOT/dist/$APFSEARCH_RELEASE_VERSION}"
 mkdir -p "$BUILD_ROOT" "$(dirname "$OUT")"
 # Refuse replacing a previous release or another process's output.
 mkdir "$OUT"
@@ -23,12 +23,12 @@ APP_NAME="$(python3 "$ROOT/scripts/build_identity.py" applicationExecutable)"
 APP="$BUILD/$APP_NAME.app"
 PKG="$OUT/$APP_NAME.pkg"
 ARCHIVE="$BUILD/application.zip"
-FILESEARCH_COMPILE_ONLY=0 FILESEARCH_BUILD_DIR="$BUILD" "$ROOT/build.sh"
+APFSEARCH_ARCHITECTURES="arm64 x86_64" APFSEARCH_COMPILE_ONLY=0 APFSEARCH_BUILD_DIR="$BUILD" "$ROOT/build.sh"
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 notary_args=()
-if [[ -n "${FILESEARCH_NOTARY_PROFILE:-}" ]]; then
-  notary_args+=(--keychain-profile "$FILESEARCH_NOTARY_PROFILE")
+if [[ -n "${APFSEARCH_NOTARY_PROFILE:-}" ]]; then
+  notary_args+=(--keychain-profile "$APFSEARCH_NOTARY_PROFILE")
 else
   : "${APPLE_ID:?Apple ID or a notary keychain profile required}"
   : "${APPLE_TEAM_ID:?Apple team required}"
@@ -52,7 +52,7 @@ xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 spctl --assess --type execute --verbose=2 "$APP"
-productbuild --component "$APP" /Applications --sign "$FILESEARCH_INSTALLER_IDENTITY" "$PKG"
+productbuild --component "$APP" /Applications --sign "$APFSEARCH_INSTALLER_IDENTITY" "$PKG"
 pkgutil --check-signature "$PKG"
 notarize "$PKG"
 xcrun stapler staple "$PKG"
@@ -63,6 +63,6 @@ spctl --assess --type install --verbose=2 "$PKG"
 DIGEST="$(shasum -a 256 "$PKG" | awk '{print $1}')"
 SIZE="$(stat -f '%z' "$PKG")"
 printf '%s  %s\n' "$DIGEST" "$APP_NAME.pkg" > "$PKG.sha256"
-swift "$ROOT/scripts/sign_update_manifest.swift" "$FILESEARCH_RELEASE_VERSION" \
-  "$FILESEARCH_UPDATE_URL" "$DIGEST" "$SIZE" "$OUT/update.json"
+swift "$ROOT/scripts/sign_update_manifest.swift" "$APFSEARCH_RELEASE_VERSION" \
+  "$APFSEARCH_UPDATE_URL" "$DIGEST" "$SIZE" "$OUT/update.json"
 printf 'Verified release installer: %s\n' "$PKG"

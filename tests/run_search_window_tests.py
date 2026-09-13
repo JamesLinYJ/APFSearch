@@ -6,6 +6,7 @@ requests, and the sidebar preference write. Table instrumentation records public
 AppKit reload calls.
 It neither modifies the installed application nor talks to its indexing agent.
 """
+from test_bundle import MINIMUM_MACOS_VERSION, swift_target
 import argparse
 import datetime
 import hashlib
@@ -23,7 +24,7 @@ parser.add_argument("--report", type=pathlib.Path)
 parser.add_argument("--bundle", type=pathlib.Path, help="Build a standalone test app for launch from the GUI; requires --report, does not launch it")
 args = parser.parse_args()
 project = pathlib.Path(__file__).resolve().parents[1]
-work = args.work or pathlib.Path(tempfile.mkdtemp(prefix="FileSearch-ui-tests-"))
+work = args.work or pathlib.Path(tempfile.mkdtemp(prefix="APFSearch-ui-tests-"))
 work.mkdir(parents=True, exist_ok=True)
 source = (project / "macos/Application.swift").read_text()
 source_hash = hashlib.sha256(source.encode()).hexdigest()
@@ -35,7 +36,7 @@ startup = """        pollStatus()
 if source.count(startup) != 1:
     raise SystemExit("App initializer changed; update the test-only startup isolation boundary")
 source = source.replace(startup, "", 1)
-sidebar_preference = '        UserDefaults.standard.set(!sidebar.isCollapsed, forKey: "FileSearch.SidebarVisible")'
+sidebar_preference = '        UserDefaults.standard.set(!sidebar.isCollapsed, forKey: "APFSearch.SidebarVisible")'
 if source.count(sidebar_preference) != 1:
     raise SystemExit("Sidebar preference write changed; update the test-only persistence boundary")
 source = source.replace(sidebar_preference, "        // User preference persistence is isolated in the test build.", 1)
@@ -56,8 +57,8 @@ if source.count(table_class) != 1:
     raise SystemExit("Table class changed; update test instrumentation")
 source = source.replace(table_class, table_class + instrumentation, 1)
 (work / "ApplicationUnderTest.swift").write_text(source)
-command = ["swiftc", "-module-cache-path", str(work / "ModuleCache"), "-swift-version", "5", "-O", "-target", "arm64-apple-macos15.0"]
-command += [str(project / "macos" / name) for name in ["ApplicationIdentity.swift", "LegacyDataMigration.swift", "SearchProtocol.swift", "Localization.swift", "SettingsWindow.swift", "SelectionResolver.swift", "FileOperationReview.swift", "DuplicateResultsWindow.swift", "UpdateManager.swift", "UpdateUI.swift"]]
+command = ["swiftc", "-module-cache-path", str(work / "ModuleCache"), "-swift-version", "5", "-O", "-target", swift_target()]
+command += [str(project / "macos" / name) for name in ["ApplicationIdentity.swift", "SearchProtocol.swift", "Localization.swift", "SettingsWindow.swift", "SelectionResolver.swift", "FileOperationReview.swift", "DuplicateResultsWindow.swift", "UpdateManager.swift", "UpdateUI.swift"]]
 command += [str(work / "ApplicationUnderTest.swift"), str(project / "tests/SearchWindowTests.swift"), str(project / "tests/SearchFeatureWindowTests.swift")]
 for framework in ["AppKit", "SwiftUI", "ServiceManagement", "Quartz", "Carbon", "CryptoKit"]:
     command += ["-framework", framework]

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>APFSearch</title>
+  <desc>A folded file and a search lens on a blue rounded square.</desc>
+  <defs>
+    <linearGradient id="tile" x1="176" y1="96" x2="816" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#38B8FF"/>
+      <stop offset="0.48" stop-color="#1678EF"/>
+      <stop offset="1" stop-color="#3654D9"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="320" y1="248" x2="650" y2="728" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E2EFFF"/>
+    </linearGradient>
+    <linearGradient id="lens" x1="504" y1="504" x2="716" y2="716" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#60C9FF"/>
+      <stop offset="1" stop-color="#2378E8"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="458" y1="470" x2="794" y2="806" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D5E9FF"/>
+    </linearGradient>
+  </defs>
+  <rect x="96" y="108" width="832" height="824" rx="188" fill="#123B88" opacity="0.16"/>
+  <rect x="96" y="96" width="832" height="832" rx="188" fill="url(#tile)"/>
+  <rect x="97" y="97" width="830" height="830" rx="187" fill="none" stroke="#FFFFFF" stroke-opacity="0.24" stroke-width="2"/>
+  <path d="M340 256H516L660 400V712C660 742 638 764 608 764H340C310 764 288 742 288 712V308C288 278 310 256 340 256Z" fill="#143FA3" opacity="0.2"/>
+  <path d="M340 240H516L660 384V696C660 726 638 748 608 748H340C310 748 288 726 288 696V292C288 262 310 240 340 240Z" fill="url(#paper)"/>
+  <path d="M516 240V344C516 366 534 384 556 384H660Z" fill="#B9DAFF"/>
+  <path d="M366 428H484M366 490H438" fill="none" stroke="#6DAAF0" stroke-width="26" stroke-linecap="round"/>
+  <path d="M700 716L788 804" fill="none" stroke="#163F9E" stroke-opacity="0.22" stroke-width="82" stroke-linecap="round"/>
+  <circle cx="610" cy="626" r="151" fill="#163F9E" opacity="0.22"/>
+  <path d="M700 700L788 788" fill="none" stroke="url(#rim)" stroke-width="76" stroke-linecap="round"/>
+  <circle cx="610" cy="610" r="151" fill="url(#rim)"/>
+  <circle cx="610" cy="610" r="111" fill="url(#lens)"/>
+  <path d="M536 591A78 78 0 0 1 591 536" fill="none" stroke="#FFFFFF" stroke-opacity="0.75" stroke-width="16" stroke-linecap="round"/>
+</svg>

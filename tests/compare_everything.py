@@ -37,28 +37,28 @@ def validate_reference(reference: dict) -> list[str]:
 class Engine:
     def __init__(self, library: Path, database: Path):
         self.lib = ctypes.CDLL(str(library.resolve()))
-        self.lib.filesearch_engine_open.argtypes = [ctypes.c_char_p]
-        self.lib.filesearch_engine_open.restype = ctypes.c_void_p
-        self.lib.filesearch_engine_call.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-        self.lib.filesearch_engine_call.restype = ctypes.c_void_p
-        self.lib.filesearch_engine_free_string.argtypes = [ctypes.c_void_p]
-        self.lib.filesearch_engine_close.argtypes = [ctypes.c_void_p]
-        self.handle = self.lib.filesearch_engine_open(str(database).encode())
+        self.lib.apfsearch_engine_open.argtypes = [ctypes.c_char_p]
+        self.lib.apfsearch_engine_open.restype = ctypes.c_void_p
+        self.lib.apfsearch_engine_call.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        self.lib.apfsearch_engine_call.restype = ctypes.c_void_p
+        self.lib.apfsearch_engine_free_string.argtypes = [ctypes.c_void_p]
+        self.lib.apfsearch_engine_close.argtypes = [ctypes.c_void_p]
+        self.handle = self.lib.apfsearch_engine_open(str(database).encode())
         if not self.handle:
             raise RuntimeError('Cannot open isolated fixture engine')
 
     def close(self):
         if self.handle:
-            self.lib.filesearch_engine_close(self.handle); self.handle = None
+            self.lib.apfsearch_engine_close(self.handle); self.handle = None
 
     def call(self, request: dict) -> dict:
-        pointer = self.lib.filesearch_engine_call(self.handle, json.dumps(request).encode())
+        pointer = self.lib.apfsearch_engine_call(self.handle, json.dumps(request).encode())
         if not pointer:
             raise RuntimeError('Empty engine response')
         try:
             result = json.loads(ctypes.string_at(pointer))
         finally:
-            self.lib.filesearch_engine_free_string(pointer)
+            self.lib.apfsearch_engine_free_string(pointer)
         if result.get('success') is not True:
             raise RuntimeError(result.get('error', 'Query failed'))
         return result
@@ -102,7 +102,7 @@ def main() -> int:
         raise ValueError('Reference must contain between 1 and 1000 explicit cases')
     expected = [validate_reference(ref) for ref in references]
     comparisons = []
-    with tempfile.TemporaryDirectory(prefix='FileSearch-compatibility-') as directory:
+    with tempfile.TemporaryDirectory(prefix='APFSearch-compatibility-') as directory:
         engine = Engine(args.library, Path(directory)/'index.sqlite')
         try:
             engine.call({'op': 'scan', 'roots': [str(fixture)], 'watch': False, 'wait': True})

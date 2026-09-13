@@ -3,8 +3,8 @@ import SwiftUI
 import ServiceManagement
 
 extension Notification.Name {
-    static let searchPreferencesChanged = Notification.Name("FileSearch.preferencesChanged")
-    static let searchShortcutChanged = Notification.Name("FileSearch.shortcutChanged")
+    static let searchPreferencesChanged = Notification.Name("APFSearch.preferencesChanged")
+    static let searchShortcutChanged = Notification.Name("APFSearch.shortcutChanged")
 }
 
 final class SearchSettingsModel: ObservableObject {
@@ -87,7 +87,7 @@ final class SearchSettingsModel: ObservableObject {
         SearchClient.shared.call(["op": "scan", "roots": panel.urls.map(\.path)]) { [weak self] reply in
             guard let self else { return }
             if reply["success"] as? Bool == false { self.error = true; self.message = reply["error"] as? String ?? L("error.scan_start") }
-            else { self.message = L("status.scanning_new_scope"); UserDefaults.standard.set(true, forKey: "FileSearch.ScopeChosen"); self.refreshStatus(); NotificationCenter.default.post(name: .searchPreferencesChanged, object: nil) }
+            else { self.message = L("status.scanning_new_scope"); UserDefaults.standard.set(true, forKey: "APFSearch.ScopeChosen"); self.refreshStatus(); NotificationCenter.default.post(name: .searchPreferencesChanged, object: nil) }
         }
     }
     func updateShortcut() {
@@ -217,6 +217,6 @@ func makeSearchSettingsWindow() -> NSWindowController {
     let controller = NSHostingController(rootView: SearchSettingsView())
     let window = NSWindow(contentViewController: controller)
     window.title = L("settings.window_title"); window.styleMask = [.titled, .closable]
-    window.center(); window.setFrameAutosaveName("FileSearch.Settings")
+    window.center(); window.setFrameAutosaveName("APFSearch.Settings")
     return NSWindowController(window: window)
 }

@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 
-use filesearch_core::scanner::Watcher;
+use apfsearch_core::scanner::Watcher;
 use std::{
     fs,
     sync::{mpsc, Arc, Barrier},
@@ -60,7 +60,7 @@ fn active_watchers_can_move_threads_and_release_their_descriptors() {
                         barrier.wait();
                         for _ in 0..12 {
                             let watcher = Watcher::start(std::slice::from_ref(&root), 0).unwrap();
-                            assert!(!filesearch_core::scanner::volumes().unwrap().is_empty());
+                            assert!(!apfsearch_core::scanner::volumes().unwrap().is_empty());
                             drop(watcher);
                         }
                     })

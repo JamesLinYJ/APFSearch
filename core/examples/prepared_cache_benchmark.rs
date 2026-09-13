@@ -1,6 +1,6 @@
 //! Restore a prepared index using an existing isolated synthetic fixture.
 //! Writes one derived cache; never rescans files or creates another database copy.
-use filesearch_core::{
+use apfsearch_core::{
     index_store::{IndexStore, SearchSnapshot},
     SearchEngine,
 };

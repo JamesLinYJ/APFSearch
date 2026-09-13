@@ -18,11 +18,22 @@ final class ReplyBox: @unchecked Sendable {
         let fixture = run.appendingPathComponent("fixture", isDirectory: true)
         let db = run.appendingPathComponent("index", isDirectory: true)
         try FileManager.default.createDirectory(at: fixture, withIntermediateDirectories: true)
-        setenv("FILESEARCH_DATA_DIR", db.path, 1)
+        setenv("APFSEARCH_DATA_DIR", db.path, 1)
         let service = SearchService()
         var passed = [String](), failures = [[String: Any]](), responses = [String: Any]()
         func check(_ name: String, _ condition: Bool, _ detail: Any = "") {
             if condition { passed.append(name) } else { failures.append(["name": name, "detail": String(describing: detail)]) }
+        }
+        do {
+            let support = run.appendingPathComponent("fresh-install-support")
+            let unrelated = support.appendingPathComponent("PreviousSearch")
+            try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
+            let original = Data("existing private index; must not be opened or moved".utf8)
+            try original.write(to: unrelated.appendingPathComponent("index.sqlite"))
+            let engine = SearchEngine(applicationSupportDirectory: support)
+            let status = engine.call(["op": "status"])
+            check("fresh identity opens an empty independent index", engine.directory == support.appendingPathComponent("APFSearch", isDirectory: true) && (status["count"] as? Int) == 0, status)
+            check("fresh installation leaves neighboring data intact", try Data(contentsOf: unrelated.appendingPathComponent("index.sqlite")) == original)
         }
         func asyncRequest(_ payload: [String: Any], version: Int? = protocolVersion) -> ReplyBox {
             var request = payload
@@ -220,7 +231,7 @@ final class ReplyBox: @unchecked Sendable {
         }
         func exportTemporaries() -> [URL] {
             ((try? FileManager.default.contentsOfDirectory(at: run, includingPropertiesForKeys: nil)) ?? [])
-                .filter { $0.lastPathComponent.hasPrefix(".filesearch-export-") }
+                .filter { $0.lastPathComponent.hasPrefix(".apfsearch-export-") }
         }
         func waitForExportTemporary(_ box: ReplyBox) -> URL? {
             let deadline = Date().addingTimeInterval(15)
@@ -304,7 +315,7 @@ final class ReplyBox: @unchecked Sendable {
         responses["automatic_extraction_counts"] = ["pdf": pdf["extracted_count"] ?? -1, "docx": docx["extracted_count"] ?? -1, "text": text["extracted_count"] ?? -1, "image": image["extracted_count"] ?? -1, "pdf_cached": cached["extracted_count"] ?? -1]
         responses["offline_list_id"] = listID
         responses["cancel_reply"] = cancelledResult
-        let report: [String: Any] = ["schema_version": 1, "success": failures.isEmpty, "passed": passed, "failures": failures, "count": passed.count, "evidence": responses, "scope": "In-process asynchronous SearchService.request through real Rust staticlib and system extractors using an isolated FILESEARCH_DATA_DIR", "not_tested": ["Mach XPC connection authentication", "Full Disk Access UI", "Actual user database", "Notarization"], "fixture_directory": fixture.path, "database_directory": db.path, "macos_minimum_target": "15.0"]
+        let report: [String: Any] = ["schema_version": 1, "success": failures.isEmpty, "passed": passed, "failures": failures, "count": passed.count, "evidence": responses, "scope": "In-process asynchronous SearchService.request through real Rust staticlib and system extractors using an isolated APFSEARCH_DATA_DIR", "not_tested": ["Mach XPC connection authentication", "Full Disk Access UI", "Actual user database", "Notarization"], "fixture_directory": fixture.path, "database_directory": db.path, "macos_minimum_target": Bundle.main.object(forInfoDictionaryKey: "LSMinimumSystemVersion") as? String ?? "unknown"]
         let output = project.appendingPathComponent("validation/service.json")
         try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
         try jsonData(report).write(to: output)
