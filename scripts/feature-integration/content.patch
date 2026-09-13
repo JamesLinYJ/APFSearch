@@ -1,0 +1,9 @@
+diff --git a/macos/ContentIndexer.swift b/macos/ContentIndexer.swift
+index aad182a..0000000 100644
+--- a/macos/ContentIndexer.swift
++++ b/macos/ContentIndexer.swift
+@@ -260,3 +260,3 @@ final class ContentIndexer {
+         props["title"] = attributes[PDFDocumentAttribute.titleAttribute] as? String
+-        props["artist"] = attributes[PDFDocumentAttribute.authorAttribute] as? String
++        props["author"] = attributes[PDFDocumentAttribute.authorAttribute] as? String
+       }
