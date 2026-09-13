@@ -39,16 +39,8 @@ jobs:
             echo "::endgroup::"
           done
           python3 scripts/feature-integration/apply_status_ui.py
-          for patch in \
-            scripts/feature-integration/selection.patch \
-            scripts/feature-integration/selection-actions.patch \
-            scripts/feature-integration/content.patch
-          do
-            echo "::group::Applying $patch"
-            git apply --check "$patch"
-            git apply "$patch"
-            echo "::endgroup::"
-          done
+          git apply --check scripts/feature-integration/content.patch
+          git apply scripts/feature-integration/content.patch
           cargo fmt --manifest-path core/Cargo.toml
           git diff --check
       - name: All Rust regressions
