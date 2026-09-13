@@ -37,24 +37,22 @@ jobs:
             scripts/feature-integration/selection-actions.patch \
             scripts/feature-integration/content.patch
           do
+            echo "::group::Applying $patch"
             git apply --check "$patch"
             git apply "$patch"
+            echo "::endgroup::"
           done
           cargo fmt --manifest-path core/Cargo.toml
           git diff --check
       - name: All Rust regressions
         run: cargo test --locked --no-fail-fast --manifest-path core/Cargo.toml -- --test-threads=1
       - name: Clippy
-        if: ${{ !cancelled() }}
         run: cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
       - name: Complete macOS build
-        if: ${{ !cancelled() }}
         run: ./build.sh
       - name: Preserve formatted source for diagnosis
-        if: ${{ !cancelled() }}
         run: tar -czf "$RUNNER_TEMP/feature-source.tar.gz" core/src core/tests macos/Application.swift macos/ContentIndexer.swift
       - uses: actions/upload-artifact@v4
-        if: ${{ !cancelled() }}
         with:
           name: feature-source
           path: ${{ runner.temp }}/feature-source.tar.gz
