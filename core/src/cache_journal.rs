@@ -54,7 +54,9 @@ mod tests {
 
     fn count(connection: &Connection) -> i64 {
         let tracked: i64 = connection
-            .query_row("SELECT pending_count FROM cache_journal_state", [], |row| row.get(0))
+            .query_row("SELECT pending_count FROM cache_journal_state", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         let actual: i64 = connection
             .query_row("SELECT count(*) FROM cache_changes", [], |row| row.get(0))
@@ -78,11 +80,18 @@ mod tests {
         let connection = fixture();
         for _ in 0..100 {
             connection
-                .execute("INSERT INTO cache_changes VALUES(42) ON CONFLICT(id) DO NOTHING", [])
+                .execute(
+                    "INSERT INTO cache_changes VALUES(42) ON CONFLICT(id) DO NOTHING",
+                    [],
+                )
                 .unwrap();
         }
         assert_eq!(count(&connection), 1);
-        connection.execute_batch("BEGIN; DELETE FROM cache_changes; INSERT INTO cache_changes VALUES(7),(8);").unwrap();
+        connection
+            .execute_batch(
+                "BEGIN; DELETE FROM cache_changes; INSERT INTO cache_changes VALUES(7),(8);",
+            )
+            .unwrap();
         assert_eq!(count(&connection), 2);
         connection.execute_batch("ROLLBACK").unwrap();
         assert_eq!(count(&connection), 1);
@@ -95,7 +104,9 @@ mod tests {
         let connection = fixture();
         connection.execute_batch("BEGIN").unwrap();
         {
-            let mut insert = connection.prepare("INSERT INTO cache_changes VALUES(?1)").unwrap();
+            let mut insert = connection
+                .prepare("INSERT INTO cache_changes VALUES(?1)")
+                .unwrap();
             for id in 1..=MAX_IDS as i64 {
                 insert.execute([id]).unwrap();
             }
@@ -104,13 +115,17 @@ mod tests {
         assert_eq!(count(&connection), MAX_IDS as i64);
         assert!(!overflow(&connection));
         connection.execute_batch("BEGIN").unwrap();
-        connection.execute("INSERT INTO cache_changes VALUES(?1)", [MAX_IDS as i64 + 1]).unwrap();
+        connection
+            .execute("INSERT INTO cache_changes VALUES(?1)", [MAX_IDS as i64 + 1])
+            .unwrap();
         assert!(overflow(&connection));
         assert_eq!(count(&connection), 0);
         connection.execute_batch("ROLLBACK").unwrap();
         assert!(!overflow(&connection));
         assert_eq!(count(&connection), MAX_IDS as i64);
-        connection.execute("INSERT INTO cache_changes VALUES(?1)", [MAX_IDS as i64 + 1]).unwrap();
+        connection
+            .execute("INSERT INTO cache_changes VALUES(?1)", [MAX_IDS as i64 + 1])
+            .unwrap();
         assert!(overflow(&connection));
         assert_eq!(count(&connection), 0);
         connection.execute_batch("UPDATE settings SET value='false' WHERE key='cache_journal_overflow'; INSERT INTO cache_changes VALUES(9);").unwrap();
@@ -120,9 +135,13 @@ mod tests {
     #[test]
     fn trigger_has_no_per_insert_count_or_journal_scan() {
         let connection = fixture();
-        let trigger: String = connection.query_row(
-            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='cache_change_limit'", [], |row| row.get(0)
-        ).unwrap();
+        let trigger: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='cache_change_limit'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         assert!(!trigger.to_ascii_lowercase().contains("count("));
         assert!(!trigger.contains("SELECT id FROM cache_changes"));
     }

@@ -612,7 +612,7 @@ unsafe extern "C" fn count_file_reads(
         // This box lives until the synchronous refresh ends and trace is removed.
         let trace = unsafe { &*context.cast::<FileReadTrace>() };
         let sql = unsafe { CStr::from_ptr(sql.cast()) }.to_bytes();
-        if sql.starts_with(b"SELECT f.id,") {
+        if sql.starts_with(b"SELECT f.id,") || sql.starts_with(b"SELECT j.id,") {
             trace.selects.fetch_add(1, Ordering::Relaxed);
             if sql.windows(b"AND (1)".len()).any(|part| part == b"AND (1)") {
                 trace.full_reads.fetch_add(1, Ordering::Relaxed);

@@ -18,7 +18,7 @@ APFS enumeration uses `getattrlistbulk`. FSEvents starts before the initial trav
 
 Search uses substring candidates, Roaring bitmaps, numeric columns, Unicode normalization and case folding, and PCRE2 regular expressions. Each query binds to a snapshot generation. Content extraction and hashing run separately from filename search and support cancellation.
 
-See [the core interface](core/README.md) and [localization conventions](docs/LOCALIZATION.md).
+See [the core interface](core/README.md), [incremental-index design](docs/INCREMENTAL_INDEX.md), and [localization conventions](docs/LOCALIZATION.md).
 
 ## Build
 

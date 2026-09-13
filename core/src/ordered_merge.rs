@@ -25,9 +25,8 @@ pub(super) fn insert_sorted(
             high = high.saturating_mul(2).saturating_add(1);
         }
         let end = high.min(remaining.len());
-        cursor += low
-            + remaining[low..end]
-                .partition_point(|slot| !compare(*slot, replacement).is_gt());
+        cursor +=
+            low + remaining[low..end].partition_point(|slot| !compare(*slot, replacement).is_gt());
         positions.push(cursor);
     }
     let mut end = slots.len();
@@ -65,7 +64,9 @@ mod tests {
         insert_sorted(&mut slots, &[10, 8, 6, 4, 2, 0], |a, b| b.cmp(&a));
         assert_eq!(slots, (0..=10).rev().collect::<Vec<_>>());
         let mut slots = vec![10, 11, 20, 30];
-        insert_sorted(&mut slots, &[12, 13, 21, 31], |a, b| (a / 10).cmp(&(b / 10)));
+        insert_sorted(&mut slots, &[12, 13, 21, 31], |a, b| {
+            (a / 10).cmp(&(b / 10))
+        });
         assert_eq!(slots, vec![10, 11, 12, 13, 20, 21, 30, 31]);
     }
 
@@ -78,7 +79,10 @@ mod tests {
             comparisons += 1;
             a.cmp(&b)
         });
-        assert!(comparisons < 2_000, "{comparisons} comparisons for 33 updates");
+        assert!(
+            comparisons < 2_000,
+            "{comparisons} comparisons for 33 updates"
+        );
         assert!(slots.windows(2).all(|pair| pair[0] <= pair[1]));
         assert_eq!(slots.len(), 100_033);
     }

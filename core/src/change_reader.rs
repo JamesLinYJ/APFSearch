@@ -59,18 +59,24 @@ pub(super) fn read(
     journal: Journal,
     limit: usize,
 ) -> Result<Option<SnapshotDelta>, String> {
-    let mut statement = connection.prepare(&select(journal)).map_err(|error| error.to_string())?;
+    let mut statement = connection
+        .prepare(&select(journal))
+        .map_err(|error| error.to_string())?;
     let bound = i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX);
-    let rows = statement.query_map([bound], |row| {
-        let id = row.get(0)?;
-        let file = if matches!(row.get_ref(1)?, ValueRef::Null) {
-            None
-        } else {
-            Some(decode_file(row)?)
-        };
-        Ok((id, file))
-    }).map_err(|error| error.to_string())?;
-    let changes = rows.collect::<Result<SnapshotDelta, _>>().map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([bound], |row| {
+            let id = row.get(0)?;
+            let file = if matches!(row.get_ref(1)?, ValueRef::Null) {
+                None
+            } else {
+                Some(decode_file(row)?)
+            };
+            Ok((id, file))
+        })
+        .map_err(|error| error.to_string())?;
+    let changes = rows
+        .collect::<Result<SnapshotDelta, _>>()
+        .map_err(|error| error.to_string())?;
     if changes.is_empty() || changes.len() > limit {
         Ok(None)
     } else {
@@ -85,11 +91,23 @@ mod tests {
     #[test]
     fn delta_query_looks_up_file_primary_keys_instead_of_scanning_files() {
         let temporary = tempfile::tempdir().unwrap();
-        let store = crate::index_store::IndexStore::open(&temporary.path().join("index.sqlite")).unwrap();
+        let store =
+            crate::index_store::IndexStore::open(&temporary.path().join("index.sqlite")).unwrap();
         for journal in [Journal::Snapshot, Journal::Cache] {
-            let mut statement = store.connection.prepare(&format!("EXPLAIN QUERY PLAN {}", select(journal))).unwrap();
-            let plan = statement.query_map([10], |row| row.get::<_, String>(3)).unwrap().collect::<Result<Vec<_>, _>>().unwrap();
-            assert!(plan.iter().any(|step| step.contains("SEARCH f USING INTEGER PRIMARY KEY")), "{plan:?}");
+            let mut statement = store
+                .connection
+                .prepare(&format!("EXPLAIN QUERY PLAN {}", select(journal)))
+                .unwrap();
+            let plan = statement
+                .query_map([10], |row| row.get::<_, String>(3))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(
+                plan.iter()
+                    .any(|step| step.contains("SEARCH f USING INTEGER PRIMARY KEY")),
+                "{plan:?}"
+            );
             assert!(!plan.iter().any(|step| step.contains("SCAN f")), "{plan:?}");
         }
     }
