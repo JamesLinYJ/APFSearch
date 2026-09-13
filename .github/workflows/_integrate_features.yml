@@ -57,11 +57,13 @@ jobs:
           name: feature-source
           path: ${{ runner.temp }}/feature-source.tar.gz
           retention-days: 3
-      - name: Commit only validated sources
+      - name: Commit validated sources without dropping concurrent PR commits
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add core/src core/tests macos/Application.swift macos/ContentIndexer.swift
           git diff --cached --check
           git commit -m 'feat: integrate relations, cross-page operations, properties and status'
+          git fetch origin perf/bounded-incremental-index
+          git rebase origin/perf/bounded-incremental-index
           git push origin HEAD:refs/heads/perf/bounded-incremental-index
