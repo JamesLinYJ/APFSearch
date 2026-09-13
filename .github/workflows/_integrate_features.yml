@@ -28,8 +28,8 @@ jobs:
           test "$(git hash-object core/src/lib.rs)" = fc17aa63d4bc8d3496fcb39f7b4e66a6c877f87e
           test "$(git hash-object macos/Application.swift)" = beb9535eef36128ed1eab6c16bcac381e96eea96
           test "$(git hash-object macos/ContentIndexer.swift)" = aad182acf9352ff7e477e9a5dde284302bd53c72
-          git apply --check scripts/feature-integration/engine.patch scripts/feature-integration/query.patch scripts/feature-integration/index.patch scripts/feature-integration/ui.patch scripts/feature-integration/content.patch
-          git apply scripts/feature-integration/engine.patch scripts/feature-integration/query.patch scripts/feature-integration/index.patch scripts/feature-integration/ui.patch scripts/feature-integration/content.patch
+          git apply --check scripts/feature-integration/engine.patch scripts/feature-integration/query.patch scripts/feature-integration/index.patch scripts/feature-integration/ui.patch scripts/feature-integration/selection.patch scripts/feature-integration/content.patch
+          git apply scripts/feature-integration/engine.patch scripts/feature-integration/query.patch scripts/feature-integration/index.patch scripts/feature-integration/ui.patch scripts/feature-integration/selection.patch scripts/feature-integration/content.patch
           cargo fmt --manifest-path core/Cargo.toml
           git diff --check
       - name: All Rust regressions
@@ -55,5 +55,5 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add core/src core/tests macos/Application.swift macos/ContentIndexer.swift
           git diff --cached --check
-          git commit -m 'feat: integrate indexed relations, properties and event-driven status'
+          git commit -m 'feat: integrate indexed relations, pinned selection, properties and status'
           git push origin HEAD:refs/heads/perf/bounded-incremental-index
