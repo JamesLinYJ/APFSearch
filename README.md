@@ -98,4 +98,8 @@ Runtime data is stored under `~/Library/Application Support/FileSearch`. It is n
 
 Read [AGENTS.md](AGENTS.md) for architecture, validation, privacy, and implementation guidance. `CLAUDE.md` links to the same file. Use synthetic examples and keep local indexes, runtime logs, file lists, and signing material out of commits.
 
-Licensed under MIT. See [LICENSE](LICENSE) and [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).
+## License
+
+APFSearch's original code is available under the [MIT License](LICENSE). It may be used, modified, redistributed, and included in commercial or closed-source products, provided the required copyright and permission notices are retained. The software is provided without warranty.
+
+Dependencies retain their own licenses. [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) includes the dependency notices, including licenses for bundled native libraries. See the [Open Source Initiative's MIT text](https://opensource.org/license/mit) for the standard license terms.
