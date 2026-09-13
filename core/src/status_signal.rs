@@ -37,7 +37,11 @@ impl StatusSignal {
 
     pub(crate) fn lock(&self) -> LockResult<StatusGuard<'_>> {
         match self.state.lock() {
-            Ok(state) => Ok(StatusGuard { owner: self, state, dirty: false }),
+            Ok(state) => Ok(StatusGuard {
+                owner: self,
+                state,
+                dirty: false,
+            }),
             Err(error) => Err(PoisonError::new(StatusGuard {
                 owner: self,
                 state: error.into_inner(),
@@ -77,15 +81,18 @@ impl StatusSignal {
         }
         struct Waiting<'a>(&'a AtomicUsize);
         impl Drop for Waiting<'_> {
-            fn drop(&mut self) { self.0.fetch_sub(1, Ordering::AcqRel); }
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::AcqRel);
+            }
         }
         let _waiting = Waiting(&self.waiters);
         let state = self.state.lock().map_err(|_| "Status lock poisoned")?;
-        let _wait = self.changed.wait_timeout_while(
-            state,
-            timeout.min(Duration::from_secs(30)),
-            |state| state.revision == after && !cancelled.load(Ordering::Acquire),
-        ).map_err(|_| "Status lock poisoned")?;
+        let _wait = self
+            .changed
+            .wait_timeout_while(state, timeout.min(Duration::from_secs(30)), |state| {
+                state.revision == after && !cancelled.load(Ordering::Acquire)
+            })
+            .map_err(|_| "Status lock poisoned")?;
         if cancelled.load(Ordering::Acquire) {
             Err("Status observation cancelled".into())
         } else {
@@ -101,7 +108,9 @@ pub(crate) struct StatusGuard<'a> {
 }
 impl Deref for StatusGuard<'_> {
     type Target = Value;
-    fn deref(&self) -> &Value { &self.state.value }
+    fn deref(&self) -> &Value {
+        &self.state.value
+    }
 }
 impl DerefMut for StatusGuard<'_> {
     fn deref_mut(&mut self) -> &mut Value {
@@ -139,9 +148,13 @@ mod tests {
         let signal = StatusSignal::new(json!({}));
         let revision = signal.snapshot().1;
         signal.notify();
-        signal.wait(revision, Duration::from_secs(30), &AtomicBool::new(false)).unwrap();
+        signal
+            .wait(revision, Duration::from_secs(30), &AtomicBool::new(false))
+            .unwrap();
         let changed = signal.snapshot().1;
-        signal.wait(changed, Duration::ZERO, &AtomicBool::new(false)).unwrap();
+        signal
+            .wait(changed, Duration::ZERO, &AtomicBool::new(false))
+            .unwrap();
         assert_eq!(signal.snapshot().1, changed);
     }
 

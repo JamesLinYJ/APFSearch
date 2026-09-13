@@ -210,6 +210,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     var cachedRows: [Int: [String: Any]] = [:]
     var total = 0
     var generation: Any?
+    var snapshotLease: String?
     var querySequence = 0
     var requestIDs = Set<String>()
     var pendingPages = Set<Int>()
@@ -231,7 +232,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     var roots: [String] = []
     var queryTimer: Timer?
     var historyTimer: Timer?
-    var statusTimer: Timer?
+    let statusRequestID = UUID().uuidString
     var elapsed: Double = 0
     var coreElapsed: Double = 0
     var pendingInputStartedAt: TimeInterval?
@@ -306,10 +307,13 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         pollStatus()
         refreshShortcuts()
         runQuery()
-        if offlineListID == nil { statusTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.pollStatus() } }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    deinit { progressDelay?.invalidate(); queryTimer?.invalidate(); historyTimer?.invalidate(); statusTimer?.invalidate(); liveScrollObservers.forEach { NotificationCenter.default.removeObserver($0) } }
+    deinit {
+        progressDelay?.invalidate(); queryTimer?.invalidate(); historyTimer?.invalidate()
+        if offlineListID == nil { SearchClient.shared.call(["op": "cancel", "request_id": statusRequestID]) { _ in } }
+        liveScrollObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    }
 
     func buildInterface() {
         guard let content = splitController.splitViewItems.last?.viewController.view else { return }
@@ -585,6 +589,12 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     @objc func focusSearch(_ sender: Any?) { searchToolbarItem?.beginSearchInteraction(); window?.makeFirstResponder(search); search.selectText(nil) }
     @objc func preferencesChanged(_ notification: Notification) { refreshShortcuts(); runQuery() }
     func cancelQueries() {
+        if let lease = snapshotLease {
+            var release: [String: Any] = ["op": "release_snapshot", "snapshot_lease": lease]
+            if let offlineListID { release["list_id"] = offlineListID }
+            SearchClient.shared.call(release) { _ in }
+            snapshotLease = nil
+        }
         for id in requestIDs {
             var request: [String: Any] = ["op": "cancel", "request_id": id]
             if let offlineListID { request["list_id"] = offlineListID }
@@ -618,6 +628,8 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         let isInitialQuery = queryPending && generation == nil
         let id = UUID().uuidString; requestIDs.insert(id); pendingPages.insert(page)
         var request: [String: Any] = ["op": "query", "text": queryText, "offset": page * pageSize, "limit": pageSize, "request_id": id, "sort": table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] }]
+        if isInitialQuery { request["retain_snapshot"] = true }
+        else if let snapshotLease { request["snapshot_lease"] = snapshotLease }
         if let generation { request["generation"] = generation }
         if let offlineListID { request["list_id"] = offlineListID }
         SearchClient.shared.call(request) { [weak self] reply in
@@ -631,6 +643,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
                 if (error.contains("generation") || error.contains("snapshot") || error.contains("stale")) && !isInitialQuery { self.refreshVisibleResults(); return }
                 self.queryWarnings = [error]; self.updateStatus(); return
             }
+            if isInitialQuery { self.snapshotLease = reply["snapshot_lease"] as? String }
             self.generation = reply["generation"] ?? self.generation
             let rows = reply["rows"] as? [[String: Any]] ?? []
             let count = (reply["total"] as? NSNumber)?.intValue ?? 0
@@ -751,6 +764,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         let sequence = querySequence, id = UUID().uuidString
         liveRefreshPending = true; requestIDs.insert(id)
         var request: [String: Any] = ["op": "query", "text": queryText, "offset": offset, "limit": limit, "request_id": id, "sort": table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] }]
+        request["retain_snapshot"] = true
         if let anchor {
             request["anchor_path"] = anchor; request["anchor_delta"] = first - offset
             // Preserve the SQLite row ID as an integer; the core also checks
@@ -773,7 +787,9 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
             if let selected = self.table.selectedRowIndexes.last, selected >= offset + limit { return }
             guard self.table.selectedRowIndexes.count == self.selectedPaths.count else { return }
             let selection = Set(self.selectedPaths)
+            let incomingLease = reply["snapshot_lease"] as? String
             self.cancelQueries(); self.querySequence += 1
+            self.snapshotLease = incomingLease
             self.generation = reply["generation"]
             let rows = reply["rows"] as? [[String: Any]] ?? []
             let start = (reply["offset"] as? NSNumber)?.intValue ?? offset
@@ -901,6 +917,56 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         return selected.allSatisfy { cachedRows[$0]?["path"] is String }
     }
     var canUseSelection: Bool { resultsAreCurrent && !table.selectedRowIndexes.isEmpty && selectionIsComplete }
+    func withResolvedSelection(_ completion: @escaping ([String]) -> Void) {
+        guard resultsAreCurrent, offlineListID == nil, !table.selectedRowIndexes.isEmpty else { return }
+        let selected = table.selectedRowIndexes
+        if selectionIsComplete { completion(selectedPaths); return }
+        guard let lease = snapshotLease else { runQuery(); return }
+        let sequence = querySequence
+        let batch = 1000
+        let pages = Array(Set(selected.map { $0 / batch })).sorted()
+        var resolved = [Int: String]()
+        for index in selected {
+            if let path = cachedRows[index]?["path"] as? String { resolved[index] = path }
+        }
+        func finishOrFail() {
+            guard sequence == self.querySequence else { return }
+            let paths = selected.compactMap { resolved[$0] }
+            guard paths.count == selected.count else {
+                self.checkResult(["success": false, "error": L("error.operation_incomplete")])
+                return
+            }
+            completion(paths)
+        }
+        func fetch(_ position: Int) {
+            guard sequence == self.querySequence else { return }
+            guard position < pages.count else { finishOrFail(); return }
+            let page = pages[position]
+            let lower = page * batch
+            let needed = selected.intersection(IndexSet(integersIn: lower..<(lower + batch)))
+            if needed.allSatisfy({ resolved[$0] != nil }) { fetch(position + 1); return }
+            let id = UUID().uuidString
+            self.requestIDs.insert(id)
+            var request: [String: Any] = [
+                "op": "query", "text": self.queryText, "offset": lower, "limit": batch,
+                "request_id": id, "snapshot_lease": lease,
+                "sort": self.table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] },
+            ]
+            if let generation = self.generation { request["generation"] = generation }
+            SearchClient.shared.call(request) { reply in
+                self.requestIDs.remove(id)
+                guard sequence == self.querySequence else { return }
+                guard reply["success"] as? Bool == true else { self.checkResult(reply); return }
+                let rows = reply["rows"] as? [[String: Any]] ?? []
+                for (offset, row) in rows.enumerated() {
+                    let index = lower + offset
+                    if selected.contains(index), let path = row["path"] as? String { resolved[index] = path }
+                }
+                fetch(position + 1)
+            }
+        }
+        fetch(0)
+    }
     func boolValue(_ value: Any?) -> Bool { (value as? Bool) ?? ((value as? NSNumber)?.intValue != 0 && value is NSNumber) }
     func stringList(_ value: Any?) -> [String] {
         if let items = value as? [String] { return items }
@@ -915,9 +981,17 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     func pollStatus() {
         guard offlineListID == nil, !statusRequestPending else { return }
         statusRequestPending = true
-        SearchClient.shared.call(["op": "status"]) { [weak self] reply in
+        let revision = (currentStatus["status_revision"] as? NSNumber)?.uint64Value
+        let request: [String: Any] = revision.map {
+            ["op": "wait_status", "after": $0, "timeout_ms": 30_000, "request_id": statusRequestID]
+        } ?? ["op": "status"]
+        SearchClient.shared.call(request) { [weak self] reply in
             guard let self else { return }
             self.statusRequestPending = false
+            guard reply["success"] as? Bool != false else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.pollStatus() }
+                return
+            }
             self.currentStatus = reply
             self.roots = self.stringList(reply["roots"])
             self.updateStatus()
@@ -928,6 +1002,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.chooseVolumes(nil) }
                 }
             }
+            self.pollStatus()
         }
     }
     func requestProgress(_ active: Bool, immediate: Bool = false) {
@@ -1077,34 +1152,60 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     @objc func openSelection(_ sender: Any?) { if resultsAreCurrent && offlineListID == nil { performSimple("open") } }
     @objc func revealSelection(_ sender: Any?) { performSimple("reveal") }
     @objc func copyPaths(_ sender: Any?) {
-        guard canUseSelection else { return }
-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(selectedPaths.joined(separator: "\n"), forType: .string)
+        withResolvedSelection { paths in
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
+        }
     }
     func performSimple(_ action: String) {
         guard canUseSelection, offlineListID == nil else { return }
         SearchClient.shared.call(["op": "files", "action": action, "paths": selectedPaths]) { [weak self] reply in self?.checkResult(reply) }
     }
     @objc func renameSelection(_ sender: Any?) {
-        guard canUseSelection, selectedPaths.count == 1, let path = selectedPaths.first else { return }
-        let alert = NSAlert(); alert.messageText = L("files.rename_title"); alert.informativeText = path
-        let field = NSTextField(string: URL(fileURLWithPath: path).lastPathComponent); field.frame = NSRect(x: 0, y: 0, width: 380, height: 25); alert.accessoryView = field
-        alert.addButton(withTitle: L("action.rename")); alert.addButton(withTitle: L("action.cancel"))
-        guard alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty, !field.stringValue.contains("/") else { return }
-        confirmFileOperation(["op": "files", "action": "rename", "paths": [path], "new_name": field.stringValue], title: L("files.rename_confirmation", String(describing: field.stringValue)))
+        withResolvedSelection { paths in
+            guard !paths.isEmpty else { return }
+            let alert = NSAlert(); alert.messageText = L("files.rename_title")
+            if paths.count == 1 {
+                let field = NSTextField(string: URL(fileURLWithPath: paths[0]).lastPathComponent)
+                field.frame = NSRect(x: 0, y: 0, width: 380, height: 25); alert.accessoryView = field
+                alert.addButton(withTitle: L("action.rename")); alert.addButton(withTitle: L("action.cancel"))
+                guard alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty, !field.stringValue.contains("/") else { return }
+                self.confirmFileOperation(["op": "files", "action": "rename", "paths": paths, "new_name": field.stringValue], title: L("files.rename_confirmation", String(describing: field.stringValue)))
+                return
+            }
+            alert.informativeText = "\(paths.count) files"
+            let search = NSTextField(); search.placeholderString = "Find in name"
+            let replace = NSTextField(); replace.placeholderString = "Replace with"
+            let prefix = NSTextField(); prefix.placeholderString = "Prefix"
+            let suffix = NSTextField(); suffix.placeholderString = "Suffix"
+            let numbering = NSButton(checkboxWithTitle: "Append sequence number", target: nil, action: nil)
+            let stack = NSStackView(views: [search, replace, prefix, suffix, numbering])
+            stack.orientation = .vertical; stack.spacing = 7; stack.frame = NSRect(x: 0, y: 0, width: 400, height: 130)
+            alert.accessoryView = stack
+            alert.addButton(withTitle: L("action.rename")); alert.addButton(withTitle: L("action.cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            var rule: [String: Any] = ["search": search.stringValue, "replace": replace.stringValue,
+                "prefix": prefix.stringValue, "suffix": suffix.stringValue]
+            if numbering.state == .on { rule["number_start"] = 1; rule["number_padding"] = String(paths.count).count }
+            self.confirmFileOperation(["op": "files", "action": "rename", "paths": paths,
+                "rename_rule": rule, "conflict_policy": "skip"], title: L("files.rename_title"))
+        }
     }
     @objc func copySelection(_ sender: Any?) { chooseDestination("copy") }
     @objc func moveSelection(_ sender: Any?) { chooseDestination("move") }
     func chooseDestination(_ action: String) {
-        guard canUseSelection else { return }
-        let paths = selectedPaths
-        let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
-        panel.title = action == "copy" ? L("files.copy_folder_title") : L("files.move_folder_title"); panel.prompt = L("action.choose")
-        guard panel.runModal() == .OK, let destination = panel.url?.path else { return }
-        confirmFileOperation(["op": "files", "action": action, "paths": paths, "destination": destination], title: L("files.destination_confirmation", String(describing: action == "copy" ? L("action.copy") : L("action.move")), (paths.count).formatted(), String(describing: destination)))
+        guard resultsAreCurrent, !table.selectedRowIndexes.isEmpty else { return }
+        withResolvedSelection { paths in
+            let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
+            panel.title = action == "copy" ? L("files.copy_folder_title") : L("files.move_folder_title"); panel.prompt = L("action.choose")
+            guard panel.runModal() == .OK, let destination = panel.url?.path else { return }
+            self.confirmFileOperation(["op": "files", "action": action, "paths": paths, "destination": destination], title: L("files.destination_confirmation", String(describing: action == "copy" ? L("action.copy") : L("action.move")), (paths.count).formatted(), String(describing: destination)))
+        }
     }
     @objc func trashSelection(_ sender: Any?) {
-        guard canUseSelection else { return }
-        confirmFileOperation(["op": "files", "action": "trash", "paths": selectedPaths], title: L("files.trash_confirmation", (selectedPaths.count).formatted()))
+        withResolvedSelection { paths in
+            self.confirmFileOperation(["op": "files", "action": "trash", "paths": paths], title: L("files.trash_confirmation", paths.count.formatted()))
+        }
     }
     func confirmFileOperation(_ request: [String: Any], title: String) {
         guard offlineListID == nil else { return }
@@ -1256,7 +1357,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         return true
     }
     func windowWillClose(_ notification: Notification) {
-        progressDelay?.invalidate(); queryTimer?.invalidate(); historyTimer?.invalidate(); statusTimer?.invalidate(); cancelQueries(); cancelBackground(nil)
+        progressDelay?.invalidate(); queryTimer?.invalidate(); historyTimer?.invalidate(); cancelQueries(); cancelBackground(nil)
         if let delegate = NSApp.delegate as? AppDelegate { delegate.windows.removeAll { $0 === self } }
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {

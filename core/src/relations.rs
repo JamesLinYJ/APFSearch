@@ -1,10 +1,17 @@
 //! Snapshot-local directory topology and aggregate queries. No filesystem I/O.
 //! A dense parent column and a directory-only postorder avoid one subtree scan
 //! per directory. Hard-link directory entries contribute logical size separately.
-use crate::{index_store::{IndexedFile, SearchSnapshot}, query::{Query, Term}};
+use crate::{
+    index_store::{IndexedFile, SearchSnapshot},
+    query::{Query, Term},
+};
 use roaring::RoaringTreemap;
 use serde_json::{json, Value};
-use std::{collections::HashMap, path::Path, sync::atomic::{AtomicBool, Ordering}};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 const NO_PARENT: u32 = u32::MAX;
 
@@ -16,15 +23,27 @@ pub struct ResolvedPredicate {
 impl ResolvedPredicate {
     pub(crate) fn truth(&self, file: &IndexedFile) -> Option<bool> {
         let id = file.id as u64;
-        if self.yes.contains(id) { Some(true) }
-        else if self.unknown.contains(id) { None }
-        else { Some(false) }
+        if self.yes.contains(id) {
+            Some(true)
+        } else if self.unknown.contains(id) {
+            None
+        } else {
+            Some(false)
+        }
     }
 }
 
 pub(crate) fn is_metric(field: &str) -> bool {
-    matches!(field, "foldersize" | "childcount" | "childfilecount" | "childfoldercount" |
-        "descendantcount" | "descendantfilecount" | "descendantfoldercount")
+    matches!(
+        field,
+        "foldersize"
+            | "childcount"
+            | "childfilecount"
+            | "childfoldercount"
+            | "descendantcount"
+            | "descendantfilecount"
+            | "descendantfoldercount"
+    )
 }
 
 #[derive(Default)]
@@ -40,18 +59,28 @@ pub(crate) struct Hierarchy {
 }
 impl Hierarchy {
     pub(crate) fn build(snapshot: &SearchSnapshot, cancelled: &AtomicBool) -> Result<Self, String> {
-        let mut tree = Self { parents: vec![NO_PARENT; snapshot.entries.len()], ..Self::default() };
+        let mut tree = Self {
+            parents: vec![NO_PARENT; snapshot.entries.len()],
+            ..Self::default()
+        };
         for slot in &snapshot.live {
             check(cancelled)?;
-            if snapshot.entries[slot as usize].is_dir && !snapshot.entries[slot as usize].is_symlink {
+            if snapshot.entries[slot as usize].is_dir && !snapshot.entries[slot as usize].is_symlink
+            {
                 tree.directory_slots.push(slot);
             }
         }
-        let directories: HashMap<&str, usize> = tree.directory_slots.iter().enumerate()
-            .map(|(index, slot)| (snapshot.entries[*slot as usize].path.as_str(), index)).collect();
+        let directories: HashMap<&str, usize> = tree
+            .directory_slots
+            .iter()
+            .enumerate()
+            .map(|(index, slot)| (snapshot.entries[*slot as usize].path.as_str(), index))
+            .collect();
         let count = directories.len();
-        tree.own_files = vec![0; count]; tree.own_folders = vec![0; count];
-        tree.all_files = vec![0; count]; tree.all_folders = vec![0; count];
+        tree.own_files = vec![0; count];
+        tree.own_folders = vec![0; count];
+        tree.all_files = vec![0; count];
+        tree.all_folders = vec![0; count];
         tree.sizes = vec![Some(0); count];
         for slot in &snapshot.live {
             check(cancelled)?;
@@ -70,7 +99,8 @@ impl Hierarchy {
                     } else {
                         tree.all_files[index] += 1;
                         tree.own_files[index] += u64::from(is_direct);
-                        tree.sizes[index] = tree.sizes[index].and_then(|size| size.checked_add(file.size));
+                        tree.sizes[index] =
+                            tree.sizes[index].and_then(|size| size.checked_add(file.size));
                     }
                     break;
                 }
@@ -80,7 +110,13 @@ impl Hierarchy {
         tree.postorder = (0..count).collect();
         // Parent paths are strictly shorter, including non-ASCII names. Sorting
         // directory indexes by length is a stack-safe topological order.
-        tree.postorder.sort_unstable_by_key(|index| std::cmp::Reverse(snapshot.entries[tree.directory_slots[*index] as usize].path.len()));
+        tree.postorder.sort_unstable_by_key(|index| {
+            std::cmp::Reverse(
+                snapshot.entries[tree.directory_slots[*index] as usize]
+                    .path
+                    .len(),
+            )
+        });
         for &index in &tree.postorder {
             check(cancelled)?;
             let parent = tree.parents[tree.directory_slots[index] as usize];
@@ -88,16 +124,33 @@ impl Hierarchy {
                 let parent = parent as usize;
                 tree.all_files[parent] += tree.all_files[index];
                 tree.all_folders[parent] += tree.all_folders[index];
-                tree.sizes[parent] = tree.sizes[parent].zip(tree.sizes[index]).and_then(|(a,b)| a.checked_add(b));
+                tree.sizes[parent] = tree.sizes[parent]
+                    .zip(tree.sizes[index])
+                    .and_then(|(a, b)| a.checked_add(b));
             }
         }
         Ok(tree)
     }
 
-    fn incomplete(&self, snapshot: &SearchSnapshot, coverage: &Value, cancelled: &AtomicBool) -> Result<Vec<bool>, String> {
+    fn incomplete(
+        &self,
+        snapshot: &SearchSnapshot,
+        coverage: &Value,
+        cancelled: &AtomicBool,
+    ) -> Result<Vec<bool>, String> {
         let complete = coverage["complete"].as_bool().unwrap_or(false);
-        let roots: std::collections::HashSet<&str> = coverage["roots"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-        let gaps: std::collections::HashSet<&str> = coverage["uncovered"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+        let roots: std::collections::HashSet<&str> = coverage["roots"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let gaps: std::collections::HashSet<&str> = coverage["uncovered"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
         let mut gap_ancestors = std::collections::HashSet::new();
         for gap in &gaps {
             check(cancelled)?;
@@ -109,34 +162,54 @@ impl Hierarchy {
         for &slot in &self.directory_slots {
             check(cancelled)?;
             let path = Path::new(&snapshot.entries[slot as usize].path);
-            let covered = path.ancestors().filter_map(Path::to_str).any(|path| roots.contains(path));
-            let denied = gap_ancestors.contains(snapshot.entries[slot as usize].path.as_str()) ||
-                path.ancestors().filter_map(Path::to_str).any(|path| gaps.contains(path));
+            let covered = path
+                .ancestors()
+                .filter_map(Path::to_str)
+                .any(|path| roots.contains(path));
+            let denied = gap_ancestors.contains(snapshot.entries[slot as usize].path.as_str())
+                || path
+                    .ancestors()
+                    .filter_map(Path::to_str)
+                    .any(|path| gaps.contains(path));
             uncertain.push(!complete || !covered || denied);
         }
         Ok(uncertain)
     }
 
-    pub(crate) fn info(&self, snapshot: &SearchSnapshot, coverage: &Value, paths: &[String], cancelled: &AtomicBool) -> Result<Value, String> {
+    pub(crate) fn info(
+        &self,
+        snapshot: &SearchSnapshot,
+        coverage: &Value,
+        paths: &[String],
+        cancelled: &AtomicBool,
+    ) -> Result<Value, String> {
         let incomplete = self.incomplete(snapshot, coverage, cancelled)?;
         let requested: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
         let mut rows = Vec::new();
         for (index, &slot) in self.directory_slots.iter().enumerate() {
             check(cancelled)?;
             let file = &snapshot.entries[slot as usize];
-            if !requested.contains(file.path.as_str()) { continue }
+            if !requested.contains(file.path.as_str()) {
+                continue;
+            }
             let complete = !incomplete[index] && self.sizes[index].is_some();
             rows.push(json!({"path":file.path, "complete":complete,
                 "recursive_size":if complete { self.sizes[index] } else { None },
                 "indexed_logical_size":self.sizes[index], "child_count":self.own_files[index]+self.own_folders[index],
                 "descendant_count":self.all_files[index]+self.all_folders[index]}));
         }
-        Ok(json!({"rows":rows,"generation":snapshot.generation,"size_semantics":"logical directory-entry sum; not physical or reclaimable bytes"}))
+        Ok(
+            json!({"rows":rows,"generation":snapshot.generation,"size_semantics":"logical directory-entry sum; not physical or reclaimable bytes"}),
+        )
     }
 }
 
 fn check(cancelled: &AtomicBool) -> Result<(), String> {
-    if cancelled.load(Ordering::Relaxed) { Err("Query cancelled".into()) } else { Ok(()) }
+    if cancelled.load(Ordering::Relaxed) {
+        Err("Query cancelled".into())
+    } else {
+        Ok(())
+    }
 }
 
 pub(crate) fn resolve(
@@ -151,11 +224,16 @@ pub(crate) fn resolve(
     match query {
         Query::And(children) | Query::Or(children) => {
             let mut partial = false;
-            for child in children { partial |= resolve(child, snapshot, tree, coverage, cancelled, content)?; }
+            for child in children {
+                partial |= resolve(child, snapshot, tree, coverage, cancelled, content)?;
+            }
             Ok(partial)
         }
         Query::Not(child) => resolve(child, snapshot, tree, coverage, cancelled, content),
-        Query::Term(Term::Related { recursive, query: inner }) => {
+        Query::Term(Term::Related {
+            recursive,
+            query: inner,
+        }) => {
             let mut partial = resolve(inner, snapshot, tree, coverage, cancelled, content)?;
             let incomplete = tree.incomplete(snapshot, coverage, cancelled)?;
             let mut positive = vec![false; tree.directory_slots.len()];
@@ -164,10 +242,17 @@ pub(crate) fn resolve(
             for slot in &snapshot.live {
                 check(cancelled)?;
                 let parent = tree.parents[slot as usize];
-                if parent == NO_PARENT { continue }
+                if parent == NO_PARENT {
+                    continue;
+                }
                 let parent = parent as usize;
                 let file = &snapshot.entries[slot as usize];
-                if !*recursive && file.parent.as_ref() != snapshot.entries[tree.directory_slots[parent] as usize].path { continue }
+                if !*recursive
+                    && file.parent.as_ref()
+                        != snapshot.entries[tree.directory_slots[parent] as usize].path
+                {
+                    continue;
+                }
                 let body = if needs_content { content(file)? } else { None };
                 match inner.indexed_truth(file, body.as_deref())? {
                     Some(true) => positive[parent] = true,
@@ -185,11 +270,17 @@ pub(crate) fn resolve(
                     }
                 }
             }
-            let mut result = ResolvedPredicate { yes: RoaringTreemap::new(), unknown: RoaringTreemap::new() };
+            let mut result = ResolvedPredicate {
+                yes: RoaringTreemap::new(),
+                unknown: RoaringTreemap::new(),
+            };
             for (index, &slot) in tree.directory_slots.iter().enumerate() {
                 let id = snapshot.entries[slot as usize].id as u64;
-                if positive[index] { result.yes.insert(id); }
-                else if unknown[index] { result.unknown.insert(id); }
+                if positive[index] {
+                    result.yes.insert(id);
+                } else if unknown[index] {
+                    result.unknown.insert(id);
+                }
             }
             partial |= !result.unknown.is_empty();
             *query = Query::Term(Term::Resolved(result));
@@ -201,9 +292,14 @@ pub(crate) fn resolve(
                 Term::Unknown { field, .. } => (field.clone(), true),
                 _ => unreachable!(),
             };
-            if !is_metric(&field) { return Ok(false); }
+            if !is_metric(&field) {
+                return Ok(false);
+            }
             let incomplete = tree.incomplete(snapshot, coverage, cancelled)?;
-            let mut result = ResolvedPredicate { yes: RoaringTreemap::new(), unknown: RoaringTreemap::new() };
+            let mut result = ResolvedPredicate {
+                yes: RoaringTreemap::new(),
+                unknown: RoaringTreemap::new(),
+            };
             for (index, &slot) in tree.directory_slots.iter().enumerate() {
                 check(cancelled)?;
                 let value = match field.as_str() {
@@ -215,11 +311,17 @@ pub(crate) fn resolve(
                     "descendantfilecount" => Some(tree.all_files[index]),
                     "descendantfoldercount" => Some(tree.all_folders[index]),
                     _ => unreachable!(),
-                }.filter(|_| !incomplete[index]).map(|value| value as f64);
+                }
+                .filter(|_| !incomplete[index])
+                .map(|value| value as f64);
                 let id = snapshot.entries[slot as usize].id as u64;
                 if is_unknown || value.is_some() {
-                    if term.matches_numeric_value(value) { result.yes.insert(id); }
-                } else { result.unknown.insert(id); }
+                    if term.matches_numeric_value(value) {
+                        result.yes.insert(id);
+                    }
+                } else {
+                    result.unknown.insert(id);
+                }
             }
             let partial = !result.unknown.is_empty();
             *query = Query::Term(Term::Resolved(result));

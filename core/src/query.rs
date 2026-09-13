@@ -57,10 +57,16 @@ pub enum Term {
         field: Field,
         regex: Regex,
     },
+    Related {
+        recursive: bool,
+        query: Box<Query>,
+    },
+    Resolved(crate::relations::ResolvedPredicate),
     Extension(Vec<String>),
     IsDir(bool),
     IsSymlink,
     Hidden,
+    Flags(u32),
     Unknown {
         field: String,
         negate: bool,
@@ -140,6 +146,73 @@ impl Default for MatchOptions {
 fn keyword(s: &str) -> String {
     s.to_ascii_lowercase().replace('-', "")
 }
+fn text_property(key: &str) -> bool {
+    matches!(
+        key,
+        "artist"
+            | "album"
+            | "title"
+            | "kind"
+            | "author"
+            | "subject"
+            | "keywords"
+            | "creator"
+            | "producer"
+            | "genre"
+            | "copyright"
+            | "composer"
+            | "cameramake"
+            | "cameramodel"
+    )
+}
+fn numeric_property(key: &str) -> bool {
+    matches!(
+        key,
+        "width"
+            | "height"
+            | "duration"
+            | "pages"
+            | "orientation"
+            | "iso"
+            | "focallength"
+            | "aperture"
+            | "exposuretime"
+    )
+}
+fn relation_kind(key: &str) -> Option<(bool, Option<bool>)> {
+    match key {
+        "child" => Some((false, None)),
+        "childfile" => Some((false, Some(false))),
+        "childfolder" => Some((false, Some(true))),
+        "descendant" => Some((true, None)),
+        "descendantfile" => Some((true, Some(false))),
+        "descendantfolder" => Some((true, Some(true))),
+        _ => None,
+    }
+}
+fn relation_scope(prefix: &str, base: &MatchOptions) -> Option<(bool, Option<bool>, MatchOptions)> {
+    let mut options = base.clone();
+    let mut keys = prefix.strip_suffix(':')?.split(':').peekable();
+    while let Some(key) = keys.next() {
+        let key = keyword(key);
+        if keys.peek().is_none() {
+            let (recursive, kind) = relation_kind(&key)?;
+            return Some((recursive, kind, options));
+        }
+        if !modifier(&mut options, &key) {
+            return None;
+        }
+    }
+    None
+}
+/// Preserve old PDF indexes without rewriting the database or re-reading files.
+fn property<'a>(file: &'a IndexedFile, key: &str) -> Option<&'a Value> {
+    file.properties.get(key).or_else(|| {
+        (key == "author" && file.extension.eq_ignore_ascii_case("pdf"))
+            .then(|| file.properties.get("artist"))
+            .flatten()
+    })
+}
 fn modifier(options: &mut MatchOptions, key: &str) -> bool {
     match keyword(key).as_str() {
         "case" => options.sensitive = true,
@@ -194,9 +267,7 @@ fn scoped_options(prefix: &str, base: &MatchOptions) -> Option<(MatchOptions, Op
             "folder" | "dir" => is_dir = Some(true),
             "content" => options.target = Some(TextTarget::Content),
             "extension" => options.target = Some(TextTarget::Extension),
-            "artist" | "album" | "title" | "kind" | "author" => {
-                options.target = Some(TextTarget::Property(keyword(key)))
-            }
+            key if text_property(key) => options.target = Some(TextTarget::Property(keyword(key))),
             _ => return None,
         }
     }
@@ -322,20 +393,22 @@ fn lex(input: &str) -> Result<Vec<Token>, String> {
                 if key == "noregex" {
                     regex_mode = false;
                 }
-                numeric_comparison = matches!(
-                    key.as_str(),
-                    "size"
-                        | "width"
-                        | "height"
-                        | "duration"
-                        | "pages"
-                        | "dm"
-                        | "dc"
-                        | "modified"
-                        | "created"
-                        | "datemodified"
-                        | "datecreated"
-                );
+                numeric_comparison = numeric_property(&key)
+                    || crate::relations::is_metric(&key)
+                    || matches!(
+                        key.as_str(),
+                        "size"
+                            | "width"
+                            | "height"
+                            | "duration"
+                            | "pages"
+                            | "dm"
+                            | "dc"
+                            | "modified"
+                            | "created"
+                            | "datemodified"
+                            | "datecreated"
+                    );
                 component_start = s.len() + 1;
             } else {
                 numeric_comparison = false;
@@ -481,6 +554,14 @@ impl Parser<'_> {
             Token::L => self.group(options),
             Token::Atom(s, literal_from) => {
                 if literal_from != Some(0) && self.tokens.get(self.pos) == Some(&Token::L) {
+                    if let Some((recursive, kind, scoped)) = relation_scope(&s, options) {
+                        self.pos += 1;
+                        let query = restrict_type(self.group(&scoped)?, kind);
+                        return Ok(Query::Term(Term::Related {
+                            recursive,
+                            query: Box::new(query),
+                        }));
+                    }
                     if let Some((scoped, is_dir)) = scoped_options(&s, options) {
                         self.pos += 1;
                         return Ok(restrict_type(self.group(&scoped)?, is_dir));
@@ -558,6 +639,19 @@ fn atom_with_options(
         let Some((key, val)) = s.split_once(':') else {
             break;
         };
+        if let Some((recursive, kind)) = relation_kind(&keyword(key)) {
+            let inner = restrict_type(
+                text_query(val, &options, TextTarget::Field(options.field))?,
+                kind,
+            );
+            return Ok(restrict_type(
+                Query::Term(Term::Related {
+                    recursive,
+                    query: Box::new(inner),
+                }),
+                is_dir,
+            ));
+        }
         if modifier(&mut options, key) {
             s = val;
             continue;
@@ -587,7 +681,7 @@ fn atom_with_options(
                 s = val;
                 break;
             }
-            "artist" | "album" | "title" | "kind" | "author" => {
+            key if text_property(key) => {
                 options.target = Some(TextTarget::Property(keyword(key)));
                 s = val;
                 break;
@@ -614,10 +708,31 @@ fn atom_with_options(
                 },
                 "type" => match val.to_ascii_lowercase().as_str() { "file" => Term::IsDir(false), "folder" | "directory" => Term::IsDir(true), "symlink" | "link" => Term::IsSymlink, _ => return Err("type: accepts file, folder, or symlink".into()) },
                 "hidden" if val.is_empty() => Term::Hidden, "symlink" if val.is_empty() => Term::IsSymlink,
-                "size" | "width" | "height" | "duration" | "pages" => number_term(&key, val, false, options.now)?,
+                "empty" if val.is_empty() => number_term("childcount", "=0", false, options.now)?,
+                "size" => number_term(&key, val, false, options.now)?,
+                key if numeric_property(key) || crate::relations::is_metric(key) => number_term(key, val, false, options.now)?,
                 "dm" | "datemodified" | "modified" => number_term("modified", val, true, options.now)?,
                 "dc" | "datecreated" | "created" => number_term("created", val, true, options.now)?,
-                "attrib" | "attributes" => match val { "h" => Term::Hidden, "l" => Term::IsSymlink, _ => return Err("Only macOS hidden (h) and symlink (l) attributes are supported".into()) },
+                "attrib" | "attributes" => {
+                    let terms = val.chars().map(|c| match c.to_ascii_lowercase() {
+                        'h' => Ok(Query::Term(Term::Hidden)), 'l' => Ok(Query::Term(Term::IsSymlink)),
+                        _ => Err("attrib: supports macOS hidden (h) and symlink (l); use flags: for native flags".to_string()),
+                    }).collect::<Result<Vec<_>, _>>()?;
+                    if terms.is_empty() { return Err("attrib: requires at least one attribute".into()); }
+                    return Ok(restrict_type(Query::And(terms), is_dir));
+                },
+                "flags" => {
+                    let mut flags = 0;
+                    for name in val.split(';') {
+                        flags |= match keyword(name).as_str() {
+                            "hidden" => 0x8000, "immutable" => 0x0002 | 0x0002_0000,
+                            "append" => 0x0004 | 0x0004_0000, "nodump" => 0x0001,
+                            "compressed" => 0x0020, "dataless" | "placeholder" => 0x4000_0000,
+                            _ => return Err(format!("Unsupported native flag '{name}'")),
+                        };
+                    }
+                    Term::Flags(flags)
+                },
                 _ => return Err(format!("Unsupported search function '{key}:' (Windows-only properties are not silently ignored)")),
             };
             return Ok(restrict_type(Query::Term(term), is_dir));
@@ -1084,11 +1199,69 @@ fn number_term(
 }
 
 impl Query {
+    pub(crate) fn requires_relations(&self) -> bool {
+        match self {
+            Self::Term(Term::Related { .. } | Term::Resolved(_)) => true,
+            Self::Term(Term::Number { field, .. } | Term::Unknown { field, .. }) => {
+                crate::relations::is_metric(field)
+            }
+            Self::And(children) | Self::Or(children) => {
+                children.iter().any(Self::requires_relations)
+            }
+            Self::Not(child) => child.requires_relations(),
+            _ => false,
+        }
+    }
+    /// Snapshot relations must distinguish unknown descendants from absence.
+    /// This evaluator only consults already indexed properties/content.
+    pub(crate) fn indexed_truth(
+        &self,
+        file: &IndexedFile,
+        content: Option<&str>,
+    ) -> Result<Option<bool>, String> {
+        match self {
+            Self::And(children) | Self::Or(children) => {
+                let and = matches!(self, Self::And(_));
+                let mut unknown = false;
+                for child in children {
+                    match child.indexed_truth(file, content)? {
+                        Some(value) if value != and => return Ok(Some(!and)),
+                        None => unknown = true,
+                        _ => (),
+                    }
+                }
+                Ok((!unknown).then_some(and))
+            }
+            Self::Not(child) => Ok(child.indexed_truth(file, content)?.map(|value| !value)),
+            Self::Term(Term::Resolved(result)) => Ok(result.truth(file)),
+            Self::Term(Term::Related { .. }) => {
+                Err("Relationship predicates require a search snapshot".into())
+            }
+            Self::Term(
+                Term::PropertyText(key, _)
+                | Term::Matched {
+                    target: TextTarget::Property(key),
+                    ..
+                },
+            ) if property(file, key).is_none() => Ok(None),
+            Self::Term(Term::Number { field, .. })
+                if numeric_property(field)
+                    && property(file, field).and_then(Value::as_f64).is_none() =>
+            {
+                Ok(None)
+            }
+            _ if content.is_none() && self.requires_content() => Ok(None),
+            _ => self
+                .matches_inner(file, content, &OnceCell::new())
+                .map(Some),
+        }
+    }
     /// Conservative cache hint: date predicates may contain relative periods.
     /// The parser has already resolved macros and date operands into ranges, so
     /// absolute dates are included too. False positives only shorten cache reuse.
     pub fn may_depend_on_clock(&self) -> bool {
         match self {
+            Self::Term(Term::Related { query, .. }) => query.may_depend_on_clock(),
             Self::Term(Term::Number { field, .. }) => {
                 matches!(field.as_str(), "modified" | "created")
             }
@@ -1100,13 +1273,14 @@ impl Query {
 
     pub fn requires_properties(&self) -> bool {
         match self {
+            Self::Term(Term::Related { query, .. }) => query.requires_properties(),
             Self::Term(Term::PropertyText(..))
             | Self::Term(Term::Matched {
                 target: TextTarget::Property(_),
                 ..
             }) => true,
             Self::Term(Term::Number { field, .. }) | Self::Term(Term::Unknown { field, .. }) => {
-                matches!(field.as_str(), "width" | "height" | "duration" | "pages")
+                numeric_property(field)
             }
             Self::And(queries) | Self::Or(queries) => queries.iter().any(Self::requires_properties),
             Self::Not(query) => query.requires_properties(),
@@ -1118,6 +1292,8 @@ impl Query {
     }
     fn extraction_truth(&self, file: &IndexedFile) -> Result<Option<bool>, String> {
         match self {
+            Self::Term(Term::Related { .. }) => Ok(None),
+            Self::Term(Term::Resolved(result)) => Ok(result.truth(file)),
             Self::Term(Term::Content { .. })
             | Self::Term(Term::PropertyText(..))
             | Self::Term(Term::Matched {
@@ -1125,7 +1301,7 @@ impl Query {
                 ..
             }) => Ok(None),
             Self::Term(Term::Number { field, .. }) | Self::Term(Term::Unknown { field, .. })
-                if matches!(field.as_str(), "width" | "height" | "duration" | "pages") =>
+                if numeric_property(field) =>
             {
                 Ok(None)
             }
@@ -1160,6 +1336,8 @@ impl Query {
     }
     fn metadata_truth(&self, file: &IndexedFile) -> Result<Option<bool>, String> {
         match self {
+            Self::Term(Term::Related { .. }) => Ok(None),
+            Self::Term(Term::Resolved(result)) => Ok(result.truth(file)),
             Self::All => Ok(Some(true)),
             Self::Term(Term::Content { .. })
             | Self::Term(Term::Matched {
@@ -1195,6 +1373,7 @@ impl Query {
 
     pub fn requires_content(&self) -> bool {
         match self {
+            Self::Term(Term::Related { query, .. }) => query.requires_content(),
             Self::Term(Term::Content { .. })
             | Self::Term(Term::Matched {
                 target: TextTarget::Content,
@@ -1216,6 +1395,9 @@ impl Query {
         self.matches(file, content)
     }
     pub fn matches(&self, file: &IndexedFile, content: Option<&str>) -> Result<bool, String> {
+        if self.requires_relations() {
+            return Ok(self.indexed_truth(file, content)? == Some(true));
+        }
         self.matches_inner(file, content, &OnceCell::new())
     }
     fn matches_inner(
@@ -1290,8 +1472,31 @@ impl Query {
     }
 }
 impl Term {
+    pub(crate) fn matches_numeric_value(&self, value: Option<f64>) -> bool {
+        match self {
+            Self::Unknown { negate, .. } => value.is_none() != *negate,
+            Self::Number {
+                low,
+                high,
+                include_low,
+                include_high,
+                negate,
+                ..
+            } => value.is_some_and(|n| {
+                let inside = (if *include_low { n >= *low } else { n > *low })
+                    && (if *include_high { n <= *high } else { n < *high });
+                inside != *negate
+            }),
+            _ => false,
+        }
+    }
     fn matches(&self, file: &IndexedFile, content: Option<&str>) -> Result<bool, String> {
         Ok(match self {
+            Self::Related { .. } => {
+                return Err("Relationship predicates require a search snapshot".into())
+            }
+            Self::Resolved(result) => result.truth(file) == Some(true),
+            Self::Flags(mask) => file.flags & mask != 0,
             Self::Text {
                 field,
                 finder,
@@ -1319,8 +1524,7 @@ impl Term {
                     Some(s) => matcher.matches(s)?,
                     None => false,
                 },
-                TextTarget::Property(key) => match file.properties.get(key).and_then(Value::as_str)
-                {
+                TextTarget::Property(key) => match property(file, key).and_then(Value::as_str) {
                     Some(s) => matcher.matches(s)?,
                     None => false,
                 },
@@ -1340,9 +1544,7 @@ impl Term {
             Self::Content { needle, sensitive } => content.is_some_and(|s| {
                 (if *sensitive { nfc(s) } else { fold_search(s) }).contains(needle)
             }),
-            Self::PropertyText(key, needle) => file
-                .properties
-                .get(key)
+            Self::PropertyText(key, needle) => property(file, key)
                 .and_then(Value::as_str)
                 .is_some_and(|s| fold_search(s).contains(needle)),
             Self::Unknown { field, negate } => {

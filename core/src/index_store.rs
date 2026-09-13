@@ -21,7 +21,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
 };
 
@@ -182,6 +182,8 @@ impl FileSlots {
 }
 #[derive(Default)]
 pub struct SearchSnapshot {
+    pub(crate) hierarchy: OnceLock<crate::relations::Hierarchy>,
+    hierarchy_build: Mutex<()>,
     // Stable slots keep postings valid when a directory entry is deleted. The
     // bitmap determines visibility; a later full rebuild compacts old slots.
     pub entries: Vec<Arc<IndexedFile>>,
@@ -203,6 +205,26 @@ pub struct SearchSnapshot {
     pages: Mutex<VecDeque<(String, Arc<ResultPage>)>>,
 }
 impl SearchSnapshot {
+    pub(crate) fn directory_hierarchy(
+        &self,
+        cancelled: &AtomicBool,
+    ) -> Result<&crate::relations::Hierarchy, String> {
+        if let Some(tree) = self.hierarchy.get() {
+            return Ok(tree);
+        }
+        // Only one builder per immutable generation. Failed/cancelled builds do
+        // not poison the lazy cell; successful readers share the dense columns.
+        let _building = self
+            .hierarchy_build
+            .lock()
+            .map_err(|_| "Hierarchy lock poisoned")?;
+        if self.hierarchy.get().is_none() {
+            let tree = crate::relations::Hierarchy::build(self, cancelled)?;
+            let _ = self.hierarchy.set(tree);
+        }
+        Ok(self.hierarchy.get().expect("hierarchy was initialized"))
+    }
+
     pub(crate) fn from_prepared_cache(parts: crate::snapshot_cache::PreparedSnapshot) -> Self {
         let path_rank = Arc::new(order_ranks(parts.entries.len(), &parts.path_order));
         // These contiguous numeric blocks are cheap derived columns. Restoring
@@ -210,6 +232,8 @@ impl SearchSnapshot {
         let numeric_columns = NumericColumns::build(&parts.entries);
         let file_slots = parts.file_slots;
         Self {
+            hierarchy: OnceLock::new(),
+            hierarchy_build: Mutex::new(()),
             file_slots,
             entries: parts.entries,
             live: parts.live,
@@ -315,6 +339,8 @@ impl SearchSnapshot {
         }
         record("path_sort_and_ranks", started.elapsed());
         Self {
+            hierarchy: OnceLock::new(),
+            hierarchy_build: Mutex::new(()),
             entries,
             file_slots,
             live,
@@ -586,6 +612,8 @@ impl SearchSnapshot {
             })
             .collect();
         Ok(Self {
+            hierarchy: OnceLock::new(),
+            hierarchy_build: Mutex::new(()),
             entries,
             file_slots,
             live,
@@ -747,6 +775,7 @@ impl SearchSnapshot {
         match query {
             Query::And(queries) | Query::Or(queries) => queries.iter().all(Self::supports_exact),
             Query::Not(query) => Self::supports_exact(query),
+            Query::Term(crate::query::Term::Resolved(result)) => result.unknown.is_empty(),
             Query::Term(term) if NumericColumns::supports(term) => true,
             _ => MetadataPostings::supports(query),
         }
@@ -792,6 +821,12 @@ impl SearchSnapshot {
                 Ok(result)
             }
             Query::Not(query) => Ok(&self.live - &self.evaluate_exact(query, cancelled)?),
+            Query::Term(crate::query::Term::Resolved(result)) => Ok(result
+                .yes
+                .iter()
+                .filter_map(|id| self.slot_for_id(id as i64).map(|slot| slot as u32))
+                .filter(|slot| self.live.contains(*slot))
+                .collect()),
             Query::Term(term) if NumericColumns::supports(term) => self
                 .numeric_columns
                 .exact(term, &self.live, cancelled)?

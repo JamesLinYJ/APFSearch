@@ -301,7 +301,7 @@ final class ContentIndexer {
       props["pages"] = pdf.pageCount
       if let attributes = pdf.documentAttributes {
         props["title"] = attributes[PDFDocumentAttribute.titleAttribute] as? String
-        props["artist"] = attributes[PDFDocumentAttribute.authorAttribute] as? String
+        props["author"] = attributes[PDFDocumentAttribute.authorAttribute] as? String
       }
       for n in 0..<pdf.pageCount {
         if isCancelled() { throw LT("status.cancelled") }
