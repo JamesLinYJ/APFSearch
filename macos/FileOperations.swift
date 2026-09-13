@@ -53,23 +53,26 @@ final class FileOperations {
     return rows
   }
 
-  private func appendRecords(_ records: [[String: Any]]) throws {
-    guard !records.isEmpty else { return }
-    var data = Data()
-    for record in records {
-      data.append(try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys]))
-      data.append(0x0A)
-    }
+  private func openJournal() throws -> FileHandle {
     if !fm.fileExists(atPath: journal.path) {
       guard fm.createFile(atPath: journal.path, contents: nil) else {
         throw NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError)
       }
     }
     let handle = try FileHandle(forWritingTo: journal)
-    defer { try? handle.close() }
     try handle.seekToEnd()
+    return handle
+  }
+  private func writeRecord(_ record: [String: Any], to handle: FileHandle) throws {
+    var data = try JSONSerialization.data(withJSONObject: record, options: [.sortedKeys])
+    data.append(0x0A)
     try handle.write(contentsOf: data)
-    // One durability barrier per user-visible batch, not one whole-history rewrite per file.
+  }
+  private func appendRecords(_ records: [[String: Any]]) throws {
+    guard !records.isEmpty else { return }
+    let handle = try openJournal()
+    defer { try? handle.close() }
+    for record in records { try writeRecord(record, to: handle) }
     try handle.synchronize()
   }
 
@@ -204,6 +207,11 @@ final class FileOperations {
     var completed = [[String: Any]]()
     var skipped = [[String: Any]]()
     var failures = [[String: Any]]()
+    var journalHandle: FileHandle?
+    do { journalHandle = try openJournal() }
+    catch { return localizedErrorResponse(error) }
+    defer { try? journalHandle?.close() }
+
     for row in preview {
       if isCancelled(requestID) { break }
       let rowConflicts = row["conflicts"] as? [String] ?? []
@@ -234,7 +242,7 @@ final class FileOperations {
           "source": from.path, "destination": actual.path, "before": before,
           "after": identity(actual), "time": Date().timeIntervalSince1970, "undone": false,
         ]
-        try appendRecords([record])
+        if let journalHandle { try writeRecord(record, to: journalHandle) }
         completed.append(record)
       } catch {
         var failure: [String: Any] = ["source": source, "error": error.localizedDescription]
@@ -242,6 +250,10 @@ final class FileOperations {
         failures.append(failure)
         if policy == "stop" { break }
       }
+    }
+    do { try journalHandle?.synchronize() }
+    catch {
+      failures.append(["source": journal.path, "error": error.localizedDescription])
     }
     let wasCancelled = isCancelled(requestID)
     let payload: [String: Any] = [
