@@ -7,7 +7,7 @@ index beb9535..0000000 100644
 -    var statusTimer: Timer?
 +    let statusRequestID = UUID().uuidString
      var elapsed: Double = 0
-@@ -301,9 +301,12 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+@@ -301,8 +301,11 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
          NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged), name: .searchPreferencesChanged, object: nil)
          pollStatus()
          refreshShortcuts()
