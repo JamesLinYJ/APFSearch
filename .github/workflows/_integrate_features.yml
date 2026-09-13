@@ -25,6 +25,7 @@ jobs:
         run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
       - name: Apply reviewed source patches
         run: |
+          # This hash guard keeps the generated patch tied to the reviewed engine baseline.
           test "$(git hash-object core/src/lib.rs)" = fc17aa63d4bc8d3496fcb39f7b4e66a6c877f87e
           git apply --check scripts/feature-integration/engine.patch scripts/feature-integration/query.patch scripts/feature-integration/index.patch
           git apply scripts/feature-integration/engine.patch scripts/feature-integration/query.patch scripts/feature-integration/index.patch
