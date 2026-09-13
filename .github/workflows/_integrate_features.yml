@@ -31,8 +31,15 @@ jobs:
           for patch in \
             scripts/feature-integration/engine.patch \
             scripts/feature-integration/query.patch \
-            scripts/feature-integration/index.patch \
-            scripts/feature-integration/ui.patch \
+            scripts/feature-integration/index.patch
+          do
+            echo "::group::Applying $patch"
+            git apply --check "$patch"
+            git apply "$patch"
+            echo "::endgroup::"
+          done
+          python3 scripts/feature-integration/apply_status_ui.py
+          for patch in \
             scripts/feature-integration/selection.patch \
             scripts/feature-integration/selection-actions.patch \
             scripts/feature-integration/content.patch
