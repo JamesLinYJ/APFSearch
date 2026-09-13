@@ -1,7 +1,7 @@
 diff --git a/macos/Application.swift b/macos/Application.swift
 --- a/macos/Application.swift
 +++ b/macos/Application.swift
-@@ -1357,7 +1357,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+@@ -1358,5 +1358,5 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
      }
      func windowWillClose(_ notification: Notification) {
 -        progressDelay?.invalidate(); queryTimer?.invalidate(); historyTimer?.invalidate(); statusTimer?.invalidate(); cancelQueries(); cancelBackground(nil)
