@@ -26,8 +26,8 @@ replace_once(
 )
 
 replace_once(
-    '''                }\n            }\n        }\n    }\n    @objc func chooseFolders''',
-    '''                }\n            }\n            self.pollStatus()\n        }\n    }\n    @objc func chooseFolders''',
+    '''                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.chooseVolumes(nil) }\n                }\n            }\n        }\n    }\n    func requestProgress''',
+    '''                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.chooseVolumes(nil) }\n                }\n            }\n            self.pollStatus()\n        }\n    }\n    func requestProgress''',
 )
 
 path.write_text(text)
