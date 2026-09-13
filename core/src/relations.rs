@@ -196,13 +196,17 @@ pub(crate) fn resolve(
             Ok(partial)
         }
         Query::Term(term @ (Term::Number { .. } | Term::Unknown { .. })) => {
-            let field = match term { Term::Number { field, .. } | Term::Unknown { field, .. } => field.as_str(), _ => unreachable!() };
-            if !is_metric(field) { return Ok(false); }
+            let (field, is_unknown) = match term {
+                Term::Number { field, .. } => (field.clone(), false),
+                Term::Unknown { field, .. } => (field.clone(), true),
+                _ => unreachable!(),
+            };
+            if !is_metric(&field) { return Ok(false); }
             let incomplete = tree.incomplete(snapshot, coverage, cancelled)?;
             let mut result = ResolvedPredicate { yes: RoaringTreemap::new(), unknown: RoaringTreemap::new() };
             for (index, &slot) in tree.directory_slots.iter().enumerate() {
                 check(cancelled)?;
-                let value = match field {
+                let value = match field.as_str() {
                     "foldersize" => tree.sizes[index],
                     "childcount" => Some(tree.own_files[index] + tree.own_folders[index]),
                     "childfilecount" => Some(tree.own_files[index]),
@@ -213,7 +217,7 @@ pub(crate) fn resolve(
                     _ => unreachable!(),
                 }.filter(|_| !incomplete[index]).map(|value| value as f64);
                 let id = snapshot.entries[slot as usize].id as u64;
-                if matches!(term, Term::Unknown { .. }) || value.is_some() {
+                if is_unknown || value.is_some() {
                     if term.matches_numeric_value(value) { result.yes.insert(id); }
                 } else { result.unknown.insert(id); }
             }
