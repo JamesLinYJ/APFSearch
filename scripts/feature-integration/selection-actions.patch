@@ -1,0 +1,129 @@
+diff --git a/macos/Application.swift b/macos/Application.swift
+index beb9535..0000000 100644
+--- a/macos/Application.swift
++++ b/macos/Application.swift
+@@ -1004,2 +1004,57 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+     var canUseSelection: Bool { resultsAreCurrent && !table.selectedRowIndexes.isEmpty && selectionIsComplete }
++    func withResolvedSelection(_ completion: @escaping ([String]) -> Void) {
++        guard resultsAreCurrent, offlineListID == nil, !table.selectedRowIndexes.isEmpty else { return }
++        let selected = table.selectedRowIndexes
++        if selectionIsComplete { completion(selectedPaths); return }
++        guard let lease = snapshotLease else { runQuery(); return }
++        let sequence = querySequence
++        let batch = 1000
++        let pages = Array(Set(selected.map { $0 / batch })).sorted()
++        var resolved = [Int: String]()
++        for index in selected {
++            if let path = cachedRows[index]?["path"] as? String { resolved[index] = path }
++        }
++        func finishOrFail() {
++            guard sequence == self.querySequence else { return }
++            let paths = selected.compactMap { resolved[$0] }
++            guard paths.count == selected.count else {
++                self.checkResult(["success": false, "error": L("error.operation_incomplete")])
++                return
++            }
++            completion(paths)
++        }
++        func fetch(_ position: Int) {
++            guard sequence == self.querySequence else { return }
++            guard position < pages.count else { finishOrFail(); return }
++            let page = pages[position]
++            let lower = page * batch
++            let range = lower..<(lower + batch)
++            if selected.intersection(IndexSet(integersIn: range)).allSatisfy({ resolved[$0] != nil }) {
++                fetch(position + 1); return
++            }
++            let id = UUID().uuidString
++            self.requestIDs.insert(id)
++            var request: [String: Any] = [
++                "op": "query", "text": self.queryText, "offset": lower, "limit": batch,
++                "request_id": id, "snapshot_lease": lease,
++                "sort": self.table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] },
++            ]
++            if let generation = self.generation { request["generation"] = generation }
++            SearchClient.shared.call(request) { reply in
++                self.requestIDs.remove(id)
++                guard sequence == self.querySequence else { return }
++                guard reply["success"] as? Bool == true else { self.checkResult(reply); return }
++                let rows = reply["rows"] as? [[String: Any]] ?? []
++                for (offset, row) in rows.enumerated() {
++                    let index = lower + offset
++                    if selected.contains(index), let path = row["path"] as? String { resolved[index] = path }
++                }
++                fetch(position + 1)
++            }
++        }
++        fetch(0)
++    }
+     func boolValue(_ value: Any?) -> Bool { (value as? Bool) ?? ((value as? NSNumber)?.intValue != 0 && value is NSNumber) }
+@@ -1125,16 +1180,43 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+     }
+-    @objc func copyPaths(_ sender: Any?) {
+-        guard canUseSelection else { return }
+-        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(selectedPaths.joined(separator: "\n"), forType: .string)
++    @objc func copyPaths(_ sender: Any?) {
++        withResolvedSelection { paths in
++            NSPasteboard.general.clearContents()
++            NSPasteboard.general.setString(paths.joined(separator: "\n"), forType: .string)
++        }
+     }
+@@ -1144,9 +1226,33 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+     }
+     @objc func renameSelection(_ sender: Any?) {
+-        guard canUseSelection, selectedPaths.count == 1, let path = selectedPaths.first else { return }
+-        let alert = NSAlert(); alert.messageText = L("files.rename_title"); alert.informativeText = path
+-        let field = NSTextField(string: URL(fileURLWithPath: path).lastPathComponent); field.frame = NSRect(x: 0, y: 0, width: 380, height: 25); alert.accessoryView = field
+-        alert.addButton(withTitle: L("action.rename")); alert.addButton(withTitle: L("action.cancel"))
+-        guard alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty, !field.stringValue.contains("/") else { return }
+-        confirmFileOperation(["op": "files", "action": "rename", "paths": [path], "new_name": field.stringValue], title: L("files.rename_confirmation", String(describing: field.stringValue)))
++        withResolvedSelection { paths in
++            guard !paths.isEmpty else { return }
++            let alert = NSAlert(); alert.messageText = L("files.rename_title")
++            if paths.count == 1 {
++                let field = NSTextField(string: URL(fileURLWithPath: paths[0]).lastPathComponent)
++                field.frame = NSRect(x: 0, y: 0, width: 380, height: 25); alert.accessoryView = field
++                alert.addButton(withTitle: L("action.rename")); alert.addButton(withTitle: L("action.cancel"))
++                guard alert.runModal() == .alertFirstButtonReturn, !field.stringValue.isEmpty, !field.stringValue.contains("/") else { return }
++                self.confirmFileOperation(["op": "files", "action": "rename", "paths": paths, "new_name": field.stringValue], title: L("files.rename_confirmation", String(describing: field.stringValue)))
++                return
++            }
++            alert.informativeText = "\(paths.count) files"
++            let search = NSTextField(); search.placeholderString = "Find in name"
++            let replace = NSTextField(); replace.placeholderString = "Replace with"
++            let prefix = NSTextField(); prefix.placeholderString = "Prefix"
++            let suffix = NSTextField(); suffix.placeholderString = "Suffix"
++            let numbering = NSButton(checkboxWithTitle: "Append sequence number", target: nil, action: nil)
++            let stack = NSStackView(views: [search, replace, prefix, suffix, numbering])
++            stack.orientation = .vertical; stack.spacing = 7; stack.frame = NSRect(x: 0, y: 0, width: 400, height: 130)
++            alert.accessoryView = stack
++            alert.addButton(withTitle: L("action.rename")); alert.addButton(withTitle: L("action.cancel"))
++            guard alert.runModal() == .alertFirstButtonReturn else { return }
++            var rule: [String: Any] = ["search": search.stringValue, "replace": replace.stringValue,
++                "prefix": prefix.stringValue, "suffix": suffix.stringValue]
++            if numbering.state == .on { rule["number_start"] = 1; rule["number_padding"] = String(paths.count).count }
++            self.confirmFileOperation(["op": "files", "action": "rename", "paths": paths,
++                "rename_rule": rule, "conflict_policy": "skip"], title: L("files.rename_title"))
++        }
+     }
+@@ -1154,4 +1260,6 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+     @objc func moveSelection(_ sender: Any?) { chooseDestination("move") }
+     func chooseDestination(_ action: String) {
+-        guard canUseSelection else { return }
+-        let paths = selectedPaths
++        guard resultsAreCurrent, !table.selectedRowIndexes.isEmpty else { return }
++        withResolvedSelection { paths in
+         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
+@@ -1160,3 +1268,4 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+         guard panel.runModal() == .OK, let destination = panel.url?.path else { return }
+         confirmFileOperation(["op": "files", "action": action, "paths": paths, "destination": destination], title: L("files.destination_confirmation", String(describing: action == "copy" ? L("action.copy") : L("action.move")), (paths.count).formatted(), String(describing: destination)))
++        }
+     }
+@@ -1164,3 +1273,5 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+     @objc func trashSelection(_ sender: Any?) {
+-        guard canUseSelection else { return }
+-        confirmFileOperation(["op": "files", "action": "trash", "paths": selectedPaths], title: L("files.trash_confirmation", (selectedPaths.count).formatted()))
++        withResolvedSelection { paths in
++            self.confirmFileOperation(["op": "files", "action": "trash", "paths": paths], title: L("files.trash_confirmation", paths.count.formatted()))
++        }
+     }
