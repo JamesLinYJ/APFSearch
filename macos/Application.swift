@@ -638,7 +638,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         let isInitialQuery = queryPending && generation == nil
         let id = UUID().uuidString; requestIDs.insert(id); pendingPages.insert(page)
         var request: [String: Any] = ["op": "query", "text": queryText, "offset": page * pageSize, "limit": pageSize, "request_id": id, "sort": table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] }]
-        if isInitialQuery { request["retain_snapshot"] = true }
+        if isInitialQuery { request["retain_snapshot"] = true; request["snapshot_owner"] = "window" }
         else if let snapshotLease { request["snapshot_lease"] = snapshotLease }
         if let generation { request["generation"] = generation }
         if let offlineListID { request["list_id"] = offlineListID }
@@ -778,6 +778,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         liveRefreshPending = true; requestIDs.insert(id)
         var request: [String: Any] = ["op": "query", "text": queryText, "offset": offset, "limit": limit, "request_id": id, "sort": table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] }]
         request["retain_snapshot"] = true
+        request["snapshot_owner"] = "window"
         if let anchor {
             request["anchor_path"] = anchor; request["anchor_delta"] = first - offset
             // Preserve the SQLite row ID as an integer; the core also checks

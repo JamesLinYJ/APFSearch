@@ -206,18 +206,47 @@ import PDFKit
     UpdateTransportFixture.unfinished = ["/cancel"]
     UpdateTransportFixture.lock.unlock()
     for path in ["valid", "oversized", "digest", "cancel"] {
-      var result: Result<URL, Error>?
+      var result: Result<DownloadedInstaller, Error>?
       let value = try signedPackage(path, digest: path == "digest" ? String(repeating: "b", count: 64) : nil)
       let cancel = downloadManager.download(value) { result = $0 }
       if path == "cancel" { cancel() }
       let timeout = Date().addingTimeInterval(5)
       while result == nil && Date() < timeout { RunLoop.current.run(until: Date().addingTimeInterval(0.002)) }
-      if path == "valid", case .success(let url)? = result {
-        try check("streamed package is exact and readable only after verification", Data(contentsOf: url) == packageBytes)
-        try FileManager.default.removeItem(at: url.deletingLastPathComponent())
+      if path == "valid", case .success(let package)? = result {
+        try check("streamed package is exact and readable only after verification", Data(contentsOf: package.url) == packageBytes)
+        package.discard()
       } else if path != "valid", case .failure? = result { passed.append("stream transport rejects " + path) }
       else { failures.append("stream transport case " + path) }
     }
+
+    let downloads = root.appendingPathComponent("owned-updates")
+    func downloadedPackage() throws -> DownloadedInstaller {
+      let directory = downloads.appendingPathComponent("download-" + UUID().uuidString)
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let url = directory.appendingPathComponent("installer.pkg")
+      try packageBytes.write(to: url)
+      return DownloadedInstaller(url: url)
+    }
+    var pendingPackage: DownloadedInstaller? = try downloadedPackage()
+    let discardedPath = pendingPackage!.url.path
+    pendingPackage = try downloadedPackage()
+    check("replacing an unopened download removes its previous directory", !FileManager.default.fileExists(atPath: discardedPath))
+    let cancelledPath = pendingPackage!.url.path
+    pendingPackage = nil
+    check("cancelling a pending package releases its disk storage", !FileManager.default.fileExists(atPath: cancelledPath))
+    var openedPackage: DownloadedInstaller? = try downloadedPackage()
+    let openedPath = openedPackage!.url.path
+    openedPackage!.handOff(); openedPackage = nil
+    check("handed off package survives application owner teardown", FileManager.default.fileExists(atPath: openedPath))
+    DownloadedInstaller.removeAbandoned(installerIsRunning: true, in: downloads)
+    check("startup cleanup preserves files while Installer is running", FileManager.default.fileExists(atPath: openedPath))
+    let unrelated = downloads.appendingPathComponent("unrelated.txt")
+    try packageBytes.write(to: unrelated)
+    DownloadedInstaller.removeAbandoned(installerIsRunning: false, in: downloads)
+    check("restart reclaims abandoned packages after Installer exits", !FileManager.default.fileExists(atPath: openedPath) && FileManager.default.fileExists(atPath: unrelated.path))
+    let completedPackage = try downloadedPackage()
+    completedPackage.handOff(); completedPackage.discard()
+    check("Installer completion releases a handed off package", !FileManager.default.fileExists(atPath: completedPackage.url.path))
 
     let service = SearchService()
     check("file RPC cancellation fixture registers before enqueue", service.files.register("wire-cancel"))

@@ -11,6 +11,16 @@ use std::{
     time::{Duration, Instant},
 };
 static NEXT_LEASE: AtomicU64 = AtomicU64::new(1);
+// Windows retain their visible results and may briefly hold a replacement page.
+// Keep their budget separate from the eight concurrent exports/operations so
+// ordinary browsing cannot consume the capacity reserved for those operations.
+const WINDOW_LEASE_CAPACITY: usize = 128;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LeaseOwner {
+    Window,
+    Operation,
+}
 
 #[derive(Clone)]
 pub struct LeaseContext {
@@ -20,6 +30,7 @@ pub struct LeaseContext {
 struct Record {
     context: LeaseContext,
     deadline: Instant,
+    owner: LeaseOwner,
 }
 pub struct SnapshotLeases {
     records: Mutex<HashMap<String, Record>>,
@@ -46,15 +57,40 @@ impl SnapshotLeases {
     ) -> Result<String, String> {
         self.retain_at(snapshot, preferences, Instant::now())
     }
+    pub fn retain_window(
+        &self,
+        snapshot: Arc<SearchSnapshot>,
+        preferences: Value,
+    ) -> Result<String, String> {
+        self.retain_owned_at(snapshot, preferences, LeaseOwner::Window, Instant::now())
+    }
     fn retain_at(
         &self,
         snapshot: Arc<SearchSnapshot>,
         preferences: Value,
         now: Instant,
     ) -> Result<String, String> {
+        self.retain_owned_at(snapshot, preferences, LeaseOwner::Operation, now)
+    }
+    fn retain_owned_at(
+        &self,
+        snapshot: Arc<SearchSnapshot>,
+        preferences: Value,
+        owner: LeaseOwner,
+        now: Instant,
+    ) -> Result<String, String> {
         let mut records = self.records.lock().unwrap();
         records.retain(|_, record| record.deadline > now);
-        if records.len() >= self.capacity {
+        let capacity = match owner {
+            LeaseOwner::Window => WINDOW_LEASE_CAPACITY,
+            LeaseOwner::Operation => self.capacity,
+        };
+        if records
+            .values()
+            .filter(|record| record.owner == owner)
+            .count()
+            >= capacity
+        {
             return Err(
                 "Too many active snapshot leases; finish or cancel another operation".into(),
             );
@@ -73,6 +109,7 @@ impl SnapshotLeases {
                     preferences,
                 },
                 deadline: now + self.lifetime,
+                owner,
             },
         );
         Ok(id)
@@ -153,6 +190,50 @@ mod tests {
         assert!(leases
             .retain_at(snapshot(2), json!({}), start + Duration::from_secs(29))
             .is_ok());
+    }
+    #[test]
+    fn window_capacity_is_bounded_and_does_not_consume_operation_slots() {
+        let leases = SnapshotLeases::default();
+        let shared = snapshot(1);
+        let windows: Vec<_> = (0..WINDOW_LEASE_CAPACITY)
+            .map(|index| {
+                leases
+                    .retain_window(shared.clone(), json!({"window": index}))
+                    .unwrap()
+            })
+            .collect();
+        assert!(leases.retain_window(shared.clone(), json!({})).is_err());
+        let operations: Vec<_> = (0..8)
+            .map(|_| leases.retain(shared.clone(), json!({})).unwrap())
+            .collect();
+        assert!(leases.retain(shared.clone(), json!({})).is_err());
+        for (index, token) in windows.iter().enumerate() {
+            let held = leases.get(token).unwrap();
+            assert!(Arc::ptr_eq(&held.snapshot, &shared));
+            assert_eq!(held.preferences["window"], index);
+        }
+        assert!(leases.release(&windows[0]));
+        assert!(leases.retain_window(snapshot(2), json!({})).is_ok());
+        assert!(leases.retain(shared.clone(), json!({})).is_err());
+        assert!(leases.release(&operations[0]));
+        assert!(leases.retain(shared, json!({})).is_ok());
+    }
+    #[test]
+    fn abandoned_window_leases_expire_without_invalidating_active_readers() {
+        let leases = SnapshotLeases::new(Duration::from_secs(10), 1);
+        let start = Instant::now();
+        let token = leases
+            .retain_owned_at(snapshot(7), json!({}), LeaseOwner::Window, start)
+            .unwrap();
+        let reader = leases.get_at(&token, start).unwrap();
+        assert_eq!(
+            leases.discard_expired_at(start + Duration::from_secs(11)),
+            1
+        );
+        assert!(leases
+            .get_at(&token, start + Duration::from_secs(11))
+            .is_err());
+        assert_eq!(reader.snapshot.generation, 7);
     }
     #[test]
     fn rebuild_cleanup_reclaims_only_expired_records_and_preserves_readers() {

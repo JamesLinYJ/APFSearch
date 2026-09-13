@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root/'scripts'))
@@ -53,6 +54,16 @@ class ReleaseTests(unittest.TestCase):
 
 
 class AuditTests(unittest.TestCase):
+    def test_filesystem_root_is_rejected_before_database_access_or_traversal(self):
+        for scope in ['/', '//', '/tmp/..', '/./']:
+            with self.subTest(scope=scope), patch('audit_scope.sqlite3.connect') as connect, \
+                 patch('audit_scope.os.lstat') as lstat, patch('audit_scope.os.scandir') as scandir:
+                with self.assertRaisesRegex(ValueError, 'Filesystem-root'):
+                    audit(Path('/audit-fixture/data/index.sqlite'), [Path(scope)])
+                connect.assert_not_called()
+                lstat.assert_not_called()
+                scandir.assert_not_called()
+
     def fixture(self, temporary):
         directory = Path(temporary).resolve()
         files = (directory/'files'); files.mkdir()

@@ -48,6 +48,48 @@ fn rows(response: &Value) -> Vec<String> {
         .collect()
 }
 #[test]
+fn many_window_queries_preserve_their_pages_and_leave_export_capacity() {
+    let (_temporary, engine, mut files) = fixture(4);
+    let mut windows = Vec::new();
+    for revision in 2..=13 {
+        files[0].size += 1;
+        engine
+            .index_store
+            .lock()
+            .unwrap()
+            .batch(&files[..1], revision)
+            .unwrap();
+        engine.refresh(false).unwrap();
+        let expected = engine.call(json!({"op":"query","text":"","limit":4}));
+        let window = engine.call(json!({"op":"query","text":"","limit":1,
+            "retain_snapshot":true,"snapshot_owner":"window"}));
+        assert_eq!(window["success"], true, "{window}");
+        windows.push((window, expected));
+    }
+    let export = engine.call(json!({"op":"retain_snapshot"}));
+    assert_eq!(export["success"], true, "{export}");
+    for (window, expected) in windows {
+        let second_page = engine.call(json!({"op":"query","text":"","offset":1,"limit":3,
+            "snapshot_lease":window["snapshot_lease"],"generation":window["generation"]}));
+        assert_eq!(second_page["success"], true, "{second_page}");
+        assert_eq!(second_page["generation"], window["generation"]);
+        assert_eq!(
+            second_page["rows"],
+            json!(&expected["rows"].as_array().unwrap()[1..])
+        );
+        assert_eq!(
+            engine.call(json!({"op":"release_snapshot","snapshot_lease":window["snapshot_lease"]}))
+                ["released"],
+            true
+        );
+    }
+    assert_eq!(
+        engine.call(json!({"op":"release_snapshot","snapshot_lease":export["snapshot_lease"]}))
+            ["released"],
+        true
+    );
+}
+#[test]
 fn broad_multicolumn_orders_are_reused_and_incrementally_updated() {
     let (_temporary, engine, mut files) = fixture(12_050);
     let sort = json!([{"field":"path","ascending":false},{"field":"name","ascending":true}]);

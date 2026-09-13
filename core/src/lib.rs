@@ -645,7 +645,11 @@ impl SearchEngine {
         preferences["_snapshot_query_time_millis"] = json!(chrono::Local::now().timestamp_millis());
         preferences["_snapshot_coverage"] = self.relation_coverage(snapshot.generation);
         let scope_token = preferences["_snapshot_coverage"].to_string();
-        let token = self.leases.retain(snapshot, preferences)?;
+        let token = match request["snapshot_owner"].as_str() {
+            Some("window") => self.leases.retain_window(snapshot, preferences),
+            None | Some("operation") => self.leases.retain(snapshot, preferences),
+            Some(_) => return Err("Unknown snapshot owner".into()),
+        }?;
         let mut leased = request.clone();
         leased["snapshot_lease"] = json!(token);
         match self.query_inner(&leased) {

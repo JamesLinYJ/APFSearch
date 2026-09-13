@@ -1,6 +1,28 @@
 import CryptoKit
 import Foundation
 
+/// Own a verified package until it is discarded or handed to Installer. A
+/// handoff must survive this application's exit; the UI removes it when
+/// Installer terminates, or reclaims it on a later launch if Installer is gone.
+final class DownloadedInstaller {
+  static let directory = FileManager.default.temporaryDirectory.appendingPathComponent("APFSearch-updates", isDirectory: true)
+  let url: URL
+  private var handedOff = false
+  init(url: URL) { self.url = url }
+  func handOff() { handedOff = true }
+  func discard() { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+  deinit { if !handedOff { discard() } }
+
+  static func removeAbandoned(installerIsRunning: Bool, in directory: URL = directory) {
+    guard !installerIsRunning,
+      let children = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
+    for child in children where child.lastPathComponent.hasPrefix("download-") {
+      guard UUID(uuidString: String(child.lastPathComponent.dropFirst("download-".count))) != nil else { continue }
+      try? FileManager.default.removeItem(at: child)
+    }
+  }
+}
+
 struct UpdateManifest: Codable {
   let version: String
   let url: String
@@ -65,7 +87,8 @@ private final class UpdateTransfer: NSObject, URLSessionDataDelegate {
   }
   func start(_ url: URL) throws -> () -> Void {
     if expected != nil {
-      let location = FileManager.default.temporaryDirectory.appendingPathComponent("APFSearch-update-" + UUID().uuidString, isDirectory: true)
+      try FileManager.default.createDirectory(at: DownloadedInstaller.directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+      let location = DownloadedInstaller.directory.appendingPathComponent("download-" + UUID().uuidString, isDirectory: true)
       try FileManager.default.createDirectory(at: location, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
       directory = location
       let path = location.appendingPathComponent("installer.pkg")
@@ -187,12 +210,12 @@ final class UpdateManager {
     } catch { DispatchQueue.main.async { completion(.failure(error)) }; return {} }
   }
   @discardableResult
-  func download(_ manifest: UpdateManifest, completion: @escaping (Result<URL, Error>) -> Void) -> () -> Void {
+  func download(_ manifest: UpdateManifest, completion: @escaping (Result<DownloadedInstaller, Error>) -> Void) -> () -> Void {
     do {
       try verify(manifest)
       guard let remote = UpdateManifest.secureURL(manifest.url) else { throw UpdateError.invalidURL }
       let transfer = UpdateTransfer(maximum: manifest.size, expected: manifest, configuration: configuration) { result in
-        completion(result.flatMap { _, url in url.map { .success($0) } ?? .failure(UpdateError.transport) })
+        completion(result.flatMap { _, url in url.map { .success(DownloadedInstaller(url: $0)) } ?? .failure(UpdateError.transport) })
       }
       return try transfer.start(remote)
     } catch { DispatchQueue.main.async { completion(.failure(error)) }; return {} }

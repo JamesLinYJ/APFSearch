@@ -23,6 +23,7 @@ extension SearchWindowTests {
         c.cancelQueries(); SearchClient.shared.clear()
         c.runQuery()
         let stale = SearchClient.shared.takeQuery()
+        check("initial_window_lease_uses_window_capacity", stale?.request["snapshot_owner"] as? String == "window" && stale?.request["retain_snapshot"] as? Bool == true)
         c.cancelQueries(); c.querySequence += 1
         var answer = reply([row(0)]); answer["snapshot_lease"] = "stale-fixture"
         stale?.completion(answer)

@@ -27,6 +27,8 @@ def audit(database: Path, roots: list[Path], *, max_entries: int = 100_000,
         raise ValueError('Explicit roots and positive entry/time budgets are required')
     database = database.absolute()
     requested = sorted({os.path.abspath(p) for p in roots})
+    if any(Path(path).parent == Path(path) for path in requested):
+        raise ValueError('Filesystem-root audits are not allowed; select a bounded directory')
     def crosses_mount(path: str, ancestor: str) -> bool:
         cursor = Path(path)
         while str(cursor) != ancestor and cursor != cursor.parent:

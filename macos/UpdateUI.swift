@@ -7,10 +7,16 @@ final class UpdateController: NSObject, NSMenuItemValidation {
   private var cancellation: (() -> Void)?
   private var progress: NSWindow?
   private var automaticItem: NSMenuItem?
-  private var pendingInstaller: URL?
+  private var pendingInstaller: DownloadedInstaller?
+  private var installerObservation: NSKeyValueObservation?
+  private var installerApplication: NSRunningApplication?
   private var busy = false
+  private var installerIsRunning: Bool {
+    !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.installer").isEmpty
+  }
 
   func install(in menu: NSMenu) {
+    DownloadedInstaller.removeAbandoned(installerIsRunning: installerIsRunning)
     let check = NSMenuItem(title: L("update.check"), action: #selector(checkNow), keyEquivalent: "")
     check.target = self; menu.addItem(check)
     let automatic = NSMenuItem(title: L("update.automatic"), action: #selector(toggleAutomatic), keyEquivalent: "")
@@ -18,6 +24,7 @@ final class UpdateController: NSObject, NSMenuItemValidation {
     automaticItem = automatic; menu.addItem(automatic)
   }
   func applicationBecameActive() {
+    if !busy { DownloadedInstaller.removeAbandoned(installerIsRunning: installerIsRunning) }
     guard UpdateManager.shared.configured, UserDefaults.standard.bool(forKey: "FileSearch.AutomaticUpdates"), !busy else { return }
     let previous = UserDefaults.standard.double(forKey: "FileSearch.LastUpdateCheck")
     guard Date().timeIntervalSince1970 - previous >= 86_400 else { return }
@@ -30,15 +37,17 @@ final class UpdateController: NSObject, NSMenuItemValidation {
     if enabled { applicationBecameActive() }
   }
   @objc private func checkNow() { check(interactive: true) }
-  func validateMenuItem(_ item: NSMenuItem) -> Bool { item.action != #selector(checkNow) || !busy }
+  func validateMenuItem(_ item: NSMenuItem) -> Bool { item.action != #selector(checkNow) || (!busy && !installerIsRunning) }
   private func check(interactive: Bool) {
-    guard !busy else { return }; busy = true
+    guard !busy, !installerIsRunning else { return }
+    DownloadedInstaller.removeAbandoned(installerIsRunning: false)
+    busy = true
     if UpdateManager.shared.configured { UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "FileSearch.LastUpdateCheck") }
     cancellation = UpdateManager.shared.check { [weak self] result in
-      guard let self else { return }; self.busy = false; self.cancellation = nil
+      guard let self else { return }; self.cancellation = nil
       switch result {
-      case .failure(let error): if interactive { self.message(error.localizedDescription) }
-      case .success(nil): if interactive { self.message(L("update.up_to_date")) }
+      case .failure(let error): self.busy = false; if interactive { self.message(error.localizedDescription) }
+      case .success(nil): self.busy = false; if interactive { self.message(L("update.up_to_date")) }
       case .success(let manifest?): self.offer(manifest)
       }
     }
@@ -47,7 +56,7 @@ final class UpdateController: NSObject, NSMenuItemValidation {
     let alert = NSAlert(); alert.messageText = L("update.available", manifest.version)
     alert.informativeText = L("update.download_notice", ByteCountFormatter.string(fromByteCount: manifest.size, countStyle: .file))
     alert.addButton(withTitle: L("update.download")); alert.addButton(withTitle: L("action.cancel"))
-    guard alert.runModal() == .alertFirstButtonReturn else { return }
+    guard alert.runModal() == .alertFirstButtonReturn else { busy = false; return }
     busy = true
     let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 145), styleMask: [.titled], backing: .buffered, defer: false)
     panel.title = L("update.downloading")
@@ -58,17 +67,40 @@ final class UpdateController: NSObject, NSMenuItemValidation {
     stack.frame = NSRect(x: 20, y: 16, width: 380, height: 110); panel.contentView?.addSubview(stack)
     panel.center(); panel.makeKeyAndOrderFront(nil); progress = panel
     cancellation = UpdateManager.shared.download(manifest) { [weak self] result in
-      guard let self else { return }; self.busy = false; self.cancellation = nil; self.progress?.close(); self.progress = nil
+      guard let self else { return }; self.cancellation = nil; self.progress?.close(); self.progress = nil
       switch result {
       case .failure(let error):
+        self.busy = false
         if (error as NSError).code != NSURLErrorCancelled { self.message(error.localizedDescription) }
       case .success(let package):
         self.pendingInstaller = package
         let alert = NSAlert(); alert.messageText = L("update.ready"); alert.informativeText = L("update.install_notice")
         alert.addButton(withTitle: L("update.open_installer")); alert.addButton(withTitle: L("action.cancel"))
         if alert.runModal() == .alertFirstButtonReturn {
-          if !NSWorkspace.shared.open(package) { self.message(L("update.transport_error")); self.removeInstaller() }
+          self.openInstaller(package)
         } else { self.removeInstaller() }
+      }
+    }
+  }
+  private func openInstaller(_ package: DownloadedInstaller) {
+    guard let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.installer") else {
+      removeInstaller(); message(L("update.transport_error")); return
+    }
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.createsNewApplicationInstance = true
+    // Installer may outlive APFSearch while replacing the application bundle.
+    package.handOff()
+    NSWorkspace.shared.open([package.url], withApplicationAt: application, configuration: configuration) { [weak self] application, error in
+      DispatchQueue.main.async {
+        guard let self else { if application == nil { package.discard() }; return }
+        guard let application, error == nil else {
+          self.removeInstaller(); self.message(L("update.transport_error")); return
+        }
+        self.installerApplication = application
+        self.installerObservation = application.observe(\.isTerminated, options: [.initial, .new]) { [weak self] application, _ in
+          guard application.isTerminated else { return }
+          DispatchQueue.main.async { package.discard(); self?.removeInstaller() }
+        }
       }
     }
   }
@@ -78,7 +110,8 @@ final class UpdateController: NSObject, NSMenuItemValidation {
     alert.addButton(withTitle: L("action.ok")); alert.runModal()
   }
   private func removeInstaller() {
-    guard let package = pendingInstaller else { return }
-    try? FileManager.default.removeItem(at: package.deletingLastPathComponent()); pendingInstaller = nil
+    installerObservation = nil
+    installerApplication = nil
+    pendingInstaller?.discard(); pendingInstaller = nil; busy = false
   }
 }
