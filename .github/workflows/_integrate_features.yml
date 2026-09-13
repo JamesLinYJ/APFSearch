@@ -39,6 +39,8 @@ jobs:
             echo "::endgroup::"
           done
           python3 scripts/feature-integration/apply_status_ui.py
+          git apply --check scripts/feature-integration/window-close.patch
+          git apply scripts/feature-integration/window-close.patch
           git apply --check scripts/feature-integration/content.patch
           git apply scripts/feature-integration/content.patch
           cargo fmt --manifest-path core/Cargo.toml
