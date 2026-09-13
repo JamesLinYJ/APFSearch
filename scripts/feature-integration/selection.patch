@@ -1,0 +1,40 @@
+diff --git a/macos/Application.swift b/macos/Application.swift
+index beb9535..0000000 100644
+--- a/macos/Application.swift
++++ b/macos/Application.swift
+@@ -215,2 +215,3 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+     var generation: Any?
++    var snapshotLease: String?
+     var querySequence = 0
+@@ -588,2 +589,8 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+     func cancelQueries() {
++        if let lease = snapshotLease {
++            var release: [String: Any] = ["op": "release_snapshot", "snapshot_lease": lease]
++            if let offlineListID { release["list_id"] = offlineListID }
++            SearchClient.shared.call(release) { _ in }
++            snapshotLease = nil
++        }
+         for id in requestIDs {
+@@ -622,4 +629,8 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+         let id = UUID().uuidString; requestIDs.insert(id); pendingPages.insert(page)
+         var request: [String: Any] = ["op": "query", "text": queryText, "offset": page * pageSize, "limit": pageSize, "request_id": id, "sort": table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] }]
++        if isInitialQuery { request["retain_snapshot"] = true }
++        else if let snapshotLease { request["snapshot_lease"] = snapshotLease }
+         if let generation { request["generation"] = generation }
+@@ -641,2 +652,5 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+             }
++            if isInitialQuery {
++                self.snapshotLease = reply["snapshot_lease"] as? String
++            }
+             self.generation = reply["generation"] ?? self.generation
+@@ -758,2 +772,3 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+         var request: [String: Any] = ["op": "query", "text": queryText, "offset": offset, "limit": limit, "request_id": id, "sort": table.sortDescriptors.map { ["field": $0.key ?? "name", "ascending": $0.ascending] as [String: Any] }]
++        request["retain_snapshot"] = true
+         if let anchor {
+@@ -779,3 +794,5 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
+             guard self.table.selectedRowIndexes.count == self.selectedPaths.count else { return }
+             let selection = Set(self.selectedPaths)
++            let incomingLease = reply["snapshot_lease"] as? String
+             self.cancelQueries(); self.querySequence += 1
++            self.snapshotLease = incomingLease
+             self.generation = reply["generation"]
