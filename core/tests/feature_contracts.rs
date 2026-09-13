@@ -221,19 +221,19 @@ fn latest_coverage_is_never_applied_to_a_newly_retained_older_snapshot() {
 }
 
 #[test]
-fn legacy_property_mappings_remain_searchable_without_rewriting_indexed_rows() {
+fn property_queries_use_only_declared_fields() {
     use apfsearch_core::{index_store::IndexedFile, query};
     use std::collections::HashMap;
     let mut file: IndexedFile = serde_json::from_value(json!({
-        "id":1,"path":"/fixture/legacy.pdf","name":"legacy.pdf","extension":"pdf",
+        "id":1,"path":"/fixture/document.pdf","name":"document.pdf","extension":"pdf",
         "size":42,"modified":0,"created":0,"changed":0,"is_dir":false,"is_symlink":false,
         "file_id":1,"parent_id":0,"volume_id":"fixture","flags":0,
-        "properties":{"artist":"Legacy Author","exif":{"ISOSpeedRatings":[200],"FocalLength":50,"FNumber":2.8,"ExposureTime":0.01}}
+        "properties":{"author":"Document Author","iso":200,"focallength":50,"aperture":2.8,"exposuretime":0.01}
     })).unwrap();
     file.prepare();
     let before = file.properties.clone();
     for expression in [
-        "author:legacy",
+        "author:document",
         "iso:200",
         "focallength:50",
         "aperture:>=2",
@@ -249,13 +249,14 @@ fn legacy_property_mappings_remain_searchable_without_rewriting_indexed_rows() {
     }
     assert_eq!(file.properties, before);
     file.properties["author"] = json!("Corrected Author");
-    assert!(!query::parse("author:legacy", &HashMap::new())
+    assert!(!query::parse("author:document", &HashMap::new())
         .unwrap()
         .matches(&file, None)
         .unwrap());
     file.extension = "mp3".into();
     file.properties.as_object_mut().unwrap().remove("author");
-    assert!(!query::parse("author:legacy", &HashMap::new())
+    file.properties["artist"] = json!("Document Author");
+    assert!(!query::parse("author:document", &HashMap::new())
         .unwrap()
         .matches(&file, None)
         .unwrap());

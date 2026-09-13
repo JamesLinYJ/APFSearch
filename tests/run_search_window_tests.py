@@ -36,7 +36,7 @@ startup = """        pollStatus()
 if source.count(startup) != 1:
     raise SystemExit("App initializer changed; update the test-only startup isolation boundary")
 source = source.replace(startup, "", 1)
-sidebar_preference = '        UserDefaults.standard.set(!sidebar.isCollapsed, forKey: "APFSearch.SidebarVisible")'
+sidebar_preference = '        UserDefaults.standard.set(!sidebar.isCollapsed, forKey: ApplicationIdentity.preferencePrefix + "SidebarVisible")'
 if source.count(sidebar_preference) != 1:
     raise SystemExit("Sidebar preference write changed; update the test-only persistence boundary")
 source = source.replace(sidebar_preference, "        // User preference persistence is isolated in the test build.", 1)

@@ -11,9 +11,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 : "${APFSEARCH_UPDATE_URL:?HTTPS immutable package URL required}"
 [[ "$APFSEARCH_SIGN_IDENTITY" != '-' ]]
 [[ "$APFSEARCH_RELEASE_VERSION" =~ ^[0-9]{1,6}(\.[0-9]{1,6}){1,3}$ ]]
-BUILD_ROOT="${APFSEARCH_BUILD_DIR:-/private/tmp/APFSearch-release}"
+BUILD_ROOT="$(python3 "$ROOT/scripts/build_workspace.py" release)"
 OUT="${APFSEARCH_RELEASE_DIR:-$ROOT/dist/$APFSEARCH_RELEASE_VERSION}"
-mkdir -p "$BUILD_ROOT" "$(dirname "$OUT")"
+OUT_PARENT="$(python3 "$ROOT/scripts/build_workspace.py" directory "$(dirname "$OUT")")"
+OUT="$OUT_PARENT/$(basename "$OUT")"
 # Refuse replacing a previous release or another process's output.
 mkdir "$OUT"
 BUILD="$(mktemp -d "$BUILD_ROOT/build.XXXXXX")"

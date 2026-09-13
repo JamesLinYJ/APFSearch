@@ -1055,7 +1055,6 @@ pub struct IndexStore {
 }
 impl IndexStore {
     pub fn open(path: &Path) -> Result<Self, String> {
-        const SCHEMA_VERSION: i64 = 4;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?
         }
@@ -1063,12 +1062,7 @@ impl IndexStore {
         connection
             .busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|error| error.to_string())?;
-        let version = connection
-            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-            .map_err(|error| error.to_string())?;
-        if !(0..=SCHEMA_VERSION).contains(&version) {
-            return Err(format!("Unsupported index schema version {version}"));
-        }
+        let version = Self::schema_version(&connection)?;
         let journal_mode = connection
             .query_row("PRAGMA journal_mode", [], |row| row.get::<_, String>(0))
             .map_err(|error| error.to_string())?;
@@ -1080,20 +1074,12 @@ impl IndexStore {
         connection
             .execute_batch("PRAGMA synchronous=NORMAL;PRAGMA foreign_keys=ON;")
             .map_err(|error| error.to_string())?;
-        if version < SCHEMA_VERSION {
+        if version == 0 {
             let transaction = connection
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .map_err(|error| error.to_string())?;
-            // A second opener may have completed the upgrade while we waited.
-            let current_version = transaction
-                .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
-                .map_err(|error| error.to_string())?;
-            if !(0..=SCHEMA_VERSION).contains(&current_version) {
-                return Err(format!(
-                    "Unsupported index schema version {current_version}"
-                ));
-            }
-            if current_version < SCHEMA_VERSION {
+            // A concurrent opener may have initialized the empty database.
+            if Self::schema_version(&transaction)? == 0 {
                 transaction.execute_batch("
                   CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY,path TEXT UNIQUE NOT NULL,name TEXT NOT NULL,extension TEXT NOT NULL,size INTEGER NOT NULL,modified INTEGER NOT NULL,created INTEGER NOT NULL,changed INTEGER NOT NULL,is_dir INTEGER NOT NULL,is_symlink INTEGER NOT NULL,file_id INTEGER NOT NULL,parent_id INTEGER NOT NULL,volume_id TEXT NOT NULL,flags INTEGER NOT NULL,seen INTEGER NOT NULL,modified_ns INTEGER NOT NULL DEFAULT 0,changed_ns INTEGER NOT NULL DEFAULT 0,accessible INTEGER NOT NULL DEFAULT 1);
                   CREATE TABLE IF NOT EXISTS content(path TEXT PRIMARY KEY REFERENCES files(path) ON DELETE CASCADE,body TEXT NOT NULL,properties TEXT NOT NULL DEFAULT '{}');
@@ -1103,43 +1089,17 @@ impl IndexStore {
                   CREATE INDEX IF NOT EXISTS file_identity ON files(volume_id,file_id);
                   CREATE INDEX IF NOT EXISTS file_size ON files(size);
         ").map_err(|error| error.to_string())?;
-                // Preserve metadata from indexes created before precise timestamps.
-                let cols: Vec<String> = {
-                    let mut s = transaction
-                        .prepare("PRAGMA table_info(files)")
-                        .map_err(|error| error.to_string())?;
-                    let rows = s
-                        .query_map([], |r| r.get::<_, String>(1))
-                        .map_err(|error| error.to_string())?;
-                    rows.collect::<Result<_, _>>()
-                        .map_err(|error| error.to_string())?
-                };
-                for col in ["modified_ns", "changed_ns", "accessible"] {
-                    if !cols.contains(&col.to_string()) {
-                        transaction
-                            .execute_batch(&format!(
-                                "ALTER TABLE files ADD COLUMN {col} INTEGER NOT NULL DEFAULT {}",
-                                if col == "accessible" { 1 } else { 0 }
-                            ))
-                            .map_err(|error| error.to_string())?;
-                    }
-                }
                 transaction.execute_batch(r#"
                   CREATE TABLE IF NOT EXISTS snapshot_changes(id INTEGER PRIMARY KEY);
                   CREATE TABLE IF NOT EXISTS cache_changes(id INTEGER PRIMARY KEY);
-                  DROP TRIGGER IF EXISTS snapshot_file_insert;
-                  DROP TRIGGER IF EXISTS snapshot_file_delete;
-                  DROP TRIGGER IF EXISTS snapshot_file_update;
-                  DROP TRIGGER IF EXISTS snapshot_content_insert;
-                  DROP TRIGGER IF EXISTS snapshot_content_update;
-                  DROP TRIGGER IF EXISTS snapshot_content_delete;
                   CREATE TRIGGER IF NOT EXISTS snapshot_file_insert AFTER INSERT ON files BEGIN INSERT INTO snapshot_changes VALUES(new.id) ON CONFLICT(id) DO NOTHING; INSERT INTO cache_changes SELECT new.id WHERE EXISTS(SELECT 1 FROM settings WHERE key='cache_base_revision') AND NOT EXISTS(SELECT 1 FROM settings WHERE key='cache_journal_overflow' AND value='true') ON CONFLICT(id) DO NOTHING; END;
                   CREATE TRIGGER IF NOT EXISTS snapshot_file_delete AFTER DELETE ON files BEGIN INSERT INTO snapshot_changes VALUES(old.id) ON CONFLICT(id) DO NOTHING; INSERT INTO cache_changes SELECT old.id WHERE EXISTS(SELECT 1 FROM settings WHERE key='cache_base_revision') AND NOT EXISTS(SELECT 1 FROM settings WHERE key='cache_journal_overflow' AND value='true') ON CONFLICT(id) DO NOTHING; END;
                   CREATE TRIGGER IF NOT EXISTS snapshot_file_update AFTER UPDATE ON files WHEN old.name!=new.name OR old.path!=new.path OR old.extension!=new.extension OR old.size!=new.size OR old.modified!=new.modified OR old.created!=new.created OR old.changed!=new.changed OR old.is_dir!=new.is_dir OR old.is_symlink!=new.is_symlink OR old.file_id!=new.file_id OR old.parent_id!=new.parent_id OR old.volume_id!=new.volume_id OR old.flags!=new.flags OR old.modified_ns!=new.modified_ns OR old.changed_ns!=new.changed_ns OR old.accessible!=new.accessible BEGIN INSERT INTO snapshot_changes VALUES(new.id) ON CONFLICT(id) DO NOTHING; INSERT INTO cache_changes SELECT new.id WHERE EXISTS(SELECT 1 FROM settings WHERE key='cache_base_revision') AND NOT EXISTS(SELECT 1 FROM settings WHERE key='cache_journal_overflow' AND value='true') ON CONFLICT(id) DO NOTHING; END;
                   CREATE TRIGGER IF NOT EXISTS snapshot_content_insert AFTER INSERT ON content BEGIN INSERT INTO snapshot_changes SELECT id FROM files WHERE path=new.path ON CONFLICT(id) DO NOTHING; INSERT INTO cache_changes SELECT id FROM files WHERE path=new.path AND EXISTS(SELECT 1 FROM settings WHERE key='cache_base_revision') AND NOT EXISTS(SELECT 1 FROM settings WHERE key='cache_journal_overflow' AND value='true') ON CONFLICT(id) DO NOTHING; INSERT INTO settings VALUES('content_revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1; END;
                   CREATE TRIGGER IF NOT EXISTS snapshot_content_update AFTER UPDATE ON content BEGIN INSERT INTO snapshot_changes SELECT id FROM files WHERE path=new.path ON CONFLICT(id) DO NOTHING; INSERT INTO cache_changes SELECT id FROM files WHERE path=new.path AND EXISTS(SELECT 1 FROM settings WHERE key='cache_base_revision') AND NOT EXISTS(SELECT 1 FROM settings WHERE key='cache_journal_overflow' AND value='true') ON CONFLICT(id) DO NOTHING; INSERT INTO settings VALUES('content_revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1; END;
                   CREATE TRIGGER IF NOT EXISTS snapshot_content_delete AFTER DELETE ON content BEGIN INSERT INTO snapshot_changes SELECT id FROM files WHERE path=old.path ON CONFLICT(id) DO NOTHING; INSERT INTO cache_changes SELECT id FROM files WHERE path=old.path AND EXISTS(SELECT 1 FROM settings WHERE key='cache_base_revision') AND NOT EXISTS(SELECT 1 FROM settings WHERE key='cache_journal_overflow' AND value='true') ON CONFLICT(id) DO NOTHING; INSERT INTO settings VALUES('content_revision','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1; END;
-                  PRAGMA user_version=4;"#).map_err(|error| error.to_string())?;
+                  PRAGMA application_id=1095779923;
+                  PRAGMA user_version=1;"#).map_err(|error| error.to_string())?;
                 cache_journal::install(&transaction)?;
             }
             transaction.commit().map_err(|error| error.to_string())?;
@@ -1148,6 +1108,34 @@ impl IndexStore {
             connection,
             cache_path: path.with_extension("snapshot.bin"),
         })
+    }
+    /// Only a blank database or this application's complete format is accepted.
+    /// Prior development schemas are never altered or adopted in place.
+    fn schema_version(connection: &Connection) -> Result<i64, String> {
+        let version = connection
+            .query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))
+            .map_err(|error| error.to_string())?;
+        let application = connection
+            .query_row("PRAGMA application_id", [], |row| row.get::<_, i64>(0))
+            .map_err(|error| error.to_string())?;
+        if version == 1 && application == 0x4150_4653 {
+            return Ok(1);
+        }
+        if version == 0 && application == 0 {
+            let populated = connection
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if !populated {
+                return Ok(0);
+            }
+        }
+        Err(format!(
+            "Unsupported index format (application {application}, schema {version})"
+        ))
     }
     pub fn get(&self, key: &str, default: Value) -> Value {
         self.connection
@@ -1546,6 +1534,60 @@ impl IndexStore {
     /// Persist a fully reconciled cursor without changing the search snapshot.
     pub fn advance_event_id(&self, event_id: u64) -> Result<(), String> {
         self.set("event_id", &json!(event_id))
+    }
+    // Import rows stay in a disk-backed temporary table until the complete,
+    // bounded input has been accepted. Queries and cache rebuilds only see files.
+    pub(crate) fn begin_file_list_import(&mut self) -> Result<(), String> {
+        self.connection.execute_batch("PRAGMA temp_store=FILE;
+            DROP TABLE IF EXISTS temp.file_list_import;
+            CREATE TEMP TABLE file_list_import(path TEXT PRIMARY KEY,name TEXT NOT NULL,extension TEXT NOT NULL,size INTEGER NOT NULL,modified INTEGER NOT NULL,created INTEGER NOT NULL,is_dir INTEGER NOT NULL,file_id INTEGER NOT NULL);")
+            .map_err(|error| error.to_string())
+    }
+    pub(crate) fn append_file_list_import(
+        &mut self,
+        entries: &[ScannedFile],
+    ) -> Result<(), String> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        {
+            let mut insert = transaction.prepare_cached("INSERT INTO temp.file_list_import VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(path) DO UPDATE SET name=excluded.name,extension=excluded.extension,size=excluded.size,modified=excluded.modified,created=excluded.created,is_dir=excluded.is_dir,file_id=excluded.file_id")
+                .map_err(|error| error.to_string())?;
+            for file in entries {
+                insert
+                    .execute(params![
+                        file.path,
+                        file.name,
+                        file.extension,
+                        file.size as i64,
+                        file.modified,
+                        file.created,
+                        file.is_dir,
+                        file.file_id as i64
+                    ])
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        transaction.commit().map_err(|error| error.to_string())
+    }
+    pub(crate) fn finish_file_list_import(&mut self) -> Result<(), String> {
+        let transaction = self
+            .connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute("DELETE FROM files", [])
+            .map_err(|error| error.to_string())?;
+        transaction.execute("INSERT INTO files(path,name,extension,size,modified,created,changed,is_dir,is_symlink,file_id,parent_id,volume_id,flags,seen) SELECT path,name,extension,size,modified,created,0,is_dir,0,file_id,0,'offline:filelist',0,1 FROM temp.file_list_import", []).map_err(|error| error.to_string())?;
+        transaction.execute_batch("INSERT INTO settings VALUES('offline','true') ON CONFLICT(key) DO UPDATE SET value='true'; INSERT INTO settings VALUES('watch_enabled','false') ON CONFLICT(key) DO UPDATE SET value='false'; DROP TABLE temp.file_list_import;").map_err(|error| error.to_string())?;
+        mark_search_changed(&transaction)?;
+        transaction.commit().map_err(|error| error.to_string())
+    }
+    pub(crate) fn abort_file_list_import(&mut self) -> Result<(), String> {
+        self.connection
+            .execute_batch("DROP TABLE IF EXISTS temp.file_list_import;")
+            .map_err(|error| error.to_string())
     }
     pub fn clear(&mut self) -> Result<(), String> {
         let transaction = self

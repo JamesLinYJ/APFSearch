@@ -26,13 +26,13 @@ final class ReplyBox: @unchecked Sendable {
         }
         do {
             let support = run.appendingPathComponent("fresh-install-support")
-            let unrelated = support.appendingPathComponent("PreviousSearch")
+            let unrelated = support.appendingPathComponent("APFSearch")
             try FileManager.default.createDirectory(at: unrelated, withIntermediateDirectories: true)
             let original = Data("existing private index; must not be opened or moved".utf8)
             try original.write(to: unrelated.appendingPathComponent("index.sqlite"))
             let engine = SearchEngine(applicationSupportDirectory: support)
             let status = engine.call(["op": "status"])
-            check("fresh identity opens an empty independent index", engine.directory == support.appendingPathComponent("APFSearch", isDirectory: true) && (status["count"] as? Int) == 0, status)
+            check("fresh identity opens an empty independent index", engine.directory == support.appendingPathComponent("APFSearch/v1", isDirectory: true) && (status["count"] as? Int) == 0, status)
             check("fresh installation leaves neighboring data intact", try Data(contentsOf: unrelated.appendingPathComponent("index.sqlite")) == original)
         }
         func asyncRequest(_ payload: [String: Any], version: Int? = protocolVersion) -> ReplyBox {
@@ -216,6 +216,26 @@ final class ReplyBox: @unchecked Sendable {
         let exportImport = try request(["op": "import_list", "path": exportSource.path])
         let exportListID = exportImport["list_id"] as? String ?? ""
         check("multipage export fixture imports", exportImport["success"] as? Bool == true && exportImport["count"] as? Int == exportRows + 1, exportImport)
+        let importDirectory = db.appendingPathComponent("Imported Lists", isDirectory: true)
+        func importedNames() -> Set<String> {
+            Set((try? FileManager.default.contentsOfDirectory(atPath: importDirectory.path)) ?? [])
+        }
+        let listsBeforeFailure = importedNames()
+        let malformedImport = run.appendingPathComponent("malformed-after-batches.efu")
+        try ("Filename\n" + (0..<9000).map { "/offline/partial/\($0).txt\n" }.joined() + "\"unterminated").write(to: malformedImport, atomically: true, encoding: .utf8)
+        let failedImport = try request(["op": "import_list", "path": malformedImport.path])
+        check("malformed import after several SQL batches is rejected", failedImport["success"] as? Bool == false && failedImport["error_key"] as? String == "error.unterminated_csv_quote", failedImport)
+        check("failed import leaves neither UUID lists nor staging directories", importedNames() == listsBeforeFailure, importedNames())
+        let cancelledImport = ImportJob(); cancelledImport.cancel()
+        let cancelledImportResult = service.fileList(["op": "import_list", "path": exportSource.path], importing: cancelledImport)
+        check("prequeued import cancellation is preserved", cancelledImportResult["success"] as? Bool == false && cancelledImportResult["error_key"] as? String == "error.query_cancelled", cancelledImportResult)
+        check("cancelled import creates no persistent or temporary engine", importedNames() == listsBeforeFailure, importedNames())
+        let invalidHeader = run.appendingPathComponent("invalid-header.efu")
+        try "Other,Size\n\"unterminated".write(to: invalidHeader, atomically: true, encoding: .utf8)
+        let headerResult = try request(["op": "import_list", "path": invalidHeader.path])
+        check("invalid header is rejected before later malformed CSV", headerResult["error_key"] as? String == "error.missing_filename_column", headerResult)
+        check("invalid header does not allocate an offline index", importedNames() == listsBeforeFailure)
+        check("successful import publishes exactly one offline generation", try request(["op": "status", "list_id": exportListID])["generation"] as? Int == 1)
         let exportPreferences: [String: Any] = ["macros": ["docs": "ext:txt"], "exclusions": ["name:omit.txt"]]
         _ = try request(["op": "preferences", "action": "set", "values": exportPreferences])
 

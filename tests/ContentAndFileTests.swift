@@ -16,6 +16,66 @@ import CoreGraphics
     }
     let parsed=try CSVReader.parse("Filename,Size\r\n\"/a/有,逗号.txt\",3\r\n\"/a/line\nquote\"\".txt\",4\r\n")
     try check("EFU CSV quoted comma newline and quote",parsed.count==3 && parsed[2][0]=="/a/line\nquote\".txt")
+    let csvFixture = Data("\u{feff}Filename,Size\r\n\"C:\\离线\\a,\"\"b.txt\",4\r\n\"/line\nbreak.txt\",5\r\n".utf8)
+    for chunk in [1, 2, 3, 7, 65536] {
+      var records = [[String]]()
+      var reader = CSVReader { records.append($0) }
+      for start in stride(from: 0, to: csvFixture.count, by: chunk) {
+        try reader.feed(csvFixture.subdata(in: start..<min(start + chunk, csvFixture.count)))
+      }
+      try reader.finish()
+      try check("streamed CSV UTF-8 BOM quotes and CRLF at chunk \(chunk)", records == [["Filename", "Size"], ["C:\\离线\\a,\"b.txt", "4"], ["/line\nbreak.txt", "5"]])
+    }
+    func csvRejects(_ data: Data, limits: CSVLimits = CSVLimits()) -> Bool {
+      do { var reader = CSVReader(limits: limits) { _ in }; try reader.feed(data); try reader.finish(); return false }
+      catch { return true }
+    }
+    try check("CSV rejects malformed UTF-8 without replacement", csvRejects(Data([0x46, 0x0a, 0xc0, 0xaf, 0x0a])))
+    try check("CSV rejects misplaced quote and unfinished quote", csvRejects(Data("a\"b,c".utf8)) && csvRejects(Data("\"unfinished".utf8)))
+    var bounds = CSVLimits(); bounds.fieldBytes = 4
+    try check("CSV enforces field bytes inside quotes", csvRejects(Data("\"12345\"".utf8), limits: bounds) && !csvRejects(Data("\"1234\"".utf8), limits: bounds))
+    bounds = CSVLimits(); bounds.columns = 2
+    try check("CSV enforces column budget including empty columns", csvRejects(Data(",,".utf8), limits: bounds) && !csvRejects(Data(",".utf8), limits: bounds))
+    bounds = CSVLimits(); bounds.rows = 2
+    try check("CSV counts empty records toward row budget", csvRejects(Data("a\n\n\n".utf8), limits: bounds) && !csvRejects(Data("a\n\n".utf8), limits: bounds))
+    bounds = CSVLimits(); bounds.recordBytes = 6
+    try check("CSV enforces record budget across many small fields", csvRejects(Data("a,b,c,d".utf8), limits: bounds))
+    bounds = CSVLimits(); bounds.bytes = 5
+    try check("CSV enforces cumulative bytes across chunks", try {
+      var reader = CSVReader(limits: bounds) { _ in }; try reader.feed(Data("123".utf8))
+      do { try reader.feed(Data("456".utf8)); return false } catch { return true }
+    }())
+    let cancelCSV = ImportJob()
+    var cancelledRows = 0
+    var cancelledReader = CSVReader(cancelled: { cancelCSV.isCancelled }) { _ in cancelledRows += 1; cancelCSV.cancel() }
+    var cancelledCSV = false
+    do { try cancelledReader.feed(Data("Filename\na\nb\n".utf8)); try cancelledReader.finish() } catch { cancelledCSV = true }
+    try check("CSV cancellation stops inside an already-read chunk", cancelledCSV && cancelledRows == 1)
+    let descriptorCSV = folder.appendingPathComponent("descriptor.efu")
+    try "Filename\n/original.txt\n".write(to: descriptorCSV, atomically: true, encoding: .utf8)
+    let csvAlias = folder.appendingPathComponent("descriptor-link.efu")
+    try FileManager.default.createSymbolicLink(at: csvAlias, withDestinationURL: descriptorCSV)
+    var aliasRows = [[String]]()
+    try CSVReader.read(path: csvAlias.path) { aliasRows.append($0) }
+    try check("CSV regular-file symlink keeps descriptor-based import compatibility", aliasRows.count == 2 && aliasRows[1][0] == "/original.txt")
+    try check("CSV descriptor rejects directories before reading", {
+      do { try CSVReader.read(path: folder.path) { _ in }; return false } catch { return true }
+    }())
+    try check("CSV descriptor rejects initial file byte budget", {
+      var limits = CSVLimits(); limits.bytes = 5
+      do { try CSVReader.read(path: descriptorCSV.path, limits: limits) { _ in }; return false } catch { return true }
+    }())
+    var changedRows = 0, changedRejected = false
+    do {
+      try CSVReader.read(path: descriptorCSV.path) { _ in
+        changedRows += 1
+        if changedRows == 1 {
+          let handle = try FileHandle(forWritingTo: descriptorCSV)
+          try handle.seekToEnd(); try handle.write(contentsOf: Data("/added.txt\n".utf8)); try handle.close()
+        }
+      }
+    } catch { changedRejected = true }
+    try check("CSV verifies descriptor metadata after reading a changing file", changedRejected)
     let file=folder.appendingPathComponent("测试 alpha.txt")
     try "内容中文 needle42\nsecond line".write(to:file,atomically:true,encoding:.utf8)
     let extracted=try content.extract(file)

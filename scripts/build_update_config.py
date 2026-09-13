@@ -44,7 +44,6 @@ def configure(app: Path, environ: dict[str, str]) -> None:
         path = app / 'Contents/Info.plist'
         values = plistlib.loads(path.read_bytes())
         values['CFBundleShortVersionString'] = version
-        values['CFBundleVersion'] = version
         path.write_bytes(plistlib.dumps(values))
 
 

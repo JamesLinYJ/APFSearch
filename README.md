@@ -49,7 +49,7 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 APFSEARCH_COMPILE_ONLY=1 ./build.sh
 ```
 
-Output: `/private/tmp/APFSearch-build/APFSearch.app`. Set `APFSEARCH_BUILD_DIR` to use another directory. SQLite and PCRE2 are linked statically; Cargo uses the pinned dependencies in `core/Cargo.lock`.
+Output: `APFSearch-build/APFSearch.app` under the current user's system temporary directory; the build prints the full path. Set `APFSEARCH_BUILD_DIR` to use another directory. Build and release paths must belong to the current user, with trusted ancestors and no writable-by-others output entries or symlinks. Unsafe existing paths are refused; compiler caches remain reusable. SQLite and PCRE2 are linked statically; Cargo uses the pinned dependencies in `core/Cargo.lock`.
 
 The app, indexer, and CLI each contain both architectures. For a faster local development build, set `APFSEARCH_ARCHITECTURES=arm64` or `APFSEARCH_ARCHITECTURES=x86_64`. The deployment target is shared by the Rust build, Swift compiler, bundle metadata, and test bundles through `scripts/build_configuration.py`. Select a particular Xcode with `DEVELOPER_DIR` if you have multiple installations.
 
@@ -113,7 +113,7 @@ Substring candidates, Roaring bitmaps, numeric columns, Unicode normalization an
 
 Bundle identifiers are `org.apfsearch.app`, `org.apfsearch.indexer`, and `org.apfsearch.cli`; the Rust package is `apfsearch-core`.
 
-Settings belong to the new application identity, and index data lives in `~/Library/Application Support/APFSearch`. This release starts fresh and does not import an earlier development application's settings or index.
+This preview starts with format-1 preferences and a fresh index in `~/Library/Application Support/APFSearch/v1`. Earlier development settings and indexes are neither imported, migrated, nor deleted.
 
 </details>
 
@@ -126,7 +126,7 @@ Settings belong to the new application identity, and index data lives in `~/Libr
 - **Acceptance:** Full authorized-scope enumeration parity, crash/event-loss recovery under real workloads, and final installed-app UI behavior are not fully accepted. The original performance targets have not all been verified. Compiling for macOS 14 and running Intel code under Rosetta do not replace testing on a physical Intel Mac or macOS 14.
 - **Distribution:** The default source build is for compilation checks. Distribution requires signing and notarizing the actual deliverable; see the [distribution guide](docs/DISTRIBUTION.md).
 
-Runtime data lives in `~/Library/Application Support/APFSearch`. Before uninstalling, unregister the background service and disable login launch. Keep the data directory if you want to preserve the index and settings.
+Runtime data lives in `~/Library/Application Support/APFSearch/v1`. Before uninstalling, unregister the background service and disable login launch. Keep the data directory if you want to preserve the index and settings.
 
 ## Documentation
 

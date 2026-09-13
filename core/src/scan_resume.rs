@@ -15,7 +15,6 @@ pub(crate) struct ResumeProof {
     journal_uuid: String,
     roots: Vec<(String, u64, u64)>,
     mounts: Vec<(String, String, u32)>,
-    #[serde(default)]
     mount_types: Vec<(String, String)>,
     access: Vec<(String, bool)>,
 }
@@ -62,7 +61,6 @@ impl ResumeProof {
 pub(crate) struct Inspection {
     pub(crate) proof: ResumeProof,
     pub(crate) recheck_roots: Vec<String>,
-    boot_namespace_mounts: Vec<String>,
 }
 impl Inspection {
     /// Runtime access and mount changes invalidate their intersecting scopes,
@@ -75,6 +73,7 @@ impl Inspection {
             .iter()
             .map(|(root, _, _)| root.clone())
             .collect();
+        let selected = scanner::PathScopes::from_paths(&configured);
         let mut recheck = self.recheck_roots.clone();
         let old_access: BTreeMap<_, _> = previous.access.iter().cloned().collect();
         let new_access: BTreeMap<_, _> = self.proof.access.iter().cloned().collect();
@@ -83,7 +82,7 @@ impl Inspection {
             .chain(new_access.keys())
             .collect::<BTreeSet<_>>()
         {
-            if !scanner::path_in_namespace(path, &configured) {
+            if !selected.covers(Path::new(path)) || !scanner::path_in_namespace(path, &configured) {
                 continue;
             }
             // A probe removed from the dynamic uncovered set is not an access
@@ -127,19 +126,7 @@ impl Inspection {
         let new_types: BTreeMap<_, _> = self.proof.mount_types.iter().cloned().collect();
         for (path, kind) in &new_types {
             if old_types.get(path) != Some(kind) {
-                // Older proofs lack type metadata. Configured-root identities
-                // plus the boot journal already validate their ancestor mount;
-                // unknown nested mount types need only a local recheck.
-                let anchored = !old_types.contains_key(path)
-                    && (self.boot_namespace_mounts.contains(path)
-                        || self
-                            .proof
-                            .roots
-                            .iter()
-                            .any(|(root, _, _)| Path::new(root).starts_with(path)));
-                if !anchored {
-                    recheck.push(path.clone());
-                }
+                recheck.push(path.clone());
             }
         }
         let mut intersecting = Vec::new();
@@ -155,7 +142,7 @@ impl Inspection {
                 }
             }
         }
-        scanner::normalize_roots(&intersecting)
+        scanner::normalize_scopes(&intersecting)
     }
 }
 /// Opening a few directory handles checks configured roots, previously denied
@@ -165,6 +152,7 @@ pub(crate) fn inspect(roots: &[String], uncovered: &[String]) -> Result<Inspecti
 }
 fn inspect_inner(roots: &[String], uncovered: &[String]) -> std::io::Result<Inspection> {
     let scope = scanner::mount_scope()?;
+    let selected = scanner::PathScopes::from_paths(roots);
     let boot_device = std::fs::symlink_metadata("/")?.dev();
     let journal_uuid = file_events::journal_uuid(Path::new("/"))?
         .ok_or_else(|| std::io::Error::other("Boot-volume event history is unavailable"))?;
@@ -175,7 +163,7 @@ fn inspect_inner(roots: &[String], uncovered: &[String]) -> std::io::Result<Insp
     // hide any such rows; a denied directory fails promptly without traversal.
     let mut recheck: Vec<_> = uncovered
         .iter()
-        .filter(|path| scanner::path_in_namespace(path, roots))
+        .filter(|path| selected.covers(Path::new(path)) && scanner::path_in_namespace(path, roots))
         .cloned()
         .collect();
     for root in roots {
@@ -184,17 +172,16 @@ fn inspect_inner(roots: &[String], uncovered: &[String]) -> std::io::Result<Insp
                 "Configured root is not on a supported local mount",
             ));
         }
-        let metadata = std::fs::symlink_metadata(root)?;
-        root_ids.push((root.clone(), metadata.dev(), metadata.ino()));
+        let metadata = filesystem::metadata(Path::new(root), &scope)?;
+        root_ids.push((root.clone(), metadata.st_dev as u64, metadata.st_ino));
         probes.insert(root.clone());
-        if metadata.dev() != boot_device {
+        if metadata.st_dev as u64 != boot_device {
             recheck.push(root.clone());
         }
     }
     root_ids.sort();
     let mut mounts = Vec::new();
     let mut mount_types = Vec::new();
-    let mut boot_namespace_mounts = Vec::new();
     for mounted in filesystem::mounted_filesystems()? {
         let raw_path = filesystem::c_array_string(&mounted.f_mntonname)?
             .to_str()
@@ -217,15 +204,12 @@ fn inspect_inner(roots: &[String], uncovered: &[String]) -> std::io::Result<Insp
                 .into_owned(),
         ));
         mounts.push((path.clone(), source, mounted.f_flags));
-        if scope.allows(Path::new(raw_path))
-            && std::fs::symlink_metadata(raw_path)?.dev() == boot_device
-            && file_events::journal_uuid(Path::new(raw_path))?.as_ref() == Some(&journal_uuid)
-        {
-            boot_namespace_mounts.push(path.clone());
-        }
-        if scope.allows(Path::new(raw_path))
-            && std::fs::symlink_metadata(raw_path)?.dev() != boot_device
-        {
+        let mount_device = if scope.allows(Path::new(raw_path)) {
+            Some(filesystem::metadata(Path::new(raw_path), &scope)?.st_dev as u64)
+        } else {
+            None
+        };
+        if mount_device.is_some_and(|device| device != boot_device) {
             for root in roots {
                 if Path::new(&path).starts_with(root) {
                     recheck.push(path.clone());
@@ -242,7 +226,9 @@ fn inspect_inner(roots: &[String], uncovered: &[String]) -> std::io::Result<Insp
     probes.extend(
         uncovered
             .iter()
-            .filter(|path| scanner::path_in_namespace(path, roots))
+            .filter(|path| {
+                selected.covers(Path::new(path)) && scanner::path_in_namespace(path, roots)
+            })
             .cloned(),
     );
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
@@ -293,8 +279,7 @@ fn inspect_inner(roots: &[String], uncovered: &[String]) -> std::io::Result<Insp
             mount_types,
             access,
         },
-        recheck_roots: scanner::normalize_roots(&recheck),
-        boot_namespace_mounts,
+        recheck_roots: scanner::normalize_scopes(&recheck),
     })
 }
 
@@ -331,7 +316,6 @@ mod tests {
                 "/System/Volumes/Preboot".into(),
                 "/Library/Developer/CoreSimulator/Volumes/runtime".into(),
             ],
-            boot_namespace_mounts: vec!["/".into()],
         };
         assert!(before.same_namespace(&inspection.proof));
         assert_eq!(
@@ -376,7 +360,6 @@ mod tests {
         let inspection = Inspection {
             proof: current,
             recheck_roots: Vec::new(),
-            boot_namespace_mounts: Vec::new(),
         };
         assert!(before.same_namespace(&inspection.proof));
         assert_eq!(inspection.recheck_against(&before), ["/fixture/new-gap"]);
@@ -385,7 +368,6 @@ mod tests {
         let inspection = Inspection {
             proof: current,
             recheck_roots: Vec::new(),
-            boot_namespace_mounts: Vec::new(),
         };
         assert!(before.same_namespace(&inspection.proof));
         assert_eq!(inspection.recheck_against(&before), ["/fixture"]);
@@ -400,14 +382,12 @@ mod tests {
         let current = Inspection {
             proof: mounted.clone(),
             recheck_roots: Vec::new(),
-            boot_namespace_mounts: Vec::new(),
         };
         assert!(before.same_namespace(&current.proof));
         assert_eq!(current.recheck_against(&before), ["/fixture/mount"]);
         let unmounted = Inspection {
             proof: before,
             recheck_roots: Vec::new(),
-            boot_namespace_mounts: Vec::new(),
         };
         assert_eq!(unmounted.recheck_against(&mounted), ["/fixture/mount"]);
         // Reusing the same device name and flags must not conceal a type change.
@@ -420,20 +400,8 @@ mod tests {
         let changed_type = Inspection {
             proof: new_type,
             recheck_roots: Vec::new(),
-            boot_namespace_mounts: Vec::new(),
         };
         assert_eq!(changed_type.recheck_against(&old_type), ["/fixture/mount"]);
-        let mut legacy = proof();
-        legacy.mount_types.clear();
-        let upgraded = Inspection {
-            proof: proof(),
-            recheck_roots: Vec::new(),
-            boot_namespace_mounts: Vec::new(),
-        };
-        assert!(
-            upgraded.recheck_against(&legacy).is_empty(),
-            "legacy type metadata must not rescan an already anchored root"
-        );
     }
     #[test]
     fn unrelated_mount_flags_do_not_rescan_the_root_namespace() {
@@ -443,7 +411,6 @@ mod tests {
         let inspection = Inspection {
             proof: current,
             recheck_roots: Vec::new(),
-            boot_namespace_mounts: Vec::new(),
         };
         assert!(before.same_namespace(&inspection.proof));
         assert!(inspection.recheck_against(&before).is_empty());

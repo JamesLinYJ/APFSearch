@@ -1,9 +1,9 @@
 import Foundation
 
 let serviceName = ApplicationIdentity.serviceIdentifier
-let protocolVersion = 2
+let protocolVersion = 1
 
-// Version 2 uses success for operation status and retains structured messages:
+// Protocol 1 uses success for operation status and retains structured messages:
 // message_key/message_args and error_key/error_args identify String Catalog
 // entries with typed text/integer/localized arguments. Conflict/warning arrays
 // carry explicit *_messages records. Receivers localize only these fields;

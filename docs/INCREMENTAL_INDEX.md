@@ -6,9 +6,9 @@ SQLite remains authoritative. This change does not scan filesystem roots, read f
 
 The cache journal retains at most 65,536 **distinct** persistent IDs. A primary-key conflict is a no-op, so repeated filesystem notifications do not consume its capacity. A singleton counter is maintained by insert/delete triggers in the same transaction as the metadata and journal rows. Its overflow trigger runs only when the counter exceeds the bound: it marks history incomplete and clears the disposable journal. Subsequent metadata changes stop adding cache IDs until an actual checkpoint establishes a new baseline.
 
-Ordinary inserts no longer execute `COUNT(*)` or scan the existing journal. The counter is initialized with one count during the schema-3-to-4 migration, not every startup. Delete/checkpoint and overflow remain linear in the bounded number of journal IDs. Counter updates touch one SQLite row; they do not introduce per-file transactions or fsync calls. Existing transaction batching, WAL, and synchronization settings are unchanged. This is not a zero-write or SSD-lifetime guarantee.
+Ordinary inserts no longer execute `COUNT(*)` or scan the existing journal. The counter starts at zero when an empty format-1 index is created, not on every startup. Delete/checkpoint and overflow remain linear in the bounded number of journal IDs. Counter updates touch one SQLite row; they do not introduce per-file transactions or fsync calls. Existing transaction batching, WAL, and synchronization settings are unchanged. This is not a zero-write or SSD-lifetime guarantee.
 
-Migration preserves both the previous cache baseline and any existing overflow marker. An incomplete old history must remain incomplete until rebuilt. Normal schema-4 opens do not perform schema writes. Older applications that support only schema 3 will reject the upgraded database rather than write it with incompatible triggers.
+Format 1 opens do not perform schema writes. Only an empty database or an APFSearch format-1 database is accepted; older development indexes are never migrated or rewritten. The application uses a fresh versioned data directory.
 
 ## Recovery and delta reads
 
@@ -28,6 +28,6 @@ This does **not** make total publication independent of index size. The entry-po
 
 ## Regression coverage
 
-Tests use small synthetic metadata stores and in-memory journals, never a generated filesystem tree. They cover more-than-2,000-change replay, deletion, denied paths, hard-link entries, extracted properties, ordinary-journal consumption, no-op observations, read-only cache recovery, schema migration, counter deduplication/rollback/overflow/reset, query-plan primary-key lookups, refusal of truncated deltas, and exhaustive small sorted merges. A sparse 33-change comparison-count test exercises the old algorithm cliff without a wall-clock threshold.
+Tests use small synthetic metadata stores and in-memory journals, never a generated filesystem tree. They cover more-than-2,000-change replay, deletion, denied paths, hard-link entries, extracted properties, ordinary-journal consumption, no-op observations, read-only cache recovery, format rejection, counter deduplication/rollback/overflow/reset, query-plan primary-key lookups, refusal of truncated deltas, and exhaustive small sorted merges. A sparse 33-change comparison-count test exercises the old algorithm cliff without a wall-clock threshold.
 
 The macOS validation workflow runs formatting, Rust tests, Clippy, repository consistency checks, and the complete unsigned app/service/CLI build. Signed XPC behavior, foreground UI/IME behavior, whole-volume acceptance, physical disk-write measurements, notarization, and installed-app P95 latency are separate acceptance tasks.

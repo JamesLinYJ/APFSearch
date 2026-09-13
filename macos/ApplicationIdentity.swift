@@ -9,10 +9,10 @@ enum ApplicationIdentity {
     static let bundleIdentifier = "org.apfsearch.app"
     static let serviceIdentifier = "org.apfsearch.indexer"
     static let cliIdentifier = "org.apfsearch.cli"
-    static let dataDirectoryName = "APFSearch"
+    static let dataDirectoryName = "APFSearch/v1"
     static let dataDirectoryEnvironment = "APFSEARCH_DATA_DIR"
     static let metricsEnvironment = "APFSEARCH_METRICS_PATH"
-    static let preferencePrefix = "APFSearch."
+    static let preferencePrefix = "APFSearch.v1."
 
     /// Derive trust from this indexer's verified signature, never preferences or
     /// an environment variable. Unsigned, ad-hoc, and untrusted builds fail closed.

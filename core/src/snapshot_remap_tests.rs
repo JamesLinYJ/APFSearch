@@ -111,7 +111,7 @@ fn stable_slot_indexes_and_cache_preserve_queries_natural_sort_and_anchors() {
     let remapped = SearchSnapshot::from_changes_with_reason(delta(), 11, &previous()).unwrap();
     let cache = temporary.path().join("prepared.cache");
     snapshot_cache::write(&cache, &remapped, 123).unwrap();
-    assert_eq!(&std::fs::read(&cache).unwrap()[..8], b"AFSIDX04");
+    assert_eq!(&std::fs::read(&cache).unwrap()[..8], b"APFIDX01");
     let (restored, generation) = snapshot_cache::read(&cache, 11, 123).unwrap();
     assert_eq!(generation, 11);
     let reference = SearchSnapshot::new(

@@ -49,7 +49,7 @@ rustup target add aarch64-apple-darwin x86_64-apple-darwin
 APFSEARCH_COMPILE_ONLY=1 ./build.sh
 ```
 
-产物位于 `/private/tmp/APFSearch-build/APFSearch.app`，可通过 `APFSEARCH_BUILD_DIR` 更改输出目录。SQLite 和 PCRE2 静态链接；Cargo 使用 `core/Cargo.lock` 中锁定的依赖。
+产物位于当前用户的系统临时目录下 `APFSearch-build/APFSearch.app`，构建完成时会打印完整路径。可通过 `APFSEARCH_BUILD_DIR` 更改输出目录。构建和发布目录必须属于当前用户，上级目录须可信，已有产物不能包含其他用户可写的条目或符号链接；不安全的已有路径会被拒绝，编译缓存仍可复用。SQLite 和 PCRE2 静态链接；Cargo 使用 `core/Cargo.lock` 中锁定的依赖。
 
 应用、索引服务和 CLI 均包含两种架构。日常开发时，可设置 `APFSEARCH_ARCHITECTURES=arm64` 或 `APFSEARCH_ARCHITECTURES=x86_64` 以缩短编译时间。Rust 构建、Swift 编译器、应用元数据和测试包通过 `scripts/build_configuration.py` 共享最低系统版本。安装了多份 Xcode 时，可通过 `DEVELOPER_DIR` 指定工具链。
 
@@ -113,7 +113,7 @@ APFS 遍历使用 `getattrlistbulk`。FSEvents 在首次遍历前启动，收到
 
 Bundle 标识为 `org.apfsearch.app`、`org.apfsearch.indexer` 和 `org.apfsearch.cli`；Rust 包名为 `apfsearch-core`。
 
-配置归属于新的应用标识，索引位于 `~/Library/Application Support/APFSearch`。本版按全新应用启动，不导入早期开发版本的配置或索引。
+本预览版使用格式 1 的全新配置与索引，数据位于 `~/Library/Application Support/APFSearch/v1`。不导入、迁移或删除早期开发版本的数据。
 
 </details>
 
@@ -126,7 +126,7 @@ Bundle 标识为 `org.apfsearch.app`、`org.apfsearch.indexer` 和 `org.apfsearc
 - **验收：** 授权范围内的完整遍历对照、真实负载下的崩溃／事件丢失恢复，以及最终安装版界面行为尚未全部验收。最初设定的性能目标也未全部验证。以 macOS 14 为编译目标、通过 Rosetta 运行 Intel 代码，不能替代真实 Intel Mac 或 macOS 14 的测试。
 - **分发：** 默认源码构建用于编译验证。正式分发需要对实际交付产物完成签名和公证，详见[分发指南](docs/DISTRIBUTION.md)。
 
-运行数据保存在 `~/Library/Application Support/APFSearch`。卸载前请注销后台服务并关闭登录启动；如需保留索引和设置，可保留此数据目录。
+运行数据保存在 `~/Library/Application Support/APFSearch/v1`。卸载前请注销后台服务并关闭登录启动；如需保留索引和设置，可保留此数据目录。
 
 ## 文档
 

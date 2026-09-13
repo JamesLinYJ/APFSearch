@@ -42,7 +42,7 @@ fn fixture() -> SearchSnapshot {
         .put_content(
             "/fixture/alpha/report.pdf",
             "indexed text",
-            &json!({"artist":"Legacy Author", "pages":3}),
+            &json!({"author":"Document Author", "pages":3}),
         )
         .unwrap();
     SearchSnapshot::new(store.entries().unwrap(), 1)
@@ -95,7 +95,7 @@ fn immediate_recursive_nested_and_unicode_relationships_are_distinct() {
         Vec::<String>::new()
     );
     assert_eq!(
-        evaluate(&snapshot, "child:<author:legacy pages:3>", &coverage()),
+        evaluate(&snapshot, "child:<author:document pages:3>", &coverage()),
         ["/fixture/alpha"]
     );
 }

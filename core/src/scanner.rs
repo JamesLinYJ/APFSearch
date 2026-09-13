@@ -204,22 +204,45 @@ fn firmlinks() -> &'static [Firmlink] {
     })
 }
 pub(crate) fn mount_scope() -> std::io::Result<filesystem::MountScope> {
-    let system_aliases = ["var", "tmp", "etc"].into_iter().filter_map(|name| {
-        let logical = PathBuf::from(format!("/{name}"));
-        let physical = PathBuf::from(format!("/private/{name}"));
-        std::fs::read_link(&logical)
-            .ok()
-            .filter(|target| {
-                *target == physical || target.as_path() == physical.strip_prefix("/").unwrap()
-            })
-            .map(|_| (physical, logical))
-    });
     Ok(filesystem::MountScope::load()?.with_aliases(
         firmlinks()
             .iter()
             .map(|link| (PathBuf::from(&link.physical), PathBuf::from(&link.logical)))
-            .chain(system_aliases),
+            .chain(filesystem::system_aliases().iter().cloned()),
     ))
+}
+
+/// A missing entry may be retired only when a real, accessible ancestor inside
+/// the selected scope proves its absence. Refusal to follow a symlink or an
+/// access error is unknown coverage, never evidence of deletion.
+pub(crate) fn entry_is_missing(
+    path: &Path,
+    configured: &[String],
+    scope: &filesystem::MountScope,
+) -> bool {
+    let selected = |candidate: &Path| configured.iter().any(|root| candidate.starts_with(root));
+    if configured.iter().any(|root| path == Path::new(root))
+        || !selected(path)
+        || !filesystem::metadata(path, scope)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    {
+        return false;
+    }
+    for ancestor in path
+        .ancestors()
+        .skip(1)
+        .take_while(|ancestor| selected(ancestor))
+    {
+        match filesystem::metadata(ancestor, scope) {
+            Ok(metadata) => {
+                return metadata.st_mode & libc::S_IFMT == libc::S_IFDIR
+                    && filesystem::check_directory_access(ancestor, scope).is_ok();
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 fn same_firmlink_object(link: &Firmlink) -> bool {
     use std::os::unix::fs::MetadataExt;
@@ -336,6 +359,8 @@ pub(crate) fn compact_roots(
     }
     Some(result)
 }
+/// Resolve a fresh user selection once. Stored roots and event/recovery scopes
+/// must use normalize_scopes instead, so later symlink changes cannot retarget it.
 pub fn normalize_roots(roots: &[String]) -> Vec<String> {
     normalize_roots_until(roots, || false).expect("normalization was not cancelled")
 }
@@ -343,10 +368,28 @@ pub(crate) fn normalize_roots_until(
     roots: &[String],
     cancelled: impl Fn() -> bool,
 ) -> Option<Vec<String>> {
+    normalize_paths(roots, true, cancelled)
+}
+/// Reuse persisted selections and event/recovery paths without following a
+/// mutable user alias. Only verified OS aliases retain their physical spelling.
+pub(crate) fn normalize_scopes(roots: &[String]) -> Vec<String> {
+    normalize_scopes_until(roots, || false).expect("normalization was not cancelled")
+}
+pub(crate) fn normalize_scopes_until(
+    roots: &[String],
+    cancelled: impl Fn() -> bool,
+) -> Option<Vec<String>> {
+    normalize_paths(roots, false, cancelled)
+}
+fn normalize_paths(
+    roots: &[String],
+    new_selection: bool,
+    cancelled: impl Fn() -> bool,
+) -> Option<Vec<String>> {
     if cancelled() {
         return None;
     }
-    let scope = mount_scope().ok();
+    let scope = new_selection.then(|| mount_scope().ok()).flatten();
     let mut out: Vec<String> = roots
         .iter()
         .map(|r| {
@@ -365,16 +408,30 @@ pub(crate) fn normalize_roots_until(
                 };
                 let absolute = lexical_path(&absolute).to_string_lossy().into_owned();
                 // Never canonicalize or lstat a path inside an excluded mount.
-                if !scope
-                    .as_ref()
-                    .is_some_and(|scope| scope.allows(Path::new(&absolute)))
+                if new_selection
+                    && !scope
+                        .as_ref()
+                        .is_some_and(|scope| scope.allows(Path::new(&absolute)))
                 {
                     return absolute;
                 }
                 let visible = visible_path(&absolute);
+                if !new_selection {
+                    return filesystem::system_path(Path::new(&visible))
+                        .to_string_lossy()
+                        .into_owned();
+                }
                 // Resolve intermediate aliases (/var -> /private/var) so watcher paths
                 // and scan paths agree. A selected symlink itself stays a symlink.
                 if std::fs::symlink_metadata(&visible).is_ok_and(|m| m.file_type().is_symlink()) {
+                    if let Some((parent, name)) = Path::new(&visible)
+                        .parent()
+                        .zip(Path::new(&visible).file_name())
+                    {
+                        if let Ok(real) = std::fs::canonicalize(parent) {
+                            return visible_path(&real.join(name).to_string_lossy());
+                        }
+                    }
                     return visible;
                 }
                 // Missing/offline roots still need their surviving /var or /tmp alias
@@ -507,7 +564,7 @@ fn enumeration_scope(
     {
         traversal_roots.push(DATA_ROOT.into());
     }
-    let mut excluded = normalize_roots(excluded);
+    let mut excluded = normalize_scopes(excluded);
     excluded.extend(
         firmlinks()
             .iter()
@@ -529,7 +586,14 @@ pub fn scan_excluding(
     cancelled: &AtomicBool,
     on_batch: impl FnMut(Vec<ScannedFile>),
 ) -> ScanReport {
-    scan_excluding_in_namespace(roots, roots, excluded, cancelled, on_batch)
+    let Some(roots) = normalize_roots_until(roots, || cancelled.load(Ordering::Relaxed)) else {
+        return ScanReport {
+            roots: roots.to_vec(),
+            cancelled: true,
+            ..Default::default()
+        };
+    };
+    scan_excluding_in_namespace(&roots, &roots, excluded, cancelled, on_batch)
 }
 /// Reconciliation scopes are derived from events; namespace authorization stays
 /// bound to the user's configured roots rather than those temporary scopes.
@@ -561,13 +625,20 @@ fn scan_excluding_with_scope(
     mount_scope: &filesystem::MountScope,
     mut on_batch: impl FnMut(Vec<ScannedFile>),
 ) -> ScanReport {
-    let Some(roots) = normalize_roots_until(roots, || cancelled.load(Ordering::Relaxed)) else {
+    let Some(roots) = normalize_scopes_until(roots, || cancelled.load(Ordering::Relaxed)) else {
         return ScanReport {
             roots: roots.to_vec(),
             cancelled: true,
             ..Default::default()
         };
     };
+    let configured = normalize_scopes(configured);
+    let configured = configured.as_slice();
+    let selected = PathScopes::from_paths(configured);
+    let roots: Vec<_> = roots
+        .into_iter()
+        .filter(|root| selected.covers(Path::new(root)) && path_in_namespace(root, configured))
+        .collect();
     let (traversal_roots, excluded) = enumeration_scope(&roots, configured, excluded);
     let mut report = ScanReport {
         roots: roots.clone(),
@@ -716,7 +787,7 @@ impl ChangeEvent {
         // MustScanSubDirs, UserDropped, KernelDropped, EventIdsWrapped,
         // RootChanged, Mount and Unmount all invalidate ordinary delta replay.
         Self {
-            path: visible_path(path),
+            path: visible_path(&filesystem::system_path(Path::new(path)).to_string_lossy()),
             event_id,
             flags,
             must_rescan: flags & (0x01 | 0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80) != 0,
@@ -738,7 +809,7 @@ fn collect_event(ctx: &WatchContext, path: &str, id: u64, flags: u32) {
             .push_back(ChangeEvent::from_flags("/", id, flags));
         return;
     }
-    let path = visible_path(path);
+    let path = visible_path(&filesystem::system_path(Path::new(path)).to_string_lossy());
     // Disk Arbitration callbacks include all mounts: only invalidate roots
     // overlapping the configured namespace, never expand a scoped scan.
     if !ctx
@@ -770,7 +841,7 @@ pub struct Watcher {
 }
 impl Watcher {
     pub fn start(roots: &[String], since_id: u64) -> Result<Self, String> {
-        let roots = normalize_roots(roots);
+        let roots = normalize_scopes(roots);
         let scope = mount_scope().map_err(|error| error.to_string())?;
         if roots.is_empty() {
             return Err("No roots selected for watching".into());
@@ -780,22 +851,23 @@ impl Watcher {
         // still limited to the original roots. Disk Arbitration also wakes us on
         // a real mount event. Explicit symlinks are watched via their parent.
         let mut watched = Vec::new();
+        let is_directory = |path: &Path| {
+            filesystem::metadata(path, &scope)
+                .is_ok_and(|metadata| metadata.st_mode & libc::S_IFMT == libc::S_IFDIR)
+        };
         for root in &roots {
-            let is_directory = scope.allows(Path::new(root))
-                && std::fs::symlink_metadata(root)
-                    .is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink());
-            let start = if is_directory {
+            let start = if is_directory(Path::new(root)) {
                 Path::new(root)
             } else {
                 Path::new(root).parent().unwrap_or(Path::new("/"))
             };
             let existing = start
                 .ancestors()
-                .find(|p| scope.allows(p) && p.is_dir())
+                .find(|p| is_directory(p))
                 .unwrap_or(Path::new("/"));
             watched.push(existing.to_string_lossy().into_owned());
         }
-        let watched = normalize_roots(&watched);
+        let watched = normalize_scopes(&watched);
         let context = Arc::new(WatchContext {
             events: Mutex::new(VecDeque::new()),
             roots,
@@ -858,7 +930,7 @@ pub(crate) fn reconciliation_plan_with_history(
     const ITEM_IS_DIR: u32 = 0x20000;
     const SUBTREE_CHANGE: u32 = 0x100 | 0x200 | 0x800 | 0x4000 | 0x8000;
     const INODE_METADATA: u32 = 0x400;
-    let configured = normalize_roots(roots);
+    let configured = normalize_scopes(roots);
     let mut recursive = HashSet::new();
     let mut metadata = HashSet::new();
     let mut directory_checks = HashSet::new();
@@ -895,7 +967,7 @@ pub(crate) fn reconciliation_plan_with_history(
             {
                 metadata.insert(event.path.clone());
                 if path_in_namespace(DATA_ROOT, &configured) {
-                    recursive.extend(normalize_roots(&[DATA_ROOT.into()]));
+                    recursive.extend(normalize_scopes(&[DATA_ROOT.into()]));
                 }
             }
             // Ancestor notifications also apply to explicitly selected auxiliary
@@ -935,10 +1007,19 @@ pub(crate) fn reconciliation_plan_with_history(
                 } else {
                     recursive.insert(event.path.clone());
                 }
+            } else if Path::new(root).starts_with(event_path) {
+                // Missing/replaced roots are watched through an existing
+                // ancestor. Renaming that ancestor can restore an entire tree
+                // without producing a separate event for every descendant.
+                if event.flags & SUBTREE_CHANGE != 0 {
+                    recursive.insert(root.clone());
+                } else if event.flags & INODE_METADATA != 0 {
+                    directory_checks.insert(root.clone());
+                }
             }
         }
     }
-    let recursive = normalize_roots(&recursive.into_iter().collect::<Vec<_>>());
+    let recursive = normalize_scopes(&recursive.into_iter().collect::<Vec<_>>());
     let recursive_scopes = PathScopes::from_paths(&recursive);
     // Keep every metadata entry, even when another metadata path is its parent.
     let mut metadata: Vec<_> = metadata
@@ -965,8 +1046,30 @@ pub fn reconciliation_roots(roots: &[String], events: &[ChangeEvent]) -> Vec<Str
 pub fn scan_metadata(
     paths: &[String],
     cancelled: &AtomicBool,
+    on_batch: impl FnMut(Vec<ScannedFile>),
+) -> ScanReport {
+    scan_metadata_in_namespace(paths, paths, cancelled, on_batch)
+}
+pub(crate) fn scan_metadata_in_namespace(
+    paths: &[String],
+    configured: &[String],
+    cancelled: &AtomicBool,
     mut on_batch: impl FnMut(Vec<ScannedFile>),
 ) -> ScanReport {
+    // Metadata siblings and descendants each need a stat; recursive-scope
+    // compaction would silently omit a changed child when its parent is present.
+    let mut paths: Vec<_> = paths
+        .iter()
+        .map(|path| visible_path(&filesystem::system_path(Path::new(path)).to_string_lossy()))
+        .collect();
+    paths.sort();
+    paths.dedup();
+    let configured = normalize_scopes(configured);
+    let selected = PathScopes::from_paths(&configured);
+    let paths: Vec<_> = paths
+        .into_iter()
+        .filter(|path| selected.covers(Path::new(path)) && path_in_namespace(path, &configured))
+        .collect();
     let mut report = ScanReport {
         roots: paths.to_vec(),
         ..Default::default()
@@ -979,9 +1082,10 @@ pub fn scan_metadata(
             return report;
         }
     };
-    report.excluded_mounts = scope.excluded_within(paths);
+    report.excluded_mounts = scope.excluded_within(&paths);
+    let mut reader = filesystem::MetadataReader::new(&scope);
     let mut batch = Vec::new();
-    for path in paths {
+    for path in &paths {
         if !scope.allows(Path::new(path)) {
             continue;
         }
@@ -989,14 +1093,17 @@ pub fn scan_metadata(
             report.cancelled = true;
             break;
         }
-        match stat_entry(path) {
+        match reader
+            .stat(Path::new(path))
+            .map(|metadata| from_metadata(path.clone(), &metadata))
+        {
             Ok(entry) => {
                 report.entries += 1;
                 batch.push(entry);
             }
             Err(error) => {
                 report.uncovered.push(path.clone());
-                report.errors.push(error);
+                report.errors.push(format!("{path}: {error}"));
             }
         }
         if batch.len() >= 512 {
@@ -1749,5 +1856,133 @@ mod tests {
         let queue = context.events.lock().unwrap();
         assert_eq!(queue.len(), 1);
         assert_ne!(queue[0].flags & file_events::EVENT_IDS_WRAPPED, 0);
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod scope_boundary_tests {
+    use super::*;
+    use std::{fs, os::unix::fs::symlink};
+
+    #[test]
+    fn ancestor_replacement_rechecks_only_its_selected_descendants() {
+        let roots = vec!["/fixture/parent/selected".into(), "/other".into()];
+        let renamed = reconciliation_plan(
+            &roots,
+            &[ChangeEvent::from_flags("/fixture/parent", 42, 0x20800)],
+        );
+        assert_eq!(renamed.recursive, ["/fixture/parent/selected"]);
+        let access = reconciliation_plan(
+            &roots,
+            &[ChangeEvent::from_flags("/fixture/parent", 43, 0x20400)],
+        );
+        assert!(access.recursive.is_empty());
+        assert_eq!(access.directory_checks, ["/fixture/parent/selected"]);
+    }
+
+    #[test]
+    fn explicit_alias_selection_is_resolved_once_and_recovery_never_retargets_it() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let actual = root.join("actual");
+        let outside = root.join("outside");
+        fs::create_dir_all(actual.join("selected")).unwrap();
+        fs::create_dir_all(outside.join("selected")).unwrap();
+        fs::write(actual.join("selected/original.txt"), "original").unwrap();
+        fs::write(outside.join("selected/private.txt"), "private").unwrap();
+        let alias = root.join("alias");
+        symlink(&actual, &alias).unwrap();
+        let chosen = normalize_roots(&[alias.join("selected").to_string_lossy().into_owned()]);
+        assert_eq!(chosen, [actual.join("selected").to_string_lossy()]);
+        let mut entries = Vec::new();
+        scan_excluding_in_namespace(&chosen, &chosen, &[], &AtomicBool::new(false), |batch| {
+            entries.extend(batch)
+        });
+        assert!(entries.iter().any(|entry| entry.name == "original.txt"));
+        fs::rename(&actual, root.join("moved")).unwrap();
+        symlink(&outside, &actual).unwrap();
+        assert_eq!(normalize_scopes(&chosen), chosen);
+        let report =
+            scan_excluding_in_namespace(&chosen, &chosen, &[], &AtomicBool::new(false), |_| {
+                panic!("saved selection followed a replaced intermediate directory")
+            });
+        assert_eq!(report.entries, 0);
+        assert_eq!(report.uncovered, chosen);
+    }
+
+    #[test]
+    fn derived_scopes_and_metadata_cannot_expand_a_selected_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let selected = root.join("selected");
+        let outside = root.join("selected-neighbor");
+        fs::create_dir(&selected).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("private.txt"), "private").unwrap();
+        let configured = vec![selected.to_string_lossy().into_owned()];
+        let scopes = vec![outside.to_string_lossy().into_owned()];
+        let cancelled = AtomicBool::new(false);
+        let report = scan_excluding_in_namespace(&scopes, &configured, &[], &cancelled, |_| {
+            panic!("recursive scope escaped its selection")
+        });
+        assert_eq!(report.entries, 0);
+        assert!(report.roots.is_empty());
+        let report = scan_metadata_in_namespace(&scopes, &configured, &cancelled, |_| {
+            panic!("metadata scope escaped its selection")
+        });
+        assert_eq!(report.entries, 0);
+        assert!(report.roots.is_empty());
+        fs::write(selected.join("child.txt"), "child").unwrap();
+        let mut scopes = configured.clone();
+        scopes.push(selected.join("child.txt").to_string_lossy().into_owned());
+        let mut names = Vec::new();
+        scan_metadata_in_namespace(&scopes, &configured, &cancelled, |batch| {
+            names.extend(batch.into_iter().map(|entry| entry.name))
+        });
+        assert_eq!(names, ["selected", "child.txt"]);
+    }
+
+    #[test]
+    fn final_symlinks_and_missing_system_aliases_keep_their_existing_meaning() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().canonicalize().unwrap();
+        let alias = root.join("selected-link");
+        symlink(root.join("missing-target"), &alias).unwrap();
+        let selected = vec![alias.to_string_lossy().into_owned()];
+        assert_eq!(normalize_roots(&selected), selected);
+        assert_eq!(normalize_scopes(&selected), selected);
+        let mut entries = Vec::new();
+        scan_excluding_in_namespace(
+            &selected,
+            &selected,
+            &[],
+            &AtomicBool::new(false),
+            |batch| entries.extend(batch),
+        );
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_symlink);
+        let intermediate = root.join("intermediate-alias");
+        symlink(&root, &intermediate).unwrap();
+        assert_eq!(
+            normalize_roots(&[intermediate
+                .join("selected-link")
+                .to_string_lossy()
+                .into_owned()]),
+            selected,
+            "resolve the selected link's parent once without following the leaf"
+        );
+        for (physical, logical) in filesystem::system_aliases() {
+            let missing = logical.join("apfsearch-nonexistent-alias-fixture/child");
+            assert_eq!(
+                normalize_scopes(&[missing.to_string_lossy().into_owned()]),
+                [physical
+                    .join("apfsearch-nonexistent-alias-fixture/child")
+                    .to_string_lossy()]
+            );
+            assert_eq!(
+                normalize_scopes(&[logical.to_string_lossy().into_owned()]),
+                [logical.to_string_lossy()]
+            );
+        }
     }
 }

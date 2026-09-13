@@ -31,6 +31,70 @@ fn file_paths(engine: &Arc<SearchEngine>) -> BTreeSet<String> {
         .collect()
 }
 #[test]
+fn restart_keeps_the_selected_physical_root_when_an_intermediate_directory_is_replaced() {
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let actual = base.join("actual");
+    let outside = base.join("outside");
+    let alias = base.join("selection-alias");
+    std::fs::create_dir_all(actual.join("selected")).unwrap();
+    std::fs::create_dir_all(outside.join("selected")).unwrap();
+    std::fs::write(actual.join("selected/original.txt"), "original").unwrap();
+    std::fs::write(outside.join("selected/private.txt"), "outside").unwrap();
+    symlink(&actual, &alias).unwrap();
+    let roots = json!([actual.join("selected")]);
+    let db = base.join("index/index.sqlite");
+    let engine = SearchEngine::open(&db).unwrap();
+    let response = engine.call(json!({"op":"watch","roots":[alias.join("selected")]}));
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(await_watching(&engine)["roots"], roots);
+    stop_join(&engine);
+    drop(engine);
+
+    let saved = base.join("original-directory");
+    std::fs::rename(&actual, &saved).unwrap();
+    symlink(&outside, &actual).unwrap();
+    let engine = SearchEngine::open(&db).unwrap();
+    let reopened = await_watching(&engine);
+    assert_eq!(
+        reopened["roots"], roots,
+        "restart must not choose a new root"
+    );
+    assert_eq!(
+        engine.call(json!({"op":"query","text":"private.txt"}))["total"],
+        0
+    );
+    assert_eq!(
+        engine.index_store.lock().unwrap().get("roots", Value::Null),
+        roots
+    );
+    assert!(engine
+        .index_store
+        .lock()
+        .unwrap()
+        .entries()
+        .unwrap()
+        .iter()
+        .all(|entry| Path::new(&entry.path).starts_with(actual.join("selected"))));
+
+    std::fs::remove_file(&actual).unwrap();
+    std::fs::rename(&saved, &actual).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    while engine.call(json!({"op":"query","text":"original.txt"}))["total"] != 1 {
+        assert!(
+            Instant::now() < deadline,
+            "the restored selected root did not recover"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(
+        engine.call(json!({"op":"query","text":"private.txt"}))["total"],
+        0
+    );
+    stop_join(&engine);
+}
+#[test]
 fn historical_replay_restores_offline_changes_and_unchanged_startup_does_not_rewrite_rows() {
     let temp = tempfile::Builder::new()
         .prefix("apfsearch-resume-")
@@ -274,16 +338,9 @@ fn startup_namespace_proof_does_not_treat_the_data_volume_as_an_auxiliary_disk()
         );
     }
     let inspection = scan_resume::inspect(&["/".into()], &[]).unwrap();
-    let mut legacy = serde_json::to_value(&inspection.proof).unwrap();
-    legacy.as_object_mut().unwrap().remove("mount_types");
-    let legacy = serde_json::from_value(legacy).unwrap();
-    let upgrade = inspection.recheck_against(&legacy);
-    assert!(
-        !upgrade
-            .iter()
-            .any(|path| path == "/" || path == "/System/Volumes/Data"),
-        "boot namespace type upgrade must not rescan Data: {upgrade:?}"
-    );
+    let mut incomplete = serde_json::to_value(&inspection.proof).unwrap();
+    incomplete.as_object_mut().unwrap().remove("mount_types");
+    assert!(serde_json::from_value::<scan_resume::ResumeProof>(incomplete).is_err());
 
     assert!(
         !inspection

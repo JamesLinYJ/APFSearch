@@ -44,6 +44,14 @@ enum SearchWindowTests {
         // event-loop transaction and deliver AppKit animation completions.
         try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
+    static func settleResultAnimation(_ controller: SearchWindowController) async {
+        // Verify the completed state, not whether a loaded test host delivers
+        // the AppKit completion within an arbitrary fixed sleep.
+        let deadline = ProcessInfo.processInfo.systemUptime + 3
+        while controller.resultAnimationInFlight && ProcessInfo.processInfo.systemUptime < deadline {
+            await pump(0.01)
+        }
+    }
     static func row(_ number: Int, size: Int = 10) -> [String: Any] {
         ["id": Int64(9_007_199_254_740_993) + Int64(number), "path": String(format: "/UIRegression/%06d.txt", number), "name": String(format: "%06d.txt", number), "size": size, "modified": 1700000000, "is_dir": false]
     }
@@ -125,7 +133,7 @@ enum SearchWindowTests {
             else { defaults.removePersistentDomain(forName: domain) }
         }
         defaults.removePersistentDomain(forName: domain)
-        defaults.set(["created"], forKey: "APFSearch.HiddenColumns")
+        defaults.set(["created"], forKey: ApplicationIdentity.preferencePrefix + "HiddenColumns")
         let saved = NSTableView(frame: NSRect(x: 0, y: 0, width: 1400, height: 400))
         saved.columnAutoresizingStyle = .noColumnAutoresizing
         for (key, width) in [("name", 251.0), ("path", 427.0), ("size", 137.0), ("modified", 191.0), ("created", 143.0)] {
@@ -134,7 +142,7 @@ enum SearchWindowTests {
             column.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
             saved.addTableColumn(column)
         }
-        saved.autosaveName = "APFSearch.Columns"
+        saved.autosaveName = ApplicationIdentity.preferencePrefix + "Columns"
         saved.autosaveTableColumns = true
         saved.moveColumn(1, toColumn: 0)
         saved.tableColumns.first { $0.identifier.rawValue == "created" }!.isHidden = true
@@ -346,7 +354,7 @@ enum SearchWindowTests {
         let beforeInsert = viewIDs(c, indexes: 0..<10)
         let inserted = [row(-1)] + modified
         c.applyResultRows(inserted, offset: 0, count: inserted.count, replaceCache: true, animate: true)
-        await pump(0.25)
+        await settleResultAnimation(c)
         let insertReloads = c.table.testReloadedRows.reduce(into: IndexSet()) { $0.formUnion($1) }
         check("appkit_insertion_does_not_reload_shifted_rows", insertReloads.isEmpty, ["reloaded": Array(insertReloads)])
         let afterInsert = viewIDs(c, indexes: 1..<11)
@@ -355,7 +363,7 @@ enum SearchWindowTests {
 
         c.table.testReloadedRows.removeAll()
         c.applyResultRows(modified, offset: 0, count: modified.count, replaceCache: true, animate: true)
-        await pump(0.25)
+        await settleResultAnimation(c)
         let deleteReloads = c.table.testReloadedRows.reduce(into: IndexSet()) { $0.formUnion($1) }
         check("appkit_deletion_does_not_reload_shifted_rows", deleteReloads.isEmpty, ["reloaded": Array(deleteReloads)])
         check("appkit_deletion_finishes_with_correct_count_and_identity", c.table.numberOfRows == 20 && c.selectedPaths == [row(5)["path"] as! String], ["selection": c.selectedPaths])
@@ -383,7 +391,7 @@ enum SearchWindowTests {
         let latest = SearchClient.shared.takeQuery()
         latest?.completion(reply([row(98), row(99)]))
         check("query_replies_wait_for_appkit_animation_completion", overlap.total == 21 && overlap.resultAnimationInFlight)
-        await pump(0.3)
+        await settleResultAnimation(overlap)
         check("only_latest_deferred_query_becomes_visible", overlap.total == 2 && overlap.resultsAreCurrent && overlap.cachedRows[0]?["path"] as? String == row(98)["path"] as? String && !overlap.resultAnimationInFlight, ["count": overlap.total, "first_path": overlap.cachedRows[0]?["path"] as? String ?? "", "animation_in_flight": overlap.resultAnimationInFlight])
         overlap.historyTimer?.invalidate(); SearchClient.shared.clear()
 

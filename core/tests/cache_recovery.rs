@@ -283,7 +283,7 @@ fn opening_current_schema_does_not_write_database_or_wal() {
             .connection
             .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
             .unwrap(),
-        4
+        1
     );
     observer
         .connection
@@ -304,7 +304,7 @@ fn opening_current_schema_does_not_write_database_or_wal() {
 }
 
 #[test]
-fn schema_two_upgrades_once_without_losing_metadata_content_or_preferences() {
+fn unsupported_schema_preserves_metadata_content_and_preferences() {
     let directory = tempfile::tempdir().unwrap();
     let database = directory.path().join("index.sqlite");
     let mut observer = IndexStore::open(&database).unwrap();
@@ -318,40 +318,24 @@ fn schema_two_upgrades_once_without_losing_metadata_content_or_preferences() {
         .unwrap();
     let preferences = json!([{"name":"saved", "query":"preserved"}]);
     observer.set("bookmarks", &preferences).unwrap();
-    let before = serde_json::to_value(observer.entries().unwrap()).unwrap();
     observer
         .connection
-        .execute_batch("DROP TRIGGER snapshot_file_insert; PRAGMA user_version=2;")
+        .execute_batch("PRAGMA user_version=2; PRAGMA wal_checkpoint(TRUNCATE);")
         .unwrap();
-    let upgraded = IndexStore::open(&database).unwrap();
+    let wal = directory.path().join("index.sqlite-wal");
+    let before = std::fs::read(&database).unwrap();
+    let before_wal = std::fs::read(&wal).unwrap();
+    assert!(IndexStore::open(&database).is_err());
+    assert_eq!(std::fs::read(&database).unwrap(), before);
+    assert_eq!(std::fs::read(&wal).unwrap(), before_wal);
+    assert_eq!(observer.get("bookmarks", json!(null)), preferences);
     assert_eq!(
-        upgraded
-            .connection
-            .query_row("PRAGMA user_version", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        4
-    );
-    assert_eq!(
-        serde_json::to_value(upgraded.entries().unwrap()).unwrap(),
-        before
-    );
-    assert_eq!(
-        upgraded
+        observer
             .content_for("/cache-fixture/preserved.txt")
             .unwrap()
             .as_deref(),
         Some("preserved body")
     );
-    assert_eq!(upgraded.get("bookmarks", json!(null)), preferences);
-    assert_eq!(upgraded.connection.query_row("SELECT count(*) FROM sqlite_schema WHERE type='trigger' AND name='snapshot_file_insert'", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
-    observer
-        .connection
-        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-        .unwrap();
-    let wal = directory.path().join("index.sqlite-wal");
-    let before_wal = std::fs::read(&wal).unwrap();
-    drop(IndexStore::open(&database).unwrap());
-    assert_eq!(std::fs::read(&wal).unwrap(), before_wal);
 }
 
 #[test]
@@ -369,7 +353,7 @@ fn unknown_schema_and_invalid_database_fail_without_replacing_user_data() {
         Ok(_) => panic!("An unknown schema must not be silently rewritten"),
         Err(error) => error,
     };
-    assert!(error.contains("Unsupported index schema version 999"));
+    assert!(error.contains("schema 999"));
     assert_eq!(std::fs::read(&database).unwrap(), before);
     assert_eq!(observer.get("bookmarks", json!(null)), json!(["preserved"]));
     let malformed = directory.path().join("malformed.sqlite");
@@ -381,7 +365,7 @@ fn unknown_schema_and_invalid_database_fail_without_replacing_user_data() {
 
 #[cfg(unix)]
 #[test]
-fn denied_schema_upgrade_leaves_existing_database_untouched() {
+fn denied_index_open_leaves_existing_database_untouched() {
     use std::os::unix::fs::PermissionsExt;
     if unsafe { libc::geteuid() } == 0 {
         return; // Unix mode bits cannot test denied access for root.
@@ -406,7 +390,7 @@ fn denied_schema_upgrade_leaves_existing_database_untouched() {
     std::fs::set_permissions(&database, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert!(
         refused,
-        "A denied upgrade must report failure instead of fabricating an empty index"
+        "A denied open must report failure instead of fabricating an empty index"
     );
     assert_eq!(after, before);
 }

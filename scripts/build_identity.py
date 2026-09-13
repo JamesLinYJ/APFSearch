@@ -50,7 +50,7 @@ def prepare_bundle(bundle):
     info.update({
         'CFBundleName': IDENTITY['applicationExecutable'], 'CFBundleIdentifier': IDENTITY['bundleIdentifier'],
         'CFBundleDevelopmentRegion': 'en', 'CFBundleLocalizations': catalog_languages(),
-        'CFBundleVersion': '13', 'CFBundleShortVersionString': '0.1.0',
+        'CFBundleVersion': '1', 'CFBundleShortVersionString': '0.1.0',
         'CFBundleExecutable': IDENTITY['applicationExecutable'], 'CFBundlePackageType': 'APPL',
         'CFBundleIconFile': 'AppIcon',
         'LSMinimumSystemVersion': MINIMUM_MACOS_VERSION, 'NSHighResolutionCapable': True,

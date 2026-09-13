@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 APFSEARCH_ROOT="$(cd "$(dirname "$0")" && pwd)"
-APFSEARCH_BUILD="${APFSEARCH_BUILD_DIR:-/private/tmp/APFSearch-build}"
+APFSEARCH_BUILD="$(python3 "$APFSEARCH_ROOT/scripts/build_workspace.py" build)"
 APFSEARCH_EXECUTABLE="$(python3 "$APFSEARCH_ROOT/scripts/build_identity.py" applicationExecutable)"
 APFSEARCH_SERVICE_EXECUTABLE="$(python3 "$APFSEARCH_ROOT/scripts/build_identity.py" serviceExecutable)"
 APFSEARCH_CLI_EXECUTABLE="$(python3 "$APFSEARCH_ROOT/scripts/build_identity.py" cliExecutable)"
@@ -19,7 +19,7 @@ MACOSX_DEPLOYMENT_TARGET="$(python3 "$APFSEARCH_ROOT/scripts/build_configuration
 export MACOSX_DEPLOYMENT_TARGET
 export CARGO_ENCODED_RUSTFLAGS="$(python3 "$APFSEARCH_ROOT/scripts/build_configuration.py" rust_flags)"
 read -r -a APFSEARCH_ARCHITECTURES <<< "${APFSEARCH_ARCHITECTURES:-arm64 x86_64}"
-APFSEARCH_CARGO_TARGET="${CARGO_TARGET_DIR:-$APFSEARCH_ROOT/core/target}"
+APFSEARCH_CARGO_TARGET="$(python3 "$APFSEARCH_ROOT/scripts/build_workspace.py" directory "${CARGO_TARGET_DIR:-$APFSEARCH_ROOT/core/target}")"
 for APFSEARCH_ARCHITECTURE in "${APFSEARCH_ARCHITECTURES[@]}"; do
   APFSEARCH_RUST_TARGET="$(python3 "$APFSEARCH_ROOT/scripts/build_configuration.py" rust_target "$APFSEARCH_ARCHITECTURE")"
   if [[ ! -d "$(rustc --print target-libdir --target "$APFSEARCH_RUST_TARGET")" ]]; then

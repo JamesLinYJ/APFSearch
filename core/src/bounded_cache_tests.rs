@@ -151,7 +151,7 @@ fn replay_more_than_two_thousand_changes_is_read_only_and_matches_sql() {
 }
 
 #[test]
-fn schema_three_migration_preserves_both_valid_and_overflowed_histories() {
+fn format_one_reopens_without_schema_writes() {
     for overflowed in [false, true] {
         let (temporary, mut store, mut files) = fixture(3);
         for file in &mut files[..2] {
@@ -161,19 +161,6 @@ fn schema_three_migration_preserves_both_valid_and_overflowed_histories() {
         store
             .set("cache_journal_overflow", &json!(overflowed))
             .unwrap();
-        // Recreate V3's journal schema without altering its cache or current rows.
-        store.connection.execute_batch(
-            "DROP TRIGGER cache_change_limit;
-             DROP TRIGGER cache_change_count_insert;
-             DROP TRIGGER cache_change_count_delete;
-             DROP TABLE cache_journal_state;
-             CREATE TRIGGER cache_change_limit AFTER INSERT ON cache_changes
-                 WHEN (SELECT count(*) FROM cache_changes)>2000 BEGIN
-                 INSERT INTO settings VALUES('cache_journal_overflow','true') ON CONFLICT(key) DO UPDATE SET value='true';
-                 DELETE FROM cache_changes;
-             END;
-             PRAGMA user_version=3;"
-        ).unwrap();
         drop(store);
         let store = IndexStore::open(&temporary.path().join("index.sqlite")).unwrap();
         assert_eq!(count(&store), 2);
@@ -181,11 +168,9 @@ fn schema_three_migration_preserves_both_valid_and_overflowed_histories() {
             store.get("cache_journal_overflow", json!(false)),
             json!(overflowed)
         );
+        assert_eq!(writes(&store), 0);
         if overflowed {
-            assert!(
-                store.cache_read().is_none(),
-                "migration must not bless an incomplete history"
-            );
+            assert!(store.cache_read().is_none());
         } else {
             let (restored, _) = store.cache_read().unwrap();
             assert_eq!(
@@ -193,13 +178,21 @@ fn schema_three_migration_preserves_both_valid_and_overflowed_histories() {
                 rows(&SearchSnapshot::new(store.entries().unwrap(), 1))
             );
         }
-        drop(store);
-        let reopened = IndexStore::open(&temporary.path().join("index.sqlite")).unwrap();
-        assert_eq!(
-            writes(&reopened),
-            0,
-            "an ordinary open must not repeat the schema migration"
-        );
+    }
+}
+
+#[test]
+fn unsupported_index_formats_are_not_adopted_or_modified() {
+    for (application, version) in [(0, 0), (0, 1), (0, 3), (0, 4), (1095779923, 2)] {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("index.sqlite");
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch(&format!("CREATE TABLE preserve_me(value TEXT); INSERT INTO preserve_me VALUES('unchanged'); PRAGMA application_id={application}; PRAGMA user_version={version};")).unwrap();
+        drop(connection);
+        let original = std::fs::read(&path).unwrap();
+        assert!(IndexStore::open(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(!path.with_extension("sqlite-wal").exists());
     }
 }
 

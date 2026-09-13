@@ -3,12 +3,13 @@
 //! Directory records are decoded as checked byte slices, never cast to packed
 //! structs. Directory descriptors are owned, and callers use closures and `io::Result`.
 use std::{
+    borrow::Cow,
     ffi::{c_char, CStr, CString},
     fs::OpenOptions,
     io,
     mem::MaybeUninit,
     os::{
-        fd::{AsRawFd, OwnedFd},
+        fd::{AsRawFd, FromRawFd, OwnedFd},
         unix::{
             ffi::OsStrExt,
             fs::{MetadataExt, OpenOptionsExt},
@@ -157,6 +158,39 @@ impl MountScope {
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+/// Only these verified, root-owned OS aliases may appear inside an input path.
+/// Cache their identity once: changing the root namespace requires administrator
+/// authority, unlike arbitrary symlinks inside an indexed user directory.
+pub(crate) fn system_aliases() -> &'static [(PathBuf, PathBuf)] {
+    static ALIASES: std::sync::OnceLock<Vec<(PathBuf, PathBuf)>> = std::sync::OnceLock::new();
+    ALIASES.get_or_init(|| {
+        ["var", "tmp", "etc"]
+            .into_iter()
+            .filter_map(|name| {
+                let logical = PathBuf::from(format!("/{name}"));
+                let physical = PathBuf::from(format!("/private/{name}"));
+                let metadata = std::fs::symlink_metadata(&logical).ok()?;
+                if !metadata.file_type().is_symlink() || metadata.uid() != 0 {
+                    return None;
+                }
+                let target = std::fs::read_link(&logical).ok()?;
+                (target == physical || target == physical.strip_prefix("/").unwrap())
+                    .then_some((physical, logical))
+            })
+            .collect()
+    })
+}
+pub(crate) fn system_path(path: &Path) -> Cow<'_, Path> {
+    for (physical, logical) in system_aliases() {
+        if let Ok(suffix) = path.strip_prefix(logical) {
+            // A selected alias itself remains a symlink directory entry.
+            if !suffix.as_os_str().is_empty() {
+                return Cow::Owned(physical.join(suffix));
+            }
+        }
+    }
+    Cow::Borrowed(path)
+}
 pub(crate) fn path_string(path: &Path) -> io::Result<CString> {
     CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::from_raw_os_error(libc::EINVAL))
@@ -176,16 +210,7 @@ pub(crate) fn c_array_string<const N: usize>(bytes: &[c_char; N]) -> io::Result<
     let bytes = unsafe { std::slice::from_raw_parts(bytes.as_ptr().cast::<u8>(), N) };
     CStr::from_bytes_until_nul(bytes).map_err(|_| invalid("Unterminated filesystem field"))
 }
-fn filesystem(path: &Path) -> io::Result<libc::statfs> {
-    let path = path_string(path)?;
-    let mut result = MaybeUninit::uninit();
-    // statfs initializes this ABI struct on success; it is never read on error.
-    if unsafe { libc::statfs(path.as_ptr(), result.as_mut_ptr()) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(unsafe { result.assume_init() })
-}
-fn filesystem_for_fd(fd: &OwnedFd) -> io::Result<libc::statfs> {
+fn filesystem_for_fd(fd: &impl AsRawFd) -> io::Result<libc::statfs> {
     let mut result = MaybeUninit::uninit();
     // OwnedFd guarantees the descriptor remains valid for the syscall.
     if unsafe { libc::fstatfs(fd.as_raw_fd(), result.as_mut_ptr()) } != 0 {
@@ -273,52 +298,150 @@ fn volume_id(fs: &libc::statfs) -> io::Result<String> {
         u32::from_ne_bytes(bytes[4..].try_into().unwrap())
     ))
 }
+/// Pin the parent namespace and stat exactly one leaf without following it.
+/// Unlike opening the leaf, fstatat can inspect a chmod(000) entry itself.
+pub(crate) fn metadata(path: &Path, scope: &MountScope) -> io::Result<libc::stat> {
+    let path = system_path(path);
+    scope.check_current_mount(&path)?;
+    let (parent_path, name) = entry_parts(&path)?;
+    metadata_at(&open_metadata_parent(parent_path)?, name)
+}
+fn entry_parts(path: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
+    if path == Path::new("/") {
+        Ok((path, std::ffi::OsStr::new(".")))
+    } else {
+        Ok((
+            path.parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new(".")),
+            path.file_name()
+                .ok_or_else(|| invalid("Missing directory-entry name"))?,
+        ))
+    }
+}
+fn open_metadata_parent(path: &Path) -> io::Result<std::fs::File> {
+    // No content read or cloud hydration; every intermediate component and the
+    // parent itself must be real directories rather than mutable user aliases.
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_EVTONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW_ANY | libc::O_CLOEXEC)
+        .open(path)
+}
+fn metadata_at(parent: &std::fs::File, name: &std::ffi::OsStr) -> io::Result<libc::stat> {
+    let name = path_string(Path::new(name))?;
+    let mut metadata = MaybeUninit::uninit();
+    // entry_parts supplies one component (or root's "."); the held parent
+    // cannot be retargeted and AT_SYMLINK_NOFOLLOW preserves final symlinks.
+    if unsafe {
+        libc::fstatat(
+            parent.as_raw_fd(),
+            name.as_ptr(),
+            metadata.as_mut_ptr(),
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } != 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { metadata.assume_init() })
+}
+struct MetadataParent {
+    path: PathBuf,
+    file: std::fs::File,
+    metadata: std::fs::Metadata,
+    volume_id: String,
+}
+/// Sorted metadata batches normally contain adjacent siblings. Reuse only the
+/// last pinned parent, keeping descriptor use and cached namespace authority
+/// constant regardless of batch size, without enumerating unrelated siblings.
+pub(crate) struct MetadataReader<'a> {
+    scope: &'a MountScope,
+    parent: Option<MetadataParent>,
+}
+impl<'a> MetadataReader<'a> {
+    pub(crate) fn new(scope: &'a MountScope) -> Self {
+        Self {
+            scope,
+            parent: None,
+        }
+    }
+    pub(crate) fn stat(&mut self, path: &Path) -> io::Result<FileMetadata> {
+        let path = system_path(path);
+        self.scope.check_current_mount(&path)?;
+        let (parent_path, name) = entry_parts(&path)?;
+        if self
+            .parent
+            .as_ref()
+            .is_none_or(|parent| parent.path != parent_path)
+        {
+            let file = open_metadata_parent(parent_path)?;
+            let metadata = file.metadata()?;
+            let volume_id = filesystem_for_fd(&file)
+                .and_then(|fs| volume_id(&fs))
+                .unwrap_or_default();
+            self.parent = Some(MetadataParent {
+                path: parent_path.to_owned(),
+                file,
+                metadata,
+                volume_id,
+            });
+        }
+        let parent = self.parent.as_ref().unwrap();
+        let metadata = metadata_at(&parent.file, name)?;
+        let kind = match metadata.st_mode & libc::S_IFMT {
+            libc::S_IFDIR => FileKind::Directory,
+            libc::S_IFLNK => FileKind::Symlink,
+            _ => FileKind::File,
+        };
+        let volume_id = if metadata.st_dev as u64 == parent.metadata.dev() {
+            parent.volume_id.clone()
+        } else {
+            // A mount/firmlink entry may belong to a different device. Resolve
+            // its volume from a metadata-only descriptor under the pinned parent.
+            let name = path_string(Path::new(name))?;
+            let descriptor = unsafe {
+                libc::openat(
+                    parent.file.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_EVTONLY | libc::O_SYMLINK | libc::O_NOFOLLOW_ANY | libc::O_CLOEXEC,
+                )
+            };
+            if descriptor < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // Transfer the new descriptor to exactly one RAII owner.
+            let file = unsafe { std::fs::File::from_raw_fd(descriptor) };
+            let current = file.metadata()?;
+            if current.dev() != metadata.st_dev as u64 || current.ino() != metadata.st_ino {
+                return Err(io::Error::from_raw_os_error(libc::EAGAIN));
+            }
+            filesystem_for_fd(&file)
+                .and_then(|fs| volume_id(&fs))
+                .unwrap_or_default()
+        };
+        Ok(FileMetadata {
+            file_id: metadata.st_ino,
+            parent_id: parent.metadata.ino(),
+            size: if kind == FileKind::Directory {
+                0
+            } else {
+                metadata.st_size as u64
+            },
+            link_count: (kind != FileKind::Directory).then_some(u64::from(metadata.st_nlink)),
+            modified: metadata.st_mtime,
+            changed: metadata.st_ctime,
+            created: metadata.st_birthtime,
+            modified_ns: nanoseconds(metadata.st_mtime, metadata.st_mtime_nsec)?,
+            changed_ns: nanoseconds(metadata.st_ctime, metadata.st_ctime_nsec)?,
+            flags: metadata.st_flags,
+            kind,
+            error: None,
+            volume_id,
+        })
+    }
+}
 pub(crate) fn stat_entry(path: &Path, scope: &MountScope) -> io::Result<FileMetadata> {
-    scope.check_current_mount(path)?;
-    use std::os::macos::fs::MetadataExt as MacMetadataExt;
-    let metadata = std::fs::symlink_metadata(path)?;
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("/"));
-    let kind = if metadata.is_dir() {
-        FileKind::Directory
-    } else if metadata.file_type().is_symlink() {
-        FileKind::Symlink
-    } else {
-        FileKind::File
-    };
-    let volume_path = if kind == FileKind::Symlink {
-        parent
-    } else {
-        path
-    };
-    let volume_id = filesystem(volume_path)
-        .and_then(|fs| volume_id(&fs))
-        .unwrap_or_default();
-    Ok(FileMetadata {
-        file_id: metadata.ino(),
-        parent_id: if scope.allows(parent) {
-            std::fs::metadata(parent).map(|m| m.ino()).unwrap_or(0)
-        } else {
-            0
-        },
-        size: if kind == FileKind::Directory {
-            0
-        } else {
-            metadata.len()
-        },
-        link_count: (kind != FileKind::Directory).then(|| metadata.nlink()),
-        modified: metadata.mtime(),
-        changed: metadata.ctime(),
-        created: metadata.st_birthtime(),
-        modified_ns: nanoseconds(metadata.mtime(), metadata.mtime_nsec())?,
-        changed_ns: nanoseconds(metadata.ctime(), metadata.ctime_nsec())?,
-        flags: metadata.st_flags(),
-        kind,
-        error: None,
-        volume_id,
-    })
+    MetadataReader::new(scope).stat(path)
 }
 pub(crate) fn volumes() -> io::Result<Vec<Volume>> {
     let mut result = Vec::new();
@@ -501,6 +624,8 @@ pub(crate) fn check_directory_access(path: &Path, scope: &MountScope) -> io::Res
     open_searchable_directory(path, scope).map(drop)
 }
 fn open_searchable_directory(path: &Path, scope: &MountScope) -> io::Result<OwnedFd> {
+    let path = system_path(path);
+    let path = path.as_ref();
     scope.check_current_mount(path)?;
     let directory = OpenOptions::new()
         .read(true)

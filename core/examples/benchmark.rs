@@ -153,7 +153,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
         std::process::id()
     );
-    let work = workspace.join("work/apfsearch/benchmark-index");
+    let work = argument("--directory")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| workspace.join("work/apfsearch/benchmark-index"));
     std::fs::create_dir_all(&work)?;
     let reuse = argument("--reuse");
     let database = reuse

@@ -205,22 +205,6 @@ fn relation_scope(prefix: &str, base: &MatchOptions) -> Option<(bool, Option<boo
     }
     None
 }
-/// Preserve old PDF indexes without rewriting the database or re-reading files.
-fn property<'a>(file: &'a IndexedFile, key: &str) -> Option<&'a Value> {
-    file.properties.get(key).or_else(|| {
-        if key == "author" && file.extension.eq_ignore_ascii_case("pdf") {
-            return file.properties.get("artist");
-        }
-        let exif = file.properties.get("exif")?;
-        match key {
-            "iso" => exif.get("ISOSpeedRatings")?.as_array()?.first(),
-            "focallength" => exif.get("FocalLength"),
-            "aperture" => exif.get("FNumber"),
-            "exposuretime" => exif.get("ExposureTime"),
-            _ => None,
-        }
-    })
-}
 fn modifier(options: &mut MatchOptions, key: &str) -> bool {
     match keyword(key).as_str() {
         "case" => options.sensitive = true,
@@ -1251,10 +1235,10 @@ impl Query {
                     target: TextTarget::Property(key),
                     ..
                 },
-            ) if property(file, key).is_none() => Ok(None),
+            ) if file.properties.get(key).is_none() => Ok(None),
             Self::Term(Term::Number { field, .. })
                 if numeric_property(field)
-                    && property(file, field).and_then(Value::as_f64).is_none() =>
+                    && file.properties.get(field).and_then(Value::as_f64).is_none() =>
             {
                 Ok(None)
             }
@@ -1532,7 +1516,8 @@ impl Term {
                     Some(s) => matcher.matches(s)?,
                     None => false,
                 },
-                TextTarget::Property(key) => match property(file, key).and_then(Value::as_str) {
+                TextTarget::Property(key) => match file.properties.get(key).and_then(Value::as_str)
+                {
                     Some(s) => matcher.matches(s)?,
                     None => false,
                 },
@@ -1552,14 +1537,16 @@ impl Term {
             Self::Content { needle, sensitive } => content.is_some_and(|s| {
                 (if *sensitive { nfc(s) } else { fold_search(s) }).contains(needle)
             }),
-            Self::PropertyText(key, needle) => property(file, key)
+            Self::PropertyText(key, needle) => file
+                .properties
+                .get(key)
                 .and_then(Value::as_str)
                 .is_some_and(|s| fold_search(s).contains(needle)),
             Self::Unknown { field, negate } => {
                 let unknown = match field.as_str() {
                     "size" => file.is_dir,
                     "modified" | "created" => false,
-                    other => property(file, other).and_then(Value::as_f64).is_none(),
+                    other => file.properties.get(other).and_then(Value::as_f64).is_none(),
                 };
                 if *negate {
                     !unknown
@@ -1585,7 +1572,7 @@ impl Term {
                     }
                     "modified" => Some(file.modified as f64),
                     "created" => Some(file.created as f64),
-                    other => property(file, other).and_then(Value::as_f64),
+                    other => file.properties.get(other).and_then(Value::as_f64),
                 };
                 n.is_some_and(|n| {
                     let inside = (if *include_low { n >= *low } else { n > *low })

@@ -133,7 +133,7 @@ fn numeric_first_queries_on_existing_prepared_fixture() {
         ),
         (after.ino(), after.len(), after.mtime(), after.mtime_nsec())
     );
-    let report = json!({"database":path,"entries":previous.len(),"scope":"Existing isolated million-row V3 cache and SQLite opened read-only. No database copy, filesystem scan or prepared-cache rewrite. Queries and updates execute in memory; each initial text is distinct and post-update results use a new generation. Full ordinary matcher verifies result bitmaps and name-ordered first pages. No XPC or GUI.","prepared_cache_restore_ms":restore_ms,"nominal_numeric_value_bytes":previous.entries.len()*3*8,"cache_inode_size_mtime_unchanged":true,"initial_queries":results,"single_numeric_update_ms":update_ms,"first_queries_after_update":after_update});
+    let report = json!({"database":path,"entries":previous.len(),"scope":"Existing isolated million-row prepared cache and SQLite opened read-only. No database copy, filesystem scan or prepared-cache rewrite. Queries and updates execute in memory; each initial text is distinct and post-update results use a new generation. Full ordinary matcher verifies result bitmaps and name-ordered first pages. No XPC or GUI.","prepared_cache_restore_ms":restore_ms,"nominal_numeric_value_bytes":previous.entries.len()*3*8,"cache_inode_size_mtime_unchanged":true,"initial_queries":results,"single_numeric_update_ms":update_ms,"first_queries_after_update":after_update});
     std::fs::write(
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()

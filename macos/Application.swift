@@ -141,7 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func registerShortcut() {
         if let hotKey { UnregisterEventHotKey(hotKey); self.hotKey = nil }
         let defaults = UserDefaults.standard
-        if defaults.object(forKey: "shortcutEnabled") != nil && !defaults.bool(forKey: "shortcutEnabled") { return }
+        if defaults.object(forKey: ApplicationIdentity.preferencePrefix + "shortcutEnabled") != nil && !defaults.bool(forKey: ApplicationIdentity.preferencePrefix + "shortcutEnabled") { return }
         if hotKeyHandler == nil {
             var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
             let pointer = Unmanaged.passUnretained(self).toOpaque()
@@ -157,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return noErr
             }, 1, &type, pointer, &hotKeyHandler)
         }
-        let choice = defaults.integer(forKey: "shortcutChoice")
+        let choice = defaults.integer(forKey: ApplicationIdentity.preferencePrefix + "shortcutChoice")
         let key = choice == 1 ? UInt32(kVK_ANSI_F) : UInt32(kVK_Space)
         let modifiers = choice == 1 ? UInt32(cmdKey | shiftKey) : UInt32(controlKey | optionKey)
         let status = RegisterEventHotKey(key, modifiers, EventHotKeyID(signature: 0x41504653, id: 1), GetApplicationEventTarget(), 0, &hotKey)
@@ -285,7 +285,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         // trying to preserve the collapsed pane's fitting width.
         sidebar.collapseBehavior = .useConstraints
         sidebar.allowsFullHeightLayout = true; sidebar.titlebarSeparatorStyle = .none
-        sidebar.isCollapsed = !UserDefaults.standard.bool(forKey: "APFSearch.SidebarVisible")
+        sidebar.isCollapsed = !UserDefaults.standard.bool(forKey: ApplicationIdentity.preferencePrefix + "SidebarVisible")
         splitController.addSplitViewItem(sidebar)
         // Even the widest sidebar (250) plus the divider and this minimum fits
         // within the 850-point window minimum. Excess table columns can scroll.
@@ -312,8 +312,8 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         buildInterface()
         // Restore once after installing the complete content hierarchy. Later
         // status/search updates must never choose or restore a window frame.
-        if !window.setFrameUsingName("APFSearch.Main") { window.center() }
-        window.setFrameAutosaveName("APFSearch.Main")
+        if !window.setFrameUsingName(ApplicationIdentity.preferencePrefix + "Main") { window.center() }
+        window.setFrameAutosaveName(ApplicationIdentity.preferencePrefix + "Main")
         restoreTableConfiguration()
         observeLiveScrolling()
         NotificationCenter.default.addObserver(self, selector: #selector(preferencesChanged), name: .searchPreferencesChanged, object: nil)
@@ -355,7 +355,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
             column.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
             table.addTableColumn(column)
         }
-        let hiddenColumns = UserDefaults.standard.stringArray(forKey: "APFSearch.HiddenColumns") ?? ["created"]
+        let hiddenColumns = UserDefaults.standard.stringArray(forKey: ApplicationIdentity.preferencePrefix + "HiddenColumns") ?? ["created"]
         let columnMenu = NSMenu()
         for column in table.tableColumns {
             column.isHidden = hiddenColumns.contains(column.identifier.rawValue) && column.identifier.rawValue != "name"
@@ -420,7 +420,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         // subsequent resizes should redistribute the saved column widths.
         window?.contentView?.layoutSubtreeIfNeeded()
         table.columnAutoresizingStyle = .uniformColumnAutoresizingStyle
-        table.autosaveName = "APFSearch.Columns"
+        table.autosaveName = ApplicationIdentity.preferencePrefix + "Columns"
         table.autosaveTableColumns = true
         if table.sortDescriptors.isEmpty {
             table.sortDescriptors = [NSSortDescriptor(key: "name", ascending: true)]
@@ -494,12 +494,12 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         } else {
             splitController.toggleSidebar(sender)
         }
-        UserDefaults.standard.set(!sidebar.isCollapsed, forKey: "APFSearch.SidebarVisible")
+        UserDefaults.standard.set(!sidebar.isCollapsed, forKey: ApplicationIdentity.preferencePrefix + "SidebarVisible")
     }
     @objc func toggleColumn(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String, id != "name", let column = table.tableColumns.first(where: { $0.identifier.rawValue == id }) else { return }
         column.isHidden.toggle(); sender.state = column.isHidden ? .off : .on
-        UserDefaults.standard.set(table.tableColumns.filter(\.isHidden).map { $0.identifier.rawValue }, forKey: "APFSearch.HiddenColumns")
+        UserDefaults.standard.set(table.tableColumns.filter(\.isHidden).map { $0.identifier.rawValue }, forKey: ApplicationIdentity.preferencePrefix + "HiddenColumns")
     }
     @objc func revealPathComponent(_ sender: Any?) {
         guard offlineListID == nil, let path = pathControl.clickedPathItem?.url?.path else { return }
@@ -1016,7 +1016,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
             self.updateStatus(); self.refreshVisibleResults()
             if self.initialStatus {
                 self.initialStatus = false
-                if self.roots.isEmpty && (reply["count"] as? NSNumber)?.intValue ?? 0 == 0 && !UserDefaults.standard.bool(forKey: "APFSearch.ScopeChosen") {
+                if self.roots.isEmpty && (reply["count"] as? NSNumber)?.intValue ?? 0 == 0 && !UserDefaults.standard.bool(forKey: ApplicationIdentity.preferencePrefix + "ScopeChosen") {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.chooseVolumes(nil) }
                 }
             }
@@ -1165,7 +1165,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         }
     }
     func startScan(_ paths: [String]) {
-        UserDefaults.standard.set(true, forKey: "APFSearch.ScopeChosen")
+        UserDefaults.standard.set(true, forKey: ApplicationIdentity.preferencePrefix + "ScopeChosen")
         SearchClient.shared.call(["op": "scan", "roots": paths]) { [weak self] reply in self?.checkResult(reply); self?.pollStatus(); self?.runQuery() }
     }
     @objc func rescan(_ sender: Any?) { if roots.isEmpty { chooseVolumes(nil) } else { startScan(roots) } }
@@ -1257,6 +1257,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
             case .execute(let skips): approved["skip_paths"] = skips
             }
             if approved["expected"] == nil { approved["expected"] = reply["expected"] }
+            approved["expected_parents"] = reply["expected_parents"]
             approved["conflict_policy"] = "stop"
             // Freeze generated target names; skipping a row must not renumber the rest.
             if action != "trash" {

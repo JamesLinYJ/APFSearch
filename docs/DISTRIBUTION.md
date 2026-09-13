@@ -15,7 +15,8 @@ ID Application identity as described in the [README](../README.md#getting-starte
 Create an archive from the signed build. The destination must not already exist:
 
 ```sh
-python3 scripts/create_archive.py /private/tmp/APFSearch-build/APFSearch.app /private/tmp/APFSearch-distribution
+APFSEARCH_BUILT_APP="$(python3 scripts/build_workspace.py build)/APFSearch.app"
+python3 scripts/create_archive.py "$APFSEARCH_BUILT_APP" /private/tmp/APFSearch-distribution
 ```
 
 The helper preserves the signed application and records its real architectures,

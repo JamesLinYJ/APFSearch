@@ -38,7 +38,7 @@ fn version_two_c_abi_uses_the_same_explicit_envelope_for_every_result() {
         assert!(response["error"].is_string());
     }
     for response in [&success, &unknown, &malformed, &absent] {
-        assert_eq!(response["protocol_version"], 2);
+        assert_eq!(response["protocol_version"], 1);
         assert!(response.get("ok").is_none());
     }
 }

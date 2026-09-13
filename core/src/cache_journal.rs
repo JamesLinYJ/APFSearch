@@ -6,20 +6,14 @@ use rusqlite::Connection;
 pub(super) const MAX_IDS: usize = 65_536;
 
 pub(super) fn install(connection: &Connection) -> Result<(), String> {
-    // Only called during a schema migration, never on an ordinary open. Counting
-    // once preserves a V3 cache baseline without recounting the journal per row.
+    // Installed once with an empty index. Normal opens perform no schema writes.
     connection
         .execute_batch(&format!(
-            "DROP TRIGGER IF EXISTS cache_change_limit;
-             DROP TRIGGER IF EXISTS cache_change_count_delete;
-             DROP TRIGGER IF EXISTS cache_change_count_insert;
-             CREATE TABLE IF NOT EXISTS cache_journal_state(
+            "CREATE TABLE cache_journal_state(
                  singleton INTEGER PRIMARY KEY CHECK(singleton=1),
                  pending_count INTEGER NOT NULL CHECK(pending_count>=0)
              );
-             INSERT INTO cache_journal_state(singleton,pending_count)
-                 SELECT 1,count(*) FROM cache_changes WHERE true
-                 ON CONFLICT(singleton) DO UPDATE SET pending_count=excluded.pending_count;
+             INSERT INTO cache_journal_state VALUES(1,0);
              CREATE TRIGGER cache_change_count_delete AFTER DELETE ON cache_changes BEGIN
                  UPDATE cache_journal_state SET pending_count=pending_count-1 WHERE singleton=1;
              END;

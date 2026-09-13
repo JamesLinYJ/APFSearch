@@ -22,8 +22,8 @@ final class SearchSettingsModel: ObservableObject {
     @Published var itemCount = 0
     @Published var scanning = false
     @Published var loginEnabled = SMAppService.mainApp.status == .enabled
-    @Published var shortcutEnabled = UserDefaults.standard.object(forKey: "shortcutEnabled") == nil || UserDefaults.standard.bool(forKey: "shortcutEnabled")
-    @Published var shortcutChoice = UserDefaults.standard.integer(forKey: "shortcutChoice")
+    @Published var shortcutEnabled = UserDefaults.standard.object(forKey: ApplicationIdentity.preferencePrefix + "shortcutEnabled") == nil || UserDefaults.standard.bool(forKey: ApplicationIdentity.preferencePrefix + "shortcutEnabled")
+    @Published var shortcutChoice = UserDefaults.standard.integer(forKey: ApplicationIdentity.preferencePrefix + "shortcutChoice")
     private var values: [String: Any] = [:]
     init() { reload(); refreshStatus() }
     func reload() {
@@ -87,12 +87,12 @@ final class SearchSettingsModel: ObservableObject {
         SearchClient.shared.call(["op": "scan", "roots": panel.urls.map(\.path)]) { [weak self] reply in
             guard let self else { return }
             if reply["success"] as? Bool == false { self.error = true; self.message = reply["error"] as? String ?? L("error.scan_start") }
-            else { self.message = L("status.scanning_new_scope"); UserDefaults.standard.set(true, forKey: "APFSearch.ScopeChosen"); self.refreshStatus(); NotificationCenter.default.post(name: .searchPreferencesChanged, object: nil) }
+            else { self.message = L("status.scanning_new_scope"); UserDefaults.standard.set(true, forKey: ApplicationIdentity.preferencePrefix + "ScopeChosen"); self.refreshStatus(); NotificationCenter.default.post(name: .searchPreferencesChanged, object: nil) }
         }
     }
     func updateShortcut() {
-        UserDefaults.standard.set(shortcutEnabled, forKey: "shortcutEnabled")
-        UserDefaults.standard.set(shortcutChoice, forKey: "shortcutChoice")
+        UserDefaults.standard.set(shortcutEnabled, forKey: ApplicationIdentity.preferencePrefix + "shortcutEnabled")
+        UserDefaults.standard.set(shortcutChoice, forKey: ApplicationIdentity.preferencePrefix + "shortcutChoice")
         NotificationCenter.default.post(name: .searchShortcutChanged, object: nil)
     }
     func updateLogin(_ enabled: Bool) {
@@ -217,6 +217,6 @@ func makeSearchSettingsWindow() -> NSWindowController {
     let controller = NSHostingController(rootView: SearchSettingsView())
     let window = NSWindow(contentViewController: controller)
     window.title = L("settings.window_title"); window.styleMask = [.titled, .closable]
-    window.center(); window.setFrameAutosaveName("APFSearch.Settings")
+    window.center(); window.setFrameAutosaveName(ApplicationIdentity.preferencePrefix + "Settings")
     return NSWindowController(window: window)
 }

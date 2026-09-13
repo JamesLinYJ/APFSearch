@@ -76,6 +76,38 @@ fn ordinary_directory_inode_event_does_not_enumerate_its_existing_subtree() {
         1
     );
 }
+
+#[test]
+fn missing_child_below_a_replaced_symlink_stays_uncovered() {
+    for recursive in [false, true] {
+        let (temporary, engine, root) = fixture();
+        let selected = Path::new(&root).join("selected");
+        let outside = temporary.path().join("outside");
+        std::fs::create_dir(&selected).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let child = selected.join("child.txt").to_string_lossy().into_owned();
+        std::fs::write(&child, "selected content").unwrap();
+        scan(&engine, &root);
+        std::fs::rename(&selected, temporary.path().join("held")).unwrap();
+        std::os::unix::fs::symlink(&outside, &selected).unwrap();
+        assert!(engine
+            .reconcile(
+                std::slice::from_ref(&child),
+                std::slice::from_ref(&root),
+                42,
+                recursive,
+                false
+            )
+            .unwrap());
+        let status = engine.call(json!({"op":"status"}));
+        assert_eq!(status["uncovered"], json!([child]), "{status}");
+        assert_eq!(
+            engine.call(json!({"op":"query","text":"child.txt"}))["total"],
+            0
+        );
+        assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
+    }
+}
 #[test]
 fn directory_read_without_search_permission_loses_coverage_and_recovers() {
     let (_temp, engine, root) = fixture();
@@ -444,5 +476,59 @@ fn unchanged_event_for_one_hardlink_repairs_an_older_alias_from_a_previous_batch
     let rows = engine.call(json!({"op":"query","text":"ext:txt"}));
     for row in rows["rows"].as_array().unwrap() {
         assert_eq!(row["size"], 16);
+    }
+}
+
+#[test]
+fn event_scopes_never_follow_a_replaced_intermediate_directory() {
+    for flags in [0x20100, 0x20000, 0x20400] {
+        let (temporary, engine, root) = fixture();
+        let branch = Path::new(&root).join("branch");
+        let requested = branch.join("Documents");
+        std::fs::create_dir_all(&requested).unwrap();
+        std::fs::write(requested.join("original.txt"), "original").unwrap();
+        let outside = temporary.path().join("outside");
+        std::fs::create_dir_all(outside.join("Documents")).unwrap();
+        std::fs::write(outside.join("Documents/private.txt"), "private").unwrap();
+        scan(&engine, &root);
+        let event = scanner::ChangeEvent::from_flags(requested.to_str().unwrap(), 42, flags);
+        std::fs::rename(&branch, temporary.path().join("original-branch")).unwrap();
+        std::os::unix::fs::symlink(&outside, &branch).unwrap();
+
+        let mut plan = scanner::reconciliation_plan(std::slice::from_ref(&root), &[event]);
+        engine.resolve_directory_checks(&mut plan).unwrap();
+        assert!(
+            plan.recursive
+                .iter()
+                .all(|path| Path::new(path).starts_with(&root)),
+            "an event became authority outside its configured root: {plan:?}"
+        );
+        apply(&engine, &root, &plan);
+        let results = engine.call(json!({"op":"query","text":"private.txt"}));
+        assert_eq!(results["total"], 0, "flags={flags:x}: {results}");
+        assert!(engine
+            .index_store
+            .lock()
+            .unwrap()
+            .entries()
+            .unwrap()
+            .iter()
+            .all(|entry| Path::new(&entry.path).starts_with(&root)));
+
+        std::fs::remove_file(&branch).unwrap();
+        std::fs::rename(temporary.path().join("original-branch"), &branch).unwrap();
+        let plan = scanner::reconciliation_plan(
+            std::slice::from_ref(&root),
+            &[scanner::ChangeEvent::from_flags(
+                branch.to_str().unwrap(),
+                43,
+                0x20100,
+            )],
+        );
+        apply(&engine, &root, &plan);
+        assert_eq!(
+            engine.call(json!({"op":"query","text":"original.txt"}))["total"],
+            1
+        );
     }
 }

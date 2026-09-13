@@ -6,6 +6,7 @@ mod content_read_tests;
 mod duplicates;
 mod file_events;
 mod file_identity;
+mod file_list_import;
 mod filesystem;
 pub mod index_store;
 mod metadata_postings;
@@ -38,7 +39,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 1;
 
 // Bare generation lookup is a short convenience window. Explicit leases and
 // active queries own their own Arc; structural rebuilds must not retain another
@@ -74,6 +75,7 @@ pub struct SearchEngine {
     worker: Mutex<Option<std::thread::JoinHandle<()>>>,
     restart_lock: Mutex<()>,
     refresh_lock: Mutex<()>,
+    file_list_import: Mutex<Option<file_list_import::ImportState>>,
     state: status_signal::StatusSignal,
     index_directory: PathBuf,
     leases: snapshot_leases::SnapshotLeases,
@@ -153,6 +155,7 @@ impl SearchEngine {
             worker: Mutex::new(None),
             restart_lock: Mutex::new(()),
             refresh_lock: Mutex::new(()),
+            file_list_import: Mutex::new(None),
             state: status_signal::StatusSignal::new(
                 json!({"roots":roots,"uncovered":uncovered,"state":"idle","errors":[],"event_id":0}),
             ),
@@ -491,6 +494,7 @@ impl SearchEngine {
                     token.store(true, Ordering::Relaxed);
                 }
                 self.state.wake_cancelled();
+                self.cancel_file_list_import(id);
                 Ok(json!({"cancelled":id}))
             }
             "put_content" => {
@@ -515,6 +519,10 @@ impl SearchEngine {
             "preferences" => self.preferences(request),
             "duplicates" => self.duplicates(request),
             "import_file_list" => self.import_file_list(request),
+            "begin_file_list_import" => self.staged_file_list_import(request, "begin"),
+            "append_file_list_import" => self.staged_file_list_import(request, "append"),
+            "finish_file_list_import" => self.staged_file_list_import(request, "finish"),
+            "abort_file_list_import" => self.staged_file_list_import(request, "abort"),
             "export" => {
                 let mut request = request.clone();
                 request["limit"] = json!(10000);
@@ -1136,8 +1144,15 @@ impl SearchEngine {
         if roots.is_empty() {
             return Err("At least one root is required".into());
         }
-        let roots = normalize_roots(roots)?;
+        let roots = if resume {
+            scanner::normalize_scopes(&roots)
+        } else {
+            normalize_roots(roots)?
+        };
         let _restart = self.restart_lock.lock().unwrap();
+        if self.file_list_import.lock().unwrap().is_some() {
+            return Err("A file-list import is already pending".into());
+        }
         if self.active.load(Ordering::SeqCst) {
             self.stop.store(true, Ordering::Relaxed);
             self.scan_cancel.store(true, Ordering::Relaxed);
@@ -1354,7 +1369,7 @@ impl SearchEngine {
                 on_batch,
             )
         } else {
-            scanner::scan_metadata(roots, &self.scan_cancel, on_batch)
+            scanner::scan_metadata_in_namespace(roots, configured, &self.scan_cancel, on_batch)
         };
         if let Some(e) = error {
             return Err(e);
@@ -1368,19 +1383,12 @@ impl SearchEngine {
         // inaccessible directory. A missing configured root remains uncovered
         // (for example an unplugged volume). Verify the parent is enumerable.
         let mut removed = Vec::new();
-        if !initial {
+        if !initial && !report.uncovered.is_empty() {
+            let removal_scope = scanner::mount_scope().ok();
             report.uncovered.retain(|path| {
-                let missing = !configured.contains(path)
-                    && std::fs::symlink_metadata(path)
-                        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
-                    && Path::new(path)
-                        .ancestors()
-                        .skip(1)
-                        .take_while(|ancestor| {
-                            configured.iter().any(|root| ancestor.starts_with(root))
-                        })
-                        .find(|ancestor| std::fs::symlink_metadata(ancestor).is_ok())
-                        .is_some_and(|ancestor| std::fs::read_dir(ancestor).is_ok());
+                let missing = removal_scope.as_ref().is_some_and(|scope| {
+                    scanner::entry_is_missing(Path::new(path), configured, scope)
+                });
                 if missing {
                     removed.push(path.clone());
                 }
@@ -1476,7 +1484,7 @@ impl SearchEngine {
             }
         }
         let Some(recursive) =
-            scanner::normalize_roots_until(&plan.recursive, || self.stop.load(Ordering::Relaxed))
+            scanner::normalize_scopes_until(&plan.recursive, || self.stop.load(Ordering::Relaxed))
         else {
             return Ok(());
         };
@@ -1839,58 +1847,6 @@ impl SearchEngine {
         self.scanning.store(false, Ordering::SeqCst);
         self.active.store(false, Ordering::SeqCst);
         self.state.notify();
-    }
-    fn import_file_list(&self, request: &Value) -> Result<Value, String> {
-        if self.active.load(Ordering::SeqCst) {
-            return Err("Use a separate offline database for imported file lists".into());
-        }
-        let rows = request["rows"].as_array().ok_or("rows must be an array")?;
-        let mut entries = Vec::new();
-        for (i, row) in rows.iter().enumerate() {
-            let path = row["path"]
-                .as_str()
-                .ok_or("Every imported row needs path")?;
-            let file_path = Path::new(path);
-            let is_dir = row["is_dir"].as_bool().unwrap_or(false);
-            entries.push(scanner::ScannedFile {
-                path: path.into(),
-                name: row["name"].as_str().map(str::to_string).unwrap_or_else(|| {
-                    file_path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .into_owned()
-                }),
-                extension: if is_dir {
-                    String::new()
-                } else {
-                    file_path
-                        .extension()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_lowercase()
-                },
-                size: row["size"].as_u64().unwrap_or(0),
-                modified: row["modified"].as_i64().unwrap_or(0),
-                created: row["created"].as_i64().unwrap_or(0),
-                is_dir,
-                file_id: i as u64 + 1,
-                volume_id: "offline:filelist".into(),
-                ..Default::default()
-            });
-        }
-        {
-            let mut index_store = self.index_store.lock().unwrap();
-            index_store.clear()?;
-            index_store.batch(&entries, 1)?;
-            index_store.set("offline", &json!(true))?;
-            index_store.set("watch_enabled", &json!(false))?;
-        }
-        self.offline.store(true, Ordering::Relaxed);
-        self.state.lock().unwrap()["offline"] = json!(true);
-        self.state.lock().unwrap()["state"] = json!("offline");
-        self.refresh(true)?;
-        Ok(json!({"imported":entries.len(),"offline":true}))
     }
     fn duplicates(&self, request: &Value) -> Result<Value, String> {
         if self.offline.load(Ordering::Relaxed) {

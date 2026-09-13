@@ -171,3 +171,86 @@ fn malformed_kernel_bytes_never_panic() {
         let _ = parse_batch(&bytes, 3, "volume", |_| Ok(()));
     }
 }
+
+#[test]
+fn metadata_stat_rejects_intermediate_symlinks_but_preserves_the_final_link() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let target = root.join("target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::write(target.join("private.txt"), "private").unwrap();
+    let alias = root.join("alias");
+    std::os::unix::fs::symlink(&target, &alias).unwrap();
+    let scope = MountScope::load().unwrap();
+    assert!(stat_entry(&alias.join("private.txt"), &scope).is_err());
+    assert_eq!(stat_entry(&alias, &scope).unwrap().kind, FileKind::Symlink);
+    std::fs::remove_file(&alias).unwrap();
+    std::os::unix::fs::symlink("missing", &alias).unwrap();
+    assert_eq!(stat_entry(&alias, &scope).unwrap().kind, FileKind::Symlink);
+}
+
+#[test]
+fn descriptor_metadata_preserves_parent_ids_for_distinct_hardlink_entries() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let one = root.join("one");
+    let two = root.join("two");
+    std::fs::create_dir(&one).unwrap();
+    std::fs::create_dir(&two).unwrap();
+    std::fs::write(one.join("file"), "payload").unwrap();
+    std::fs::hard_link(one.join("file"), two.join("file")).unwrap();
+    let scope = MountScope::load().unwrap();
+    let mut first = MetadataReader::new(&scope);
+    let mut second = MetadataReader::new(&scope);
+    let left = first.stat(&one.join("file")).unwrap();
+    let right = second.stat(&two.join("file")).unwrap();
+    assert_eq!(left.parent_id, std::fs::metadata(&one).unwrap().ino());
+    assert_eq!(right.parent_id, std::fs::metadata(&two).unwrap().ino());
+    assert_eq!(
+        first.stat(&one.join("file")).unwrap().parent_id,
+        left.parent_id
+    );
+    assert_eq!(left.file_id, right.file_id);
+    assert_eq!(left.volume_id, right.volume_id);
+    assert_ne!(left.parent_id, right.parent_id);
+    assert_eq!(left.link_count, Some(2));
+}
+
+#[test]
+fn metadata_identity_does_not_require_access_to_the_leaf_contents() {
+    use std::os::unix::fs::PermissionsExt;
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().join("denied");
+    std::fs::create_dir(&path).unwrap();
+    let scope = MountScope::load().unwrap();
+    let before = metadata(&path, &scope).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let identity = metadata(&path, &scope);
+    let entry = stat_entry(&path, &scope);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(identity.unwrap().st_ino, before.st_ino);
+    assert_eq!(entry.unwrap().file_id, before.st_ino);
+}
+
+#[test]
+fn reused_metadata_parent_cannot_be_retargeted_to_an_outside_directory() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().canonicalize().unwrap();
+    let parent = root.join("selected");
+    let outside = root.join("outside");
+    std::fs::create_dir(&parent).unwrap();
+    std::fs::create_dir(&outside).unwrap();
+    std::fs::write(parent.join("known.txt"), "selected").unwrap();
+    std::fs::write(outside.join("private.txt"), "outside").unwrap();
+    let scope = MountScope::load().unwrap();
+    let mut reader = MetadataReader::new(&scope);
+    let before = reader.stat(&parent.join("known.txt")).unwrap();
+    std::fs::rename(&parent, root.join("original-directory")).unwrap();
+    std::os::unix::fs::symlink(&outside, &parent).unwrap();
+    assert!(reader.stat(&parent.join("private.txt")).is_err());
+    assert_eq!(
+        reader.stat(&parent.join("known.txt")).unwrap().file_id,
+        before.file_id
+    );
+    assert!(stat_entry(&parent.join("known.txt"), &scope).is_err());
+}

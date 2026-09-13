@@ -18,10 +18,8 @@ use std::{
         Arc,
     },
 };
-// V4 preserves slot order when an older SQLite ID becomes visible again. The
-// payload layout is unchanged; V3 additionally requires increasing entry IDs.
-const MAGIC: &[u8; 8] = b"AFSIDX04";
-const LEGACY_MAGIC: &[u8; 8] = b"AFSIDX03";
+// Slot order remains stable when an older SQLite ID becomes visible again.
+const MAGIC: &[u8; 8] = b"APFIDX01";
 const HEADER: usize = 56;
 const RECORD: usize = 212;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -319,11 +317,9 @@ pub fn read(path: &Path, generation: u64, revision: u64) -> Option<(SearchSnapsh
     decode(&mapped, generation, revision).map(|snapshot| (snapshot, generation))
 }
 fn decode(data: &[u8], generation: u64, revision: u64) -> Option<SearchSnapshot> {
-    let requires_sorted_ids = match data.get(..8)? {
-        magic if magic == MAGIC => false,
-        magic if magic == LEGACY_MAGIC => true,
-        _ => return None,
-    };
+    if data.get(..8)? != MAGIC {
+        return None;
+    }
     let mut position = 8;
     if get64(data, &mut position)? != generation || get64(data, &mut position)? != revision {
         return None;
@@ -356,9 +352,6 @@ fn decode(data: &[u8], generation: u64, revision: u64) -> Option<SearchSnapshot>
     for row in data.get(HEADER..pool_start)?.as_chunks::<RECORD>().0 {
         let mut position = 0;
         let id = get64(row, &mut position)? as i64;
-        if requires_sorted_ids && entries.last().is_some_and(|entry| entry.id >= id) {
-            return None;
-        }
         let parent = pool.shared(row, &mut position)?;
         let name = pool.owned(row, &mut position)?;
         let extension = pool.owned(row, &mut position)?;
@@ -510,8 +503,7 @@ mod tests {
         bytes[end..].copy_from_slice(digest.as_bytes());
     }
 
-    // V3 and V4 have identical record/index payloads. Rebinding the header and
-    // checksum produces the original V3 format without invoking a new writer.
+    // Change a checksummed header independently of the production writer.
     fn set_version(bytes: &mut [u8], magic: &[u8; 8]) {
         bytes[..8].copy_from_slice(magic);
         update_checksum(bytes);
@@ -557,35 +549,26 @@ mod tests {
     }
 
     #[test]
-    fn v3_sorted_cache_remains_readable_without_rewriting_the_file() {
+    fn other_cache_formats_are_rejected_without_rewriting() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("legacy.snapshot.bin");
-        let original = fixture();
-        write(&path, &original, 19).unwrap();
-        let mut legacy = std::fs::read(&path).unwrap();
-        set_version(&mut legacy, LEGACY_MAGIC);
-        std::fs::write(&path, &legacy).unwrap();
-        let before = std::fs::metadata(&path).unwrap();
-        for _ in 0..2 {
-            let (restored, generation) = read(&path, 8, 19).unwrap();
-            assert_eq!(generation, original.generation);
-            assert_eq!(restored.live, original.live);
-            assert_eq!(restored.name_order, original.name_order);
-            assert_eq!(restored.path_order, original.path_order);
-            for (slot, file) in original.entries.iter().enumerate() {
-                assert_eq!(restored.slot_for_id(file.id), Some(slot));
-            }
+        let path = directory.path().join("unsupported.snapshot.bin");
+        write(&path, &fixture(), 19).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        for magic in [b"AFSIDX03", b"AFSIDX04", b"APFIDX02"] {
+            let mut bytes = original.clone();
+            set_version(&mut bytes, magic);
+            std::fs::write(&path, &bytes).unwrap();
+            let before = std::fs::metadata(&path).unwrap();
+            assert!(read(&path, 8, 19).is_none());
+            let after = std::fs::metadata(&path).unwrap();
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(before.ino(), after.ino());
+            assert_eq!(before.mtime_nsec(), after.mtime_nsec());
         }
-        let after = std::fs::metadata(&path).unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), legacy);
-        assert_eq!(before.ino(), after.ino());
-        assert_eq!(before.len(), after.len());
-        assert_eq!(before.mtime(), after.mtime());
-        assert_eq!(before.mtime_nsec(), after.mtime_nsec());
     }
 
     #[test]
-    fn v4_roundtrip_keeps_sparse_old_ids_in_their_original_slots() {
+    fn roundtrip_keeps_sparse_old_ids_in_their_original_slots() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("stable.snapshot.bin");
         let original = stable_slot_fixture();
@@ -632,16 +615,10 @@ mod tests {
                 restored.metadata_postings.exact(&query, &restored.live)
             );
         }
-
-        // The same unordered rows are forbidden in a correctly checksummed V3.
-        let mut invalid_legacy = bytes;
-        set_version(&mut invalid_legacy, LEGACY_MAGIC);
-        std::fs::write(&path, invalid_legacy).unwrap();
-        assert!(read(&path, 8, 19).is_none());
     }
 
     #[test]
-    fn valid_checksum_cannot_hide_duplicate_ids_in_v3_or_v4() {
+    fn valid_checksum_cannot_hide_duplicate_ids() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("duplicate.snapshot.bin");
         write(&path, &stable_slot_fixture(), 19).unwrap();
@@ -649,14 +626,12 @@ mod tests {
         // Duplicate within the initial sorted prefix, against that prefix from
         // a sparse tail entry, and within the sparse tail itself.
         for (slot, duplicate_id) in [(1, 1_i64), (3, 5_i64), (4, 2_i64)] {
-            for version in [MAGIC, LEGACY_MAGIC] {
-                let mut bytes = original.clone();
-                let offset = HEADER + slot * RECORD;
-                bytes[offset..offset + 8].copy_from_slice(&duplicate_id.to_le_bytes());
-                set_version(&mut bytes, version);
-                std::fs::write(&path, &bytes).unwrap();
-                assert!(read(&path, 8, 19).is_none());
-            }
+            let mut bytes = original.clone();
+            let offset = HEADER + slot * RECORD;
+            bytes[offset..offset + 8].copy_from_slice(&duplicate_id.to_le_bytes());
+            set_version(&mut bytes, MAGIC);
+            std::fs::write(&path, &bytes).unwrap();
+            assert!(read(&path, 8, 19).is_none());
         }
     }
     #[test]
