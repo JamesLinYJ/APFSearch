@@ -20,7 +20,25 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup update stable --no-self-update && rustup default stable && rustup component add rustfmt clippy
       - name: Apply guarded source changes
-        run: python3 scripts/_apply_incremental_patch.py
+        run: |
+          python3 scripts/_apply_incremental_patch.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('core/src/query_cache_tests.rs')
+          text = path.read_text()
+          old = 'if sql.starts_with(b"SELECT f.id,") {'
+          new = 'if sql.starts_with(b"SELECT f.id,") || sql.starts_with(b"SELECT j.id,") {'
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, new))
+          path = Path('core/src/bounded_cache_tests.rs')
+          text = path.read_text()
+          for index in [3002, 3003]:
+              old = f'&[files[{index:_}].path.clone()]'
+              new = f'std::slice::from_ref(&files[{index:_}].path)'
+              assert text.count(old) == 1
+              text = text.replace(old, new)
+          path.write_text(text)
+          PY
       - name: Format and validate the actual implementation
         run: |
           cargo fmt --manifest-path core/Cargo.toml
@@ -32,7 +50,7 @@ jobs:
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add core/src/index_store.rs core/src/cache_journal.rs core/src/change_reader.rs core/src/ordered_merge.rs core/src/bounded_cache_tests.rs README.md core/README.md
+          git add core/src/index_store.rs core/src/cache_journal.rs core/src/change_reader.rs core/src/ordered_merge.rs core/src/bounded_cache_tests.rs core/src/query_cache_tests.rs README.md core/README.md
           git diff --cached --stat
           git commit -m 'perf: replay bounded cache deltas and batch sorted slot updates'
           git push origin HEAD:refs/heads/perf/bounded-incremental-index
