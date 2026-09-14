@@ -1,27 +1,35 @@
+use crate::label_pool::LabelPool;
+use crate::shared_text::SharedText;
 #[path = "cache_journal.rs"]
 mod cache_journal;
 #[path = "change_reader.rs"]
 mod change_reader;
 #[path = "ordered_merge.rs"]
 mod ordered_merge;
+#[cfg(test)]
+#[path = "streaming_snapshot_tests.rs"]
+mod streaming_snapshot_tests;
+
+pub use crate::chunked_vec::ChunkedVec;
+pub type EntryTable = ChunkedVec<Arc<IndexedFile>>;
 
 use crate::{
     metadata_postings::MetadataPostings,
     numeric_columns::NumericColumns,
-    query::{fold, Field},
-    result_order::{sort_slots, ResultOrder},
+    query::{Field, fold},
+    result_order::{ResultOrder, sort_slots},
     scanner::ScannedFile,
 };
 use roaring::{RoaringBitmap, RoaringTreemap};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -30,7 +38,7 @@ pub struct IndexedFile {
     pub id: i64,
     pub path: String,
     pub name: String,
-    pub extension: String,
+    pub extension: Arc<str>,
     pub size: u64,
     pub modified: i64,
     pub created: i64,
@@ -43,35 +51,40 @@ pub struct IndexedFile {
     pub is_symlink: bool,
     pub file_id: u64,
     pub parent_id: u64,
-    pub volume_id: String,
+    pub volume_id: Arc<str>,
     pub flags: u32,
     #[serde(default)]
     pub properties: Value,
     #[serde(default)]
     pub content_indexed: bool,
     #[serde(skip)]
-    pub folded_name: Arc<str>,
+    pub folded_name: SharedText,
     #[serde(skip)]
-    pub folded_extension: String,
+    pub folded_extension: Arc<str>,
     #[serde(skip)]
-    pub folded_path: Arc<str>,
+    pub folded_path: SharedText,
     #[serde(skip)]
-    pub search_name: Arc<str>,
+    pub search_name: SharedText,
     #[serde(skip)]
-    pub search_path: Arc<str>,
+    pub search_path: SharedText,
     #[serde(skip)]
-    pub parent: Arc<str>,
+    pub parent: SharedText,
 }
 impl IndexedFile {
+    fn share_labels(&mut self, pool: &mut Arc<LabelPool>) {
+        LabelPool::share(pool, &mut self.extension);
+        LabelPool::share(pool, &mut self.folded_extension);
+        LabelPool::share(pool, &mut self.volume_id);
+    }
     pub fn prepare(&mut self) {
         self.folded_name = fold(&self.name).into();
-        self.folded_extension = fold(&self.extension);
+        self.folded_extension = fold(&self.extension).into();
         self.folded_path = fold(&self.path).into();
         self.search_name = shared_search_fold(&self.name, &self.folded_name);
         self.search_path = shared_search_fold(&self.path, &self.folded_path);
         self.parent = Path::new(&self.path)
             .parent()
-            .map(|parent| Arc::from(parent.to_string_lossy().as_ref()))
+            .map(|parent| SharedText::from(parent.to_string_lossy().as_ref()))
             .unwrap_or_default()
     }
     fn prepare_replacement(&mut self, previous: Option<&IndexedFile>) {
@@ -88,7 +101,7 @@ impl IndexedFile {
         self.folded_extension = if self.extension == previous.extension {
             previous.folded_extension.clone()
         } else {
-            fold(&self.extension)
+            fold(&self.extension).into()
         };
         if self.path == previous.path {
             self.folded_path = previous.folded_path.clone();
@@ -104,7 +117,7 @@ impl IndexedFile {
                 previous.parent.clone()
             } else {
                 parent
-                    .map(|parent| Arc::from(parent.as_ref()))
+                    .map(|parent| SharedText::from(parent.as_ref()))
                     .unwrap_or_default()
             };
         }
@@ -124,7 +137,7 @@ impl IndexedFile {
         }
     }
 }
-fn shared_search_fold(text: &str, folded: &Arc<str>) -> Arc<str> {
+fn shared_search_fold(text: &str, folded: &SharedText) -> SharedText {
     if text.is_ascii() {
         return folded.clone();
     }
@@ -150,10 +163,10 @@ pub(crate) struct FileSlots {
     exceptions: Arc<BTreeMap<i64, u32>>,
 }
 impl FileSlots {
-    pub(crate) fn from_entries(entries: &[Arc<IndexedFile>]) -> Result<Self, &'static str> {
+    pub(crate) fn from_entries(entries: &EntryTable) -> Result<Self, &'static str> {
         let mut slots = Self::default();
         for (slot, file) in entries.iter().enumerate() {
-            slots.append(file.id, &entries[..slot])?;
+            slots.append_at(file.id, entries, slot)?;
         }
         Ok(slots)
     }
@@ -161,15 +174,35 @@ impl FileSlots {
     pub(crate) fn layout(&self) -> (usize, usize) {
         (self.sorted_prefix, self.exceptions.len())
     }
-    fn get(&self, id: i64, entries: &[Arc<IndexedFile>]) -> Option<usize> {
-        entries[..self.sorted_prefix]
-            .binary_search_by_key(&id, |file| file.id)
-            .ok()
-            .or_else(|| self.exceptions.get(&id).map(|slot| *slot as usize))
+    fn get(&self, id: i64, entries: &EntryTable) -> Option<usize> {
+        let mut lower = 0;
+        let mut upper = self.sorted_prefix;
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2;
+            match entries[middle].id.cmp(&id) {
+                std::cmp::Ordering::Less => lower = middle + 1,
+                std::cmp::Ordering::Greater => upper = middle,
+                std::cmp::Ordering::Equal => return Some(middle),
+            }
+        }
+        self.exceptions.get(&id).map(|slot| *slot as usize)
     }
-    fn append(&mut self, id: i64, entries: &[Arc<IndexedFile>]) -> Result<usize, &'static str> {
-        let slot = u32::try_from(entries.len()).map_err(|_| "snapshot_slot_overflow")?;
-        if self.sorted_prefix == entries.len() && entries.last().is_none_or(|last| last.id < id) {
+
+    fn append(&mut self, id: i64, entries: &EntryTable) -> Result<usize, &'static str> {
+        self.append_at(id, entries, entries.len())
+    }
+    fn append_at(
+        &mut self,
+        id: i64,
+        entries: &EntryTable,
+        length: usize,
+    ) -> Result<usize, &'static str> {
+        let slot = u32::try_from(length).map_err(|_| "snapshot_slot_overflow")?;
+        if self.sorted_prefix == length
+            && length
+                .checked_sub(1)
+                .is_none_or(|last| entries[last].id < id)
+        {
             self.sorted_prefix += 1;
         } else {
             if self.get(id, entries).is_some() {
@@ -186,7 +219,8 @@ pub struct SearchSnapshot {
     hierarchy_build: Mutex<()>,
     // Stable slots keep postings valid when a directory entry is deleted. The
     // bitmap determines visibility; a later full rebuild compacts old slots.
-    pub entries: Vec<Arc<IndexedFile>>,
+    pub entries: EntryTable,
+    labels: Arc<LabelPool>,
     file_slots: FileSlots,
     pub live: RoaringBitmap,
     pub trigrams: Arc<HashMap<[u8; 3], Arc<RoaringBitmap>>>,
@@ -198,6 +232,7 @@ pub struct SearchSnapshot {
     path_rank: Arc<Vec<u32>>,
     pub(crate) metadata_postings: MetadataPostings,
     numeric_columns: NumericColumns,
+    name_column: crate::name_column::NameColumn,
     pub generation: u64,
     pub content_revision: u64,
     sort_orders: Mutex<VecDeque<(ResultOrder, Arc<Vec<u32>>)>>,
@@ -230,12 +265,14 @@ impl SearchSnapshot {
         // These contiguous numeric blocks are cheap derived columns. Restoring
         // them requires no folding, sorting or cache format rewrite.
         let numeric_columns = NumericColumns::build(&parts.entries);
+        let name_column = crate::name_column::NameColumn::build(&parts.entries);
         let file_slots = parts.file_slots;
         Self {
             hierarchy: OnceLock::new(),
             hierarchy_build: Mutex::new(()),
             file_slots,
             entries: parts.entries,
+            labels: parts.labels,
             live: parts.live,
             trigrams: parts.trigrams,
             name_order: parts.name_order,
@@ -244,6 +281,7 @@ impl SearchSnapshot {
             path_rank,
             metadata_postings: parts.metadata_postings,
             numeric_columns,
+            name_column,
             generation: parts.generation,
             content_revision: parts.content_revision,
             sort_orders: Mutex::new(VecDeque::new()),
@@ -270,41 +308,80 @@ impl SearchSnapshot {
     }
     /// Observe construction phases without opening or changing persistent storage.
     pub fn build_with_metrics(
-        mut entries: Vec<IndexedFile>,
+        entries: Vec<IndexedFile>,
+        generation: u64,
+        record: impl FnMut(&str, std::time::Duration),
+    ) -> Self {
+        Self::build_rows_with_metrics(entries.into_iter().map(Ok), generation, record)
+            .expect("In-memory snapshot rows cannot fail to decode")
+    }
+    /// Consume fallible rows without retaining a second full metadata array.
+    /// No partially built snapshot is returned when a row fails to decode.
+    pub fn from_rows(
+        rows: impl IntoIterator<Item = Result<IndexedFile, String>>,
+        generation: u64,
+    ) -> Result<Self, String> {
+        Self::build_rows_with_metrics(rows, generation, |_, _| {})
+    }
+    fn build_rows_with_metrics(
+        rows: impl IntoIterator<Item = Result<IndexedFile, String>>,
         generation: u64,
         mut record: impl FnMut(&str, std::time::Duration),
-    ) -> Self {
+    ) -> Result<Self, String> {
         let started = std::time::Instant::now();
+        let mut entries = Vec::new();
+        for row in rows {
+            if entries.len() >= u32::MAX as usize {
+                return Err("snapshot_slot_overflow".into());
+            }
+            entries.push(Arc::new(row?));
+        }
+        record("read_owned_rows", started.elapsed());
+        // The row iterator (including any SQLite cursor) is exhausted before
+        // normalization and index construction. These fresh record Arcs have
+        // not been shared with a snapshot or a secondary column yet.
+        let started = std::time::Instant::now();
+        let mut labels = Arc::new(LabelPool::default());
         let mut trigrams: HashMap<[u8; 3], Arc<RoaringBitmap>> = HashMap::new();
-        let mut parents: HashMap<Arc<str>, ()> = HashMap::new();
-        for (i, entry) in entries.iter_mut().enumerate() {
-            entry.prepare();
-            if let Some((parent, _)) = parents.get_key_value(entry.parent.as_ref()) {
-                entry.parent = parent.clone();
-            } else {
-                parents.insert(entry.parent.clone(), ());
+        let mut parents: HashMap<SharedText, ()> = HashMap::new();
+        const TEXT_BATCH_RECORDS: usize = 4096;
+        for (batch, rows) in entries.chunks_mut(TEXT_BATCH_RECORDS).enumerate() {
+            for (local_slot, entry) in rows.iter_mut().enumerate() {
+                let slot = batch * TEXT_BATCH_RECORDS + local_slot;
+                let entry =
+                    Arc::get_mut(entry).expect("Newly decoded records are exclusively owned");
+                entry.prepare();
+                entry.share_labels(&mut labels);
+                if let Some((parent, _)) = parents.get_key_value(entry.parent.as_ref()) {
+                    entry.parent = parent.clone();
+                } else {
+                    parents.insert(entry.parent.clone(), ());
+                }
+                for tri in entry.search_name.as_bytes().windows(3) {
+                    Arc::make_mut(trigrams.entry([tri[0], tri[1], tri[2]]).or_default())
+                        .insert(slot as u32);
+                }
             }
-            for tri in entry.search_name.as_bytes().windows(3) {
-                Arc::make_mut(trigrams.entry([tri[0], tri[1], tri[2]]).or_default())
-                    .insert(i as u32);
-            }
+            compact_search_column(rows, |file| (&mut file.folded_name, &mut file.search_name));
+            compact_search_column(rows, |file| (&mut file.folded_path, &mut file.search_path));
         }
         drop(parents);
         record("prepare_and_postings", started.elapsed());
-        let started = std::time::Instant::now();
-        let entries: Vec<Arc<IndexedFile>> = entries.into_iter().map(Arc::new).collect();
-        record("owned_entries_and_live_set", started.elapsed());
-        Self::build_prepared_indexes(entries, trigrams, generation, record)
+        Ok(Self::build_prepared_indexes(
+            entries, labels, trigrams, generation, record,
+        ))
     }
     /// Build slot-based derived structures from immutable, already folded rows.
     /// Reusing the row Arcs avoids cloning paths or recomputing Unicode columns
     /// when an old SQLite ID returns after visibility-based compaction.
     fn build_prepared_indexes(
         entries: Vec<Arc<IndexedFile>>,
+        labels: Arc<LabelPool>,
         trigrams: HashMap<[u8; 3], Arc<RoaringBitmap>>,
         generation: u64,
         mut record: impl FnMut(&str, std::time::Duration),
     ) -> Self {
+        let entries: EntryTable = entries.into();
         let file_slots = FileSlots::from_entries(&entries).expect("file IDs must be unique");
         let live = (0..entries.len() as u32).collect();
         let started = std::time::Instant::now();
@@ -318,6 +395,9 @@ impl SearchSnapshot {
         let started = std::time::Instant::now();
         let numeric_columns = NumericColumns::build(&entries);
         record("numeric_columns", started.elapsed());
+        let started = std::time::Instant::now();
+        let name_column = crate::name_column::NameColumn::build(&entries);
+        record("name_column", started.elapsed());
         let started = std::time::Instant::now();
         let mut name_order: Vec<u32> = (0..entries.len() as u32).collect();
         name_order
@@ -342,6 +422,7 @@ impl SearchSnapshot {
             hierarchy: OnceLock::new(),
             hierarchy_build: Mutex::new(()),
             entries,
+            labels,
             file_slots,
             live,
             generation,
@@ -353,6 +434,7 @@ impl SearchSnapshot {
             path_rank: Arc::new(path_rank),
             metadata_postings,
             numeric_columns,
+            name_column,
             sort_orders: Mutex::new(VecDeque::new()),
             matching_sets: Mutex::new(VecDeque::new()),
             pages: Mutex::new(VecDeque::new()),
@@ -418,6 +500,7 @@ impl SearchSnapshot {
         }
         let mut old = old_rows.into_iter().peekable();
         let mut entries = Vec::with_capacity(previous.len() + unique.len());
+        let mut labels = previous.labels.clone();
         for (id, replacement) in unique {
             while old.peek().is_some_and(|file| file.id < id) {
                 entries.push(old.next().unwrap());
@@ -430,10 +513,15 @@ impl SearchSnapshot {
                     .slot_for_id(id)
                     .map(|slot| previous.entries[slot].as_ref());
                 file.prepare_replacement(previous_file);
+                file.share_labels(&mut labels);
                 entries.push(Arc::new(file));
             }
         }
         entries.extend(old);
+        // Slot compaction also releases labels used only by retired entries.
+        labels = Arc::new(LabelPool::retaining(entries.iter().flat_map(|entry| {
+            [&entry.extension, &entry.folded_extension, &entry.volume_id]
+        })));
         let mut trigrams: HashMap<[u8; 3], Arc<RoaringBitmap>> = HashMap::new();
         for (slot, file) in entries.iter().enumerate() {
             for trigram in file.search_name.as_bytes().windows(3) {
@@ -445,7 +533,8 @@ impl SearchSnapshot {
                 .insert(slot as u32);
             }
         }
-        let mut snapshot = Self::build_prepared_indexes(entries, trigrams, generation, |_, _| {});
+        let mut snapshot =
+            Self::build_prepared_indexes(entries, labels, trigrams, generation, |_, _| {});
         snapshot.content_revision = previous.content_revision;
         snapshot
     }
@@ -480,11 +569,13 @@ impl SearchSnapshot {
         // It is independent of the physical slot ordering of existing rows.
         changes.sort_by_key(|(id, _)| *id);
         let mut entries = previous.entries.clone();
+        let mut labels = previous.labels.clone();
         let mut file_slots = previous.file_slots.clone();
         let mut live = previous.live.clone();
         let mut trigrams = previous.trigrams.clone();
         let mut metadata_postings = previous.metadata_postings.clone();
         let mut numeric_columns = previous.numeric_columns.clone();
+        let mut name_column = previous.name_column.clone();
         let mut order_changes = RoaringBitmap::new();
         let mut path_changes = RoaringBitmap::new();
         let mut changed_slots = RoaringBitmap::new();
@@ -534,6 +625,8 @@ impl SearchSnapshot {
             }
             if let Some(mut entry) = replacement {
                 entry.prepare_replacement(old.map(Arc::as_ref));
+                entry.share_labels(&mut labels);
+                name_column.set(slot, &entry.search_name);
                 numeric_columns.set(slot as u32, &entry);
                 if metadata_changed {
                     metadata_postings.insert(slot as u32, &entry);
@@ -563,6 +656,7 @@ impl SearchSnapshot {
         } else {
             Arc::new(updated_order(
                 &previous.name_order,
+                &previous.entries,
                 &order_changes,
                 &live,
                 &entries,
@@ -580,6 +674,7 @@ impl SearchSnapshot {
         } else {
             let order = updated_order(
                 &previous.path_order,
+                &previous.entries,
                 &path_changes,
                 &live,
                 &entries,
@@ -606,7 +701,14 @@ impl SearchSnapshot {
                 if relevant.is_empty() {
                     (order, slots)
                 } else {
-                    let updated = updated_order(&slots, &relevant, &live, &entries, &order);
+                    let updated = updated_order(
+                        &slots,
+                        &previous.entries,
+                        &relevant,
+                        &live,
+                        &entries,
+                        &order,
+                    );
                     (order, Arc::new(updated))
                 }
             })
@@ -615,6 +717,7 @@ impl SearchSnapshot {
             hierarchy: OnceLock::new(),
             hierarchy_build: Mutex::new(()),
             entries,
+            labels,
             file_slots,
             live,
             trigrams,
@@ -624,6 +727,7 @@ impl SearchSnapshot {
             path_ties,
             metadata_postings,
             numeric_columns,
+            name_column,
             generation,
             content_revision: previous.content_revision,
             sort_orders: Mutex::new(sort_orders),
@@ -842,6 +946,34 @@ impl SearchSnapshot {
             .ok()
             .flatten()
     }
+    pub(crate) fn match_name_columns(
+        &self,
+        query: &crate::query::Query,
+        exclusions: &[crate::query::Query],
+        cancelled: &AtomicBool,
+    ) -> Result<Option<RoaringBitmap>, String> {
+        use crate::name_column::NameExpression;
+        let Some(expression) = NameExpression::compile(query) else {
+            return Ok(None);
+        };
+        let Some(exclusions) = exclusions
+            .iter()
+            .map(NameExpression::compile)
+            .collect::<Option<Vec<_>>>()
+        else {
+            return Ok(None);
+        };
+        let candidates = self.candidates_with_cancellation(query, cancelled)?;
+        let visible = candidates.map(|set| set & &self.live);
+        self.name_column
+            .evaluate(
+                &expression,
+                &exclusions,
+                visible.as_ref().unwrap_or(&self.live),
+                cancelled,
+            )
+            .map(Some)
+    }
     pub(crate) fn candidates_with_cancellation(
         &self,
         query: &crate::query::Query,
@@ -879,35 +1011,145 @@ impl SearchSnapshot {
         }
         let mut literals = Vec::new();
         query.required_name_literals(&mut literals);
-        let mut result: Option<RoaringBitmap> = None;
+        let mut postings = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for text in literals {
+            for tri in text.as_bytes().windows(3) {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err("Query cancelled".into());
+                }
+                let key = [tri[0], tri[1], tri[2]];
+                if !seen.insert(key) {
+                    continue;
+                }
+                let Some(matches) = self.trigrams.get(&key) else {
+                    return Ok(Some(RoaringBitmap::new()));
+                };
+                postings.push(matches.as_ref());
+            }
+        }
+        // Select a small starting set before allocating a result. Intersecting
+        // every other posting against that set avoids copying a common prefix's
+        // potentially huge bitmap. Selection is linear, not a full sort.
+        let Some((smallest, _)) = postings.iter().enumerate().min_by_key(|(_, set)| set.len())
+        else {
+            return Ok(None);
+        };
+        let mut result = postings.swap_remove(smallest).clone();
+        for matches in postings {
             if cancelled.load(Ordering::Relaxed) {
                 return Err("Query cancelled".into());
             }
-            for tri in text.as_bytes().windows(3) {
-                let Some(matches) = self.trigrams.get(&[tri[0], tri[1], tri[2]]) else {
-                    return Ok(Some(RoaringBitmap::new()));
-                };
-                match &mut result {
-                    Some(result) => *result &= matches.as_ref(),
-                    None => result = Some(matches.as_ref().clone()),
-                }
+            if result.is_empty() {
+                break;
             }
+            result &= matches;
         }
+        let result = Some(result);
         Ok(result)
     }
 }
-fn updated_order(
+/// Replace per-string allocations with bounded shared blocks before publication.
+/// Each column gets separate storage to preserve sequential query locality.
+/// Existing records are still exclusive here; old snapshots are never repacked.
+fn compact_search_column(
+    entries: &mut [Arc<IndexedFile>],
+    fields: fn(&mut IndexedFile) -> (&mut SharedText, &mut SharedText),
+) {
+    let mut text = String::new();
+    for entry in entries.iter_mut() {
+        let entry = Arc::get_mut(entry).expect("Unpublished records remain exclusively owned");
+        text.push_str(fields(entry).1);
+    }
+    let arena = crate::shared_text::TextArena::new(text.as_bytes())
+        .expect("Prepared text contains valid UTF-8");
+    drop(text);
+    let mut offset = 0;
+    for entry in entries {
+        let entry = Arc::get_mut(entry).expect("Unpublished records remain exclusively owned");
+        let (folded, searchable) = fields(entry);
+        let length = searchable.len();
+        let shared_fold = SharedText::ptr_eq(folded, searchable);
+        let packed = arena
+            .get(
+                offset,
+                u32::try_from(length).expect("Text length fits SharedText"),
+            )
+            .expect("Ranges were built from the same UTF-8 text");
+        if shared_fold {
+            *folded = packed.clone();
+        }
+        *searchable = packed;
+        offset += length;
+    }
+}
+pub(crate) fn updated_order(
     previous: &[u32],
+    previous_entries: &EntryTable,
     changed: &RoaringBitmap,
     live: &RoaringBitmap,
-    entries: &[Arc<IndexedFile>],
+    entries: &EntryTable,
     order: &ResultOrder,
 ) -> Vec<u32> {
     let mut replacements: Vec<_> = changed.iter().filter(|slot| live.contains(*slot)).collect();
     replacements
         .sort_unstable_by(|a, b| order.compare(&entries[*a as usize], &entries[*b as usize]));
     let mut result = Vec::with_capacity(live.len() as usize);
+    // For sparse deltas, locate old keys using the old immutable rows. New
+    // values may already have moved elsewhere in sort order. Copy unchanged
+    // runs directly instead of checking every old slot against the delta.
+    // Dense deltas retain the linear membership pass to bound lookup work.
+    // A comparison follows record/string references and performs natural-key
+    // comparison; it is much more expensive than a bitmap membership check.
+    // Calibrated conservatively against the sparse/dense crossover profile.
+    const KEY_PROBE_RELATIVE_COST: u64 = 32;
+    let lookup_work = changed
+        .len()
+        .saturating_mul(u64::from(previous.len().max(1).ilog2()) + 1)
+        .saturating_mul(KEY_PROBE_RELATIVE_COST);
+    if lookup_work < previous.len() as u64 {
+        let mut removed = Vec::with_capacity(changed.len() as usize);
+        for slot in changed {
+            if let Some(old) = previous_entries.get(slot as usize)
+                && let Ok(position) = previous.binary_search_by(|other| {
+                    order.compare(&previous_entries[*other as usize], old)
+                })
+            {
+                removed.push(position);
+            }
+        }
+        removed.sort_unstable();
+        let mut start = 0;
+        for position in removed {
+            result.extend_from_slice(&previous[start..position]);
+            start = position + 1;
+        }
+        result.extend_from_slice(&previous[start..]);
+    } else {
+        result.extend(
+            previous
+                .iter()
+                .copied()
+                .filter(|slot| !changed.contains(*slot)),
+        );
+    }
+    ordered_merge::insert_sorted(&mut result, &replacements, |a, b| {
+        order.compare(&entries[a as usize], &entries[b as usize])
+    });
+    result
+}
+#[cfg(test)]
+pub(crate) fn linear_updated_order_reference(
+    previous: &[u32],
+    changed: &RoaringBitmap,
+    entries: &EntryTable,
+    order: &ResultOrder,
+) -> Vec<u32> {
+    // Previous algorithm for update-only crossover profiling, not a runtime path.
+    let mut replacements: Vec<_> = changed.iter().collect();
+    replacements
+        .sort_unstable_by(|a, b| order.compare(&entries[*a as usize], &entries[*b as usize]));
+    let mut result = Vec::with_capacity(previous.len());
     result.extend(
         previous
             .iter()
@@ -919,6 +1161,7 @@ fn updated_order(
     });
     result
 }
+
 fn order_ranks(slot_count: usize, order: &[u32]) -> Vec<u32> {
     let mut ranks = vec![u32::MAX; slot_count];
     for (rank, slot) in order.iter().enumerate() {
@@ -926,7 +1169,7 @@ fn order_ranks(slot_count: usize, order: &[u32]) -> Vec<u32> {
     }
     ranks
 }
-fn same_natural_path(entries: &[Arc<IndexedFile>], first: u32, second: u32) -> bool {
+fn same_natural_path(entries: &EntryTable, first: u32, second: u32) -> bool {
     crate::query::natural_cmp_folded(
         &entries[first as usize].folded_path,
         &entries[second as usize].folded_path,
@@ -953,7 +1196,7 @@ fn updated_path_ties(
     previous: &SearchSnapshot,
     changed: &RoaringBitmap,
     live: &RoaringBitmap,
-    entries: &[Arc<IndexedFile>],
+    entries: &EntryTable,
     order: &[u32],
     ranks: &[u32],
 ) -> RoaringBitmap {
@@ -1150,6 +1393,19 @@ impl IndexStore {
         self.connection.execute("INSERT INTO settings(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value WHERE settings.value!=excluded.value",params![key,value.to_string()]).map_err(|error| error.to_string())?;
         Ok(())
     }
+    pub(crate) fn set_preferences(
+        &self,
+        values: &serde_json::Map<String, Value>,
+    ) -> Result<(), String> {
+        let transaction = self
+            .connection
+            .unchecked_transaction()
+            .map_err(|error| error.to_string())?;
+        for (key, value) in values {
+            self.set(key, value)?;
+        }
+        transaction.commit().map_err(|error| error.to_string())
+    }
     pub(crate) fn directory_is_covered(&self, path: &str) -> Result<bool, String> {
         self.connection
             .query_row(
@@ -1323,13 +1579,12 @@ impl IndexStore {
                 };
                 let mut paths = Vec::new();
                 for ((volume_id, file_id), force) in objects {
-                    if !force {
-                        if let Some(verified_objects) = verified_objects.as_deref_mut() {
-                            if verified_objects.contains(&volume_id, file_id) {
-                                verified_objects.reused += 1;
-                                continue;
-                            }
-                        }
+                    if !force
+                        && let Some(verified_objects) = verified_objects.as_deref_mut()
+                        && verified_objects.contains(&volume_id, file_id)
+                    {
+                        verified_objects.reused += 1;
+                        continue;
                     }
                     if !visited_objects.insert((volume_id.clone(), file_id)) {
                         continue;
@@ -1408,11 +1663,9 @@ impl IndexStore {
         transaction.commit().map_err(|error| error.to_string())?;
         // Only durable successful verification may influence a later batch.
         // This set belongs to one reconcile call, never another event drain.
-        if verification_complete {
-            if let Some(verified_objects) = verified_objects {
-                for (volume, file_id) in visited_objects.intersection(&cacheable_objects) {
-                    verified_objects.confirm(volume, *file_id);
-                }
+        if verification_complete && let Some(verified_objects) = verified_objects {
+            for (volume, file_id) in visited_objects.intersection(&cacheable_objects) {
+                verified_objects.confirm(volume, *file_id);
             }
         }
         Ok(changed)
@@ -1752,6 +2005,23 @@ impl IndexStore {
     }
     pub fn entries(&self) -> Result<Vec<IndexedFile>, String> {
         self.read_entries("1")
+    }
+    pub(crate) fn snapshot(&self, generation: u64) -> Result<SearchSnapshot, String> {
+        let sql = format!(
+            "SELECT f.id,{} FROM files f LEFT JOIN content c ON f.path=c.path WHERE f.accessible=1 ORDER BY f.id",
+            change_reader::COLUMNS
+        );
+        let mut statement = self
+            .connection
+            .prepare(&sql)
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([], change_reader::decode_file)
+            .map_err(|error| error.to_string())?;
+        SearchSnapshot::from_rows(
+            rows.map(|row| row.map_err(|error| error.to_string())),
+            generation,
+        )
     }
     fn read_entries(&self, predicate: &str) -> Result<Vec<IndexedFile>, String> {
         let sql = format!(

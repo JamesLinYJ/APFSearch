@@ -243,7 +243,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     var currentStatus: [String: Any] = [:]
     var queryWarnings: [String] = []
     var roots: [String] = []
-    var queryTimer: Timer?
+    var pendingQuery: DispatchWorkItem?
     var historyTimer: Timer?
     let statusRequestID = UUID().uuidString
     var elapsed: Double = 0
@@ -323,7 +323,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     deinit {
-        progressDelay?.invalidate(); queryTimer?.invalidate(); historyTimer?.invalidate()
+        progressDelay?.invalidate(); pendingQuery?.cancel(); pendingQuery = nil; historyTimer?.invalidate()
         if offlineListID == nil { SearchClient.shared.call(["op": "cancel", "request_id": statusRequestID]) { _ in } }
         liveScrollObservers.forEach { NotificationCenter.default.removeObserver($0) }
     }
@@ -592,12 +592,18 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         pendingInputStartedAt = ProcessInfo.processInfo.systemUptime
         resultsAreCurrent = false
         cancelQueries(); querySequence += 1
-        queryTimer?.invalidate()
-        queryTimer = Timer.scheduledTimer(withTimeInterval: 0.016, repeats: false) { [weak self] _ in
-            guard let self else { return }
+        pendingQuery?.cancel(); pendingQuery = nil
+        let sequence = querySequence
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.querySequence == sequence, self.pendingQuery != nil else { return }
+            self.pendingQuery = nil
             if let editor = self.search.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
             self.runQuery()
         }
+        pendingQuery = work
+        // Coalesce notifications from the current event without imposing a
+        // fixed delay. Input invalidates older replies before this work runs.
+        DispatchQueue.main.async(execute: work)
     }
     @objc func focusSearch(_ sender: Any?) { searchToolbarItem?.beginSearchInteraction(); window?.makeFirstResponder(search); search.selectText(nil) }
     @objc func preferencesChanged(_ notification: Notification) { refreshShortcuts(); runQuery() }
@@ -614,7 +620,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     }
     func runQuery() {
         if let editor = search.currentEditor() as? NSTextView, editor.hasMarkedText() { return }
-        queryTimer?.invalidate()
+        pendingQuery?.cancel(); pendingQuery = nil
         queryStartedFromInput = pendingInputStartedAt != nil
         queryStartedAt = pendingInputStartedAt ?? ProcessInfo.processInfo.systemUptime
         pendingInputStartedAt = nil
@@ -740,7 +746,13 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
                 animatedStructure = true
             }
         }
-        if oldCount != count && !animatedStructure { table.noteNumberOfRowsChanged() }
+        if oldCount != count && !animatedStructure {
+            table.noteNumberOfRowsChanged()
+            // AppKit binds newly added rows from the updated data source. Only
+            // surviving rows can still contain cells from the previous result.
+            // Reloading new rows discards cells that AppKit just created.
+            if count > oldCount { changes.remove(integersIn: oldCount..<count) }
+        }
         let visible = table.rows(in: table.visibleRect)
         if visible.location != NSNotFound && visible.length > 0 {
             let upper = min(count, visible.location + visible.length)
@@ -1482,7 +1494,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         return true
     }
     func windowWillClose(_ notification: Notification) {
-        progressDelay?.invalidate(); queryTimer?.invalidate(); historyTimer?.invalidate()
+        progressDelay?.invalidate(); pendingQuery?.cancel(); pendingQuery = nil; historyTimer?.invalidate()
         operationReviewPending = false
         stopStatusObservation(); cancelQueries(); cancelBackground(nil)
         let closing = duplicateWindows; duplicateWindows.removeAll()

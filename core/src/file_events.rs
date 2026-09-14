@@ -2,13 +2,13 @@
 use crate::filesystem::{c_array_string, mounted_filesystems, path_string};
 use std::{
     collections::{HashMap, HashSet},
-    ffi::{c_char, c_void, CStr},
+    ffi::{CStr, c_char, c_void},
     io,
     path::Path,
     ptr::{self, NonNull},
     sync::{
-        atomic::{AtomicBool, Ordering},
         Mutex,
+        atomic::{AtomicBool, Ordering},
     },
 };
 

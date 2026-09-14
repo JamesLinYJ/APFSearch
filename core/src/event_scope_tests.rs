@@ -29,14 +29,18 @@ fn inode_plan(engine: &SearchEngine, root: &str, path: &str) -> scanner::Reconci
 }
 fn apply(engine: &SearchEngine, root: &str, plan: &scanner::Reconciliation) {
     if !plan.recursive.is_empty() {
-        assert!(engine
-            .reconcile(&plan.recursive, &[root.into()], 42, true, false)
-            .unwrap());
+        assert!(
+            engine
+                .reconcile(&plan.recursive, &[root.into()], 42, true, false)
+                .unwrap()
+        );
     }
     if !plan.metadata.is_empty() {
-        assert!(engine
-            .reconcile(&plan.metadata, &[root.into()], 42, false, false)
-            .unwrap());
+        assert!(
+            engine
+                .reconcile(&plan.metadata, &[root.into()], 42, false, false)
+                .unwrap()
+        );
     }
 }
 #[test]
@@ -90,15 +94,17 @@ fn missing_child_below_a_replaced_symlink_stays_uncovered() {
         scan(&engine, &root);
         std::fs::rename(&selected, temporary.path().join("held")).unwrap();
         std::os::unix::fs::symlink(&outside, &selected).unwrap();
-        assert!(engine
-            .reconcile(
-                std::slice::from_ref(&child),
-                std::slice::from_ref(&root),
-                42,
-                recursive,
-                false
-            )
-            .unwrap());
+        assert!(
+            engine
+                .reconcile(
+                    std::slice::from_ref(&child),
+                    std::slice::from_ref(&root),
+                    42,
+                    recursive,
+                    false
+                )
+                .unwrap()
+        );
         let status = engine.call(json!({"op":"status"}));
         assert_eq!(status["uncovered"], json!([child]), "{status}");
         assert_eq!(
@@ -356,15 +362,17 @@ fn a_removed_alias_commits_as_deletion_without_poisoning_coverage_or_stopping_re
     std::fs::hard_link(&first, &second).unwrap();
     scan(&engine, &root);
     std::fs::remove_file(&second).unwrap();
-    assert!(engine
-        .reconcile(
-            std::slice::from_ref(&first),
-            std::slice::from_ref(&root),
-            44,
-            true,
-            false
-        )
-        .unwrap());
+    assert!(
+        engine
+            .reconcile(
+                std::slice::from_ref(&first),
+                std::slice::from_ref(&root),
+                44,
+                true,
+                false
+            )
+            .unwrap()
+    );
     assert_eq!(
         engine.call(json!({"op":"query","text":"second.txt"}))["total"],
         0
@@ -464,15 +472,17 @@ fn unchanged_event_for_one_hardlink_repairs_an_older_alias_from_a_previous_batch
         .unwrap()
         .observe_batch(std::slice::from_ref(&current_second), None, None, None)
         .unwrap();
-    assert!(engine
-        .reconcile(
-            std::slice::from_ref(&second),
-            std::slice::from_ref(&root),
-            44,
-            true,
-            false
-        )
-        .unwrap());
+    assert!(
+        engine
+            .reconcile(
+                std::slice::from_ref(&second),
+                std::slice::from_ref(&root),
+                44,
+                true,
+                false
+            )
+            .unwrap()
+    );
     let rows = engine.call(json!({"op":"query","text":"ext:txt"}));
     for row in rows["rows"].as_array().unwrap() {
         assert_eq!(row["size"], 16);
@@ -506,14 +516,16 @@ fn event_scopes_never_follow_a_replaced_intermediate_directory() {
         apply(&engine, &root, &plan);
         let results = engine.call(json!({"op":"query","text":"private.txt"}));
         assert_eq!(results["total"], 0, "flags={flags:x}: {results}");
-        assert!(engine
-            .index_store
-            .lock()
-            .unwrap()
-            .entries()
-            .unwrap()
-            .iter()
-            .all(|entry| Path::new(&entry.path).starts_with(&root)));
+        assert!(
+            engine
+                .index_store
+                .lock()
+                .unwrap()
+                .entries()
+                .unwrap()
+                .iter()
+                .all(|entry| Path::new(&entry.path).starts_with(&root))
+        );
 
         std::fs::remove_file(&branch).unwrap();
         std::fs::rename(temporary.path().join("original-branch"), &branch).unwrap();

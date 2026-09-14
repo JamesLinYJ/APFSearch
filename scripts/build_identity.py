@@ -50,7 +50,7 @@ def prepare_bundle(bundle):
     info.update({
         'CFBundleName': IDENTITY['applicationExecutable'], 'CFBundleIdentifier': IDENTITY['bundleIdentifier'],
         'CFBundleDevelopmentRegion': 'en', 'CFBundleLocalizations': catalog_languages(),
-        'CFBundleVersion': '1', 'CFBundleShortVersionString': '0.1.0',
+        'CFBundleVersion': '1', 'CFBundleShortVersionString': '0.1.1',
         'CFBundleExecutable': IDENTITY['applicationExecutable'], 'CFBundlePackageType': 'APPL',
         'CFBundleIconFile': 'AppIcon',
         'LSMinimumSystemVersion': MINIMUM_MACOS_VERSION, 'NSHighResolutionCapable': True,
@@ -60,8 +60,10 @@ def prepare_bundle(bundle):
     agents = contents / 'Library/LaunchAgents'
     agents.mkdir(parents=True, exist_ok=True)
     label = IDENTITY['serviceIdentifier']
+    # Searches are user-requested work. Let launchd account for XPC activity
+    # instead of permanently throttling the service as unattended background work.
     agent = {'Label': label, 'BundleProgram': 'Contents/MacOS/' + IDENTITY['serviceExecutable'],
-             'MachServices': {label: True}, 'RunAtLoad': True, 'ProcessType': 'Background'}
+             'MachServices': {label: True}, 'RunAtLoad': True, 'ProcessType': 'Adaptive'}
     (agents / (label + '.plist')).write_bytes(plistlib.dumps(agent))
 
 

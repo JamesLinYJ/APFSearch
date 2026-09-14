@@ -1,6 +1,6 @@
 //! Read only journaled primary keys, including tombstones, in one ordered join.
 use super::{IndexedFile, SnapshotDelta};
-use rusqlite::{types::ValueRef, Connection, Row};
+use rusqlite::{Connection, Row, types::ValueRef};
 use serde_json::json;
 
 pub(super) const COLUMNS: &str = "f.path,f.name,f.extension,f.size,f.modified,f.created,f.changed,f.is_dir,f.is_symlink,f.file_id,f.parent_id,f.volume_id,f.flags,COALESCE(c.properties,'{}'),f.modified_ns,f.changed_ns,c.path IS NOT NULL";
@@ -10,7 +10,7 @@ pub(super) fn decode_file(row: &Row<'_>) -> rusqlite::Result<IndexedFile> {
         id: row.get(0)?,
         path: row.get(1)?,
         name: row.get(2)?,
-        extension: row.get(3)?,
+        extension: row.get_ref(3)?.as_str()?.into(),
         size: row.get::<_, i64>(4)? as u64,
         modified: row.get(5)?,
         created: row.get(6)?,
@@ -19,14 +19,14 @@ pub(super) fn decode_file(row: &Row<'_>) -> rusqlite::Result<IndexedFile> {
         is_symlink: row.get(9)?,
         file_id: row.get::<_, i64>(10)? as u64,
         parent_id: row.get::<_, i64>(11)? as u64,
-        volume_id: row.get(12)?,
+        volume_id: row.get_ref(12)?.as_str()?.into(),
         flags: row.get(13)?,
         properties: serde_json::from_str(&row.get::<_, String>(14)?).unwrap_or(json!({})),
         modified_ns: row.get(15)?,
         changed_ns: row.get(16)?,
         content_indexed: row.get(17)?,
         folded_name: Default::default(),
-        folded_extension: String::new(),
+        folded_extension: Default::default(),
         folded_path: Default::default(),
         search_name: Default::default(),
         search_path: Default::default(),

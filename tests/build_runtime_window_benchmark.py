@@ -13,6 +13,7 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 import tempfile
 from test_bundle import create_test_bundle
 
@@ -37,7 +38,7 @@ patches = [
 if args.phase_timing:
     patches += [
         ('    func controlTextDidChange(_ obj: Notification) {', '    func controlTextDidChange(_ obj: Notification) {\n        WindowBenchmarkPhases.mark("input_handler_enter")', 'Timestamp the production input handler'),
-        ('    func runQuery() {', '    func runQuery() {\n        WindowBenchmarkPhases.mark("run_query_enter")', 'Timestamp actual debounce completion and query entry'),
+        ('    func runQuery() {', '    func runQuery() {\n        WindowBenchmarkPhases.mark("run_query_enter")', 'Timestamp scheduled input completion and query entry'),
         ('        updateStatus(); requestPage(0)', '        updateStatus(); WindowBenchmarkPhases.mark("query_status_ready"); requestPage(0)', 'Timestamp pre-request status work'),
         ('''        SearchClient.shared.call(request) { [weak self] reply in
             let incomingLease = (reply["snapshot_lease"] as? String).map { SearchSnapshotLease(token: $0, listID: leaseListID) }
@@ -78,6 +79,7 @@ command += ['-o', str(executable)]
 subprocess.run(command, check=True)
 app = work / 'RuntimeWindowBenchmark.app'
 bundled_executable = create_test_bundle(executable, app)
+signature_identifier = subprocess.check_output([sys.executable, str(project / 'scripts/build_identity.py'), 'cliIdentifier'], text=True).strip()
 receipt = {
     'built_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
     'app_source_sha256': source_hash,
@@ -86,10 +88,10 @@ receipt = {
     'test_only_transformations': [description for _, _, description in patches],
     'transport': 'Unmodified macos/SearchClient.swift, real authenticated Mach XPC',
     'phase_timing_enabled': args.phase_timing,
-    'defaults': 'Unique test bundle identifier; signature identifier is org.apfsearch.cli for existing service authentication',
+    'defaults': f'Unique test bundle identifier; signature identifier is {signature_identifier} for service authentication',
     'compiler_command': command,
 }
 (app / 'Contents/Resources/build-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
-subprocess.run(['codesign', '--force', '--options', 'runtime', '--timestamp=none', '--identifier', 'org.apfsearch.cli', '--sign', args.identity, str(app)], check=True)
+subprocess.run(['codesign', '--force', '--options', 'runtime', '--timestamp=none', '--identifier', signature_identifier, '--sign', args.identity, str(app)], check=True)
 subprocess.run(['codesign', '--verify', '--strict', str(app)], check=True)
 print(json.dumps({'app': str(app), 'executable': str(bundled_executable), 'app_source_sha256': source_hash, 'launched': False}, indent=2))

@@ -1,5 +1,5 @@
-use apfsearch_core::{index_store::IndexStore, SearchEngine};
-use serde_json::{json, Value};
+use apfsearch_core::{SearchEngine, index_store::IndexStore};
+use serde_json::{Value, json};
 use std::{
     sync::Arc,
     time::{Duration, Instant},
@@ -249,15 +249,19 @@ fn property_queries_use_only_declared_fields() {
     }
     assert_eq!(file.properties, before);
     file.properties["author"] = json!("Corrected Author");
-    assert!(!query::parse("author:document", &HashMap::new())
-        .unwrap()
-        .matches(&file, None)
-        .unwrap());
+    assert!(
+        !query::parse("author:document", &HashMap::new())
+            .unwrap()
+            .matches(&file, None)
+            .unwrap()
+    );
     file.extension = "mp3".into();
     file.properties.as_object_mut().unwrap().remove("author");
     file.properties["artist"] = json!("Document Author");
-    assert!(!query::parse("author:document", &HashMap::new())
-        .unwrap()
-        .matches(&file, None)
-        .unwrap());
+    assert!(
+        !query::parse("author:document", &HashMap::new())
+            .unwrap()
+            .matches(&file, None)
+            .unwrap()
+    );
 }

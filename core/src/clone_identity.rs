@@ -17,9 +17,9 @@ pub(crate) fn read(file: &File) -> Option<u64> {
         forkattr: 0x100, // ATTR_CMNEXT_CLONEID, sys/attr.h
     };
     let mut bytes = [0u8; 32]; // length + five returned masks + u64 clone ID
-                               // fgetattrlist borrows an already identity-checked, no-follow descriptor.
-                               // The kernel writes at most the supplied buffer length; parsing below uses
-                               // checked slices, not references to packed or unaligned integers.
+    // fgetattrlist borrows an already identity-checked, no-follow descriptor.
+    // The kernel writes at most the supplied buffer length; parsing below uses
+    // checked slices, not references to packed or unaligned integers.
     let result = unsafe {
         libc::fgetattrlist(
             file.as_raw_fd(),

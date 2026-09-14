@@ -1,8 +1,8 @@
 //! Small, real publication-path tests for snapshot ownership. Weak references
 //! observe destruction without keeping a snapshot alive themselves.
-use crate::{index_store::SearchSnapshot, scanner::ScannedFile, SearchEngine};
+use crate::{SearchEngine, index_store::SearchSnapshot, scanner::ScannedFile};
 use roaring::RoaringTreemap;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{Arc, Weak};
 
 fn fixture() -> (tempfile::TempDir, Arc<SearchEngine>, Vec<ScannedFile>) {
@@ -137,9 +137,11 @@ fn delete_middle_incrementally(engine: &Arc<SearchEngine>, files: &[ScannedFile]
         SearchSnapshot::remap_reason(&[], &snapshot),
         Some("inactive_slots_require_compaction")
     );
-    assert!(snapshot
-        .visible_entries()
-        .all(|entry| entry.path != files[1].path));
+    assert!(
+        snapshot
+            .visible_entries()
+            .all(|entry| entry.path != files[1].path)
+    );
     assert_only_live_rows(engine, 2);
 }
 fn assert_only_live_rows(engine: &Arc<SearchEngine>, count: usize) {
@@ -204,10 +206,13 @@ fn publish_boundary(engine: &Arc<SearchEngine>, files: &mut [ScannedFile], bound
             let snapshot = engine.snapshot.load_full();
             assert_eq!(snapshot.len(), 2);
             assert_eq!(snapshot.entries.len(), 2);
-            assert!(snapshot
-                .entries
-                .windows(2)
-                .all(|pair| pair[0].id < pair[1].id));
+            assert!(
+                snapshot
+                    .entries
+                    .iter()
+                    .zip(snapshot.entries.iter().skip(1))
+                    .all(|(first, second)| first.id < second.id)
+            );
             assert_only_live_rows(engine, 2);
         }
     }

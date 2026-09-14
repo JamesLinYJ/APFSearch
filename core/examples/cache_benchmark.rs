@@ -1,7 +1,7 @@
 //! Isolated synthetic-cache comparison. Does not scan files or start a watcher.
 use apfsearch_core::{
-    index_store::{IndexStore, IndexedFile, SearchSnapshot},
     SearchEngine,
+    index_store::{IndexStore, IndexedFile, SearchSnapshot},
 };
 use serde_json::json;
 use std::{

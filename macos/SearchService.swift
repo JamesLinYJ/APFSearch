@@ -182,15 +182,17 @@ final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtoco
         reply(jsonData(localizedErrorResponse(LT("error.offline_list_read_only"))))
         return
       }
-      guard let list = offlineEngine(id) else {
-        reply(jsonData(localizedErrorResponse(LT("error.offline_list_not_found"))))
-        return
-      }
-      if op == "export_list" {
-        scheduleExport(req, source: list, reply: reply)
-        return
-      }
+      // Opening an imported index can restore millions of records. Keep that
+      // work off the XPC request handler and in the same QoS as its query.
       DispatchQueue.global(qos: .userInitiated).async {
+        guard let list = self.offlineEngine(id) else {
+          reply(jsonData(localizedErrorResponse(LT("error.offline_list_not_found"))))
+          return
+        }
+        if op == "export_list" {
+          self.scheduleExport(req, source: list, reply: reply)
+          return
+        }
         if (op == "query" || op == "retain_snapshot") && req["generation"] == nil && req["snapshot_lease"] == nil {
           self.syncOfflinePreferences(list)
         }

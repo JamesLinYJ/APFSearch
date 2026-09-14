@@ -261,9 +261,11 @@ fn cache_write_failure_keeps_committed_results_available_and_reports_cache_error
     );
     assert_eq!(store.entries().unwrap().len(), 2);
     let failed = engine.call(json!({"op":"status"}));
-    assert!(failed["cache_error"]
-        .as_str()
-        .is_some_and(|text| !text.is_empty()));
+    assert!(
+        failed["cache_error"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
     assert_ne!(failed["state"], "error");
     assert!(store.cache_is_dirty());
     std::fs::remove_dir(&store.cache_path).unwrap();

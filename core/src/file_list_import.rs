@@ -1,12 +1,12 @@
 //! Bounded offline imports. A temporary SQL table keeps failed or unfinished
 //! imports out of both live queries and persistent snapshots.
-use crate::{scanner::ScannedFile, RequestGuard, SearchEngine};
-use serde_json::{json, Value};
+use crate::{RequestGuard, SearchEngine, scanner::ScannedFile};
+use serde_json::{Value, json};
 use std::{
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
 };
 
@@ -119,15 +119,14 @@ impl SearchEngine {
             return Err("Invalid import request_id".into());
         }
         let token = Arc::new(AtomicBool::new(false));
-        if let Some(id) = &id {
-            if let Some(previous) = self
+        if let Some(id) = &id
+            && let Some(previous) = self
                 .requests
                 .lock()
                 .unwrap()
                 .insert(id.clone(), token.clone())
-            {
-                previous.store(true, Ordering::Release);
-            }
+        {
+            previous.store(true, Ordering::Release);
         }
         let _guard = RequestGuard {
             requests: &self.requests,

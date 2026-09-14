@@ -42,7 +42,7 @@ extension SearchWindowTests {
         status?.completion(["success": true, "status_revision": 8, "roots": ["/UIRegression"]])
         await pump()
         check("closed_status_observer_drops_late_reply_without_rearming", c.currentStatus["status_revision"] as? Int == 7 && SearchClient.shared.take("wait_status") == nil && !c.statusRequestPending)
-        c.cancelQueries(); c.queryTimer?.invalidate(); c.historyTimer?.invalidate()
+        c.cancelQueries(); c.pendingQuery?.cancel(); c.pendingQuery = nil; c.historyTimer?.invalidate()
         SearchClient.shared.clear()
 
         let groups = (0..<105).map { group -> [String: Any] in

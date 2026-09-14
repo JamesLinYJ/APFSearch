@@ -4,7 +4,7 @@ APFSearch (All-Purpose File Search) is a macOS file search application under act
 
 ## Architecture
 
-- `core/`: idiomatic Rust for APFS metadata traversal, FSEvents, SQLite persistence, immutable search snapshots, query evaluation, and the C ABI. Keep `unsafe` small, document its invariants, and encapsulate it behind safe APIs.
+- `core/`: idiomatic Rust, Edition 2024, for APFS metadata traversal, FSEvents, SQLite persistence, immutable search snapshots, query evaluation, and the C ABI. Keep `unsafe` small, document its invariants, and encapsulate it behind safe APIs.
 - `macos/`: Swift with AppKit for the main interface, SwiftUI for settings, and a versioned XPC interface shared by the app and CLI. Keep search semantics in the shared service/core.
 - `Resources/`: String Catalogs with stable semantic keys. English is the development and fallback language; preserve native Bundle localization and regional formatting.
 - `tests/`: isolated fixtures and integration harnesses. Separate fixture results from installed-app, foreground UI, full-volume, and performance validation.

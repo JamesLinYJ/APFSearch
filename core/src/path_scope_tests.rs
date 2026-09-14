@@ -160,17 +160,21 @@ fn normalization_cancellation_never_returns_a_partial_scope_set() {
     assert!(scanner::compact_roots(roots.clone(), || true).is_none());
     assert!(scanner::normalize_roots_until(&roots, || true).is_none());
     let calls = Cell::new(0usize);
-    assert!(scanner::compact_roots(roots.clone(), || {
-        calls.set(calls.get() + 1);
-        calls.get() >= 7
-    })
-    .is_none());
+    assert!(
+        scanner::compact_roots(roots.clone(), || {
+            calls.set(calls.get() + 1);
+            calls.get() >= 7
+        })
+        .is_none()
+    );
     assert_eq!(calls.get(), 7);
     let calls = Cell::new(0usize);
-    assert!(scanner::normalize_roots_until(&roots, || {
-        calls.set(calls.get() + 1);
-        calls.get() >= 6
-    })
-    .is_none());
+    assert!(
+        scanner::normalize_roots_until(&roots, || {
+            calls.set(calls.get() + 1);
+            calls.get() >= 6
+        })
+        .is_none()
+    );
     assert_eq!(calls.get(), 6);
 }

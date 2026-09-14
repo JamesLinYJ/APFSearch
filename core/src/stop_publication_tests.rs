@@ -162,15 +162,17 @@ fn stop_after_committed_batch_defers_publication_but_preserves_recoverable_chang
         }
         engine.stop.store(false, Ordering::Relaxed);
         engine.scan_cancel.store(false, Ordering::Relaxed);
-        assert!(engine
-            .reconcile(
-                std::slice::from_ref(&root),
-                std::slice::from_ref(&root),
-                cursor + 1,
-                true,
-                false
-            )
-            .unwrap());
+        assert!(
+            engine
+                .reconcile(
+                    std::slice::from_ref(&root),
+                    std::slice::from_ref(&root),
+                    cursor + 1,
+                    true,
+                    false
+                )
+                .unwrap()
+        );
         let after = engine.snapshot.load_full();
         assert!(after.generation > before.generation);
         assert_eq!(

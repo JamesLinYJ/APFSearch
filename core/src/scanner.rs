@@ -14,9 +14,9 @@ use std::{
     collections::{HashSet, VecDeque},
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{sync_channel, SyncSender},
         Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{SyncSender, sync_channel},
     },
 };
 
@@ -281,17 +281,17 @@ fn lexical_path(path: &str) -> PathBuf {
 pub fn visible_path(path: &str) -> String {
     let out = lexical_path(path);
     for link in firmlinks() {
-        if let Ok(suffix) = out.strip_prefix(&link.physical) {
-            if same_firmlink_object(link) {
-                return if suffix.as_os_str().is_empty() {
-                    link.logical.clone()
-                } else {
-                    Path::new(&link.logical)
-                        .join(suffix)
-                        .to_string_lossy()
-                        .into_owned()
-                };
-            }
+        if let Ok(suffix) = out.strip_prefix(&link.physical)
+            && same_firmlink_object(link)
+        {
+            return if suffix.as_os_str().is_empty() {
+                link.logical.clone()
+            } else {
+                Path::new(&link.logical)
+                    .join(suffix)
+                    .to_string_lossy()
+                    .into_owned()
+            };
         }
     }
     out.to_string_lossy().into_owned()
@@ -427,10 +427,9 @@ fn normalize_paths(
                     if let Some((parent, name)) = Path::new(&visible)
                         .parent()
                         .zip(Path::new(&visible).file_name())
+                        && let Ok(real) = std::fs::canonicalize(parent)
                     {
-                        if let Ok(real) = std::fs::canonicalize(parent) {
-                            return visible_path(&real.join(name).to_string_lossy());
-                        }
+                        return visible_path(&real.join(name).to_string_lossy());
                     }
                     return visible;
                 }
@@ -612,7 +611,7 @@ pub(crate) fn scan_excluding_in_namespace(
                 uncovered: roots.to_vec(),
                 errors: vec![format!("Could not inspect mounted filesystems: {error}")],
                 ..Default::default()
-            }
+            };
         }
     };
     scan_excluding_with_scope(roots, configured, excluded, cancelled, &scope, on_batch)
@@ -1160,38 +1159,46 @@ mod tests {
             report.excluded_mounts,
             vec![remote.to_string_lossy().into_owned()]
         );
-        assert!(current
-            .iter()
-            .all(|file| !Path::new(&file.path).starts_with(&remote)));
+        assert!(
+            current
+                .iter()
+                .all(|file| !Path::new(&file.path).starts_with(&remote))
+        );
         store.batch(&current, 2).unwrap();
         store.finish(&roots, &report.excluded_mounts, 2, 0).unwrap();
         let old_path = remote.join("old-local.txt").to_string_lossy().into_owned();
-        assert!(!store
-            .connection
-            .query_row(
-                "SELECT accessible FROM files WHERE path=?1",
-                [&old_path],
-                |row| row.get::<_, bool>(0)
-            )
-            .unwrap());
-        assert!(store
-            .entries()
-            .unwrap()
-            .iter()
-            .all(|file| file.path != old_path));
+        assert!(
+            !store
+                .connection
+                .query_row(
+                    "SELECT accessible FROM files WHERE path=?1",
+                    [&old_path],
+                    |row| row.get::<_, bool>(0)
+                )
+                .unwrap()
+        );
+        assert!(
+            store
+                .entries()
+                .unwrap()
+                .iter()
+                .all(|file| file.path != old_path)
+        );
         // The same indexed identity becomes available when the local mount
         // returns; it was never deleted by the scope exclusion.
         store.batch(&original, 3).unwrap();
-        assert!(store
-            .entries()
-            .unwrap()
-            .iter()
-            .any(|file| file.path == old_path));
+        assert!(
+            store
+                .entries()
+                .unwrap()
+                .iter()
+                .any(|file| file.path == old_path)
+        );
     }
     use std::{
         collections::BTreeMap,
         fs,
-        os::unix::fs::{symlink, MetadataExt, PermissionsExt},
+        os::unix::fs::{MetadataExt, PermissionsExt, symlink},
         time::{Duration, Instant},
     };
     fn collect(root: &Path) -> (BTreeMap<String, ScannedFile>, ScanReport) {
@@ -1394,9 +1401,11 @@ mod tests {
                 .map(|(path, entry)| (path.clone(), (entry.file_id, entry.size, entry.modified_ns)))
                 .collect();
             assert_eq!(actual, independent);
-            assert!(actual
-                .keys()
-                .all(|candidate| candidate.starts_with(DATA_ROOT)));
+            assert!(
+                actual
+                    .keys()
+                    .all(|candidate| candidate.starts_with(DATA_ROOT))
+            );
             checked.push(json!({"root":path,"entries":actual.len(),"metadata_blake3":blake3::hash(&serde_json::to_vec(&actual).unwrap()).to_hex().to_string()}));
         }
         if let Ok(output) = std::env::var("APF_FIRMLINK_OUTPUT") {
@@ -1722,10 +1731,11 @@ mod tests {
             &configured,
             &[ChangeEvent::from_flags(SYSTEM_VOLUMES, 42, 0x01)],
         );
-        assert!(plan
-            .recursive
-            .iter()
-            .all(|path| path_in_namespace(path, &configured)));
+        assert!(
+            plan.recursive
+                .iter()
+                .all(|path| path_in_namespace(path, &configured))
+        );
         assert!(!plan.recursive.contains(&"/".into()));
         assert!(!plan.recursive.contains(&SYSTEM_VOLUMES.into()));
     }
@@ -1737,9 +1747,11 @@ mod tests {
             .iter()
             .find(|link| link.logical == "/Users" && same_firmlink_object(link))
             .expect("this APFS host has the verified Users firmlink");
-        assert!(roots
-            .iter()
-            .any(|root| Path::new(&link.logical).starts_with(root)));
+        assert!(
+            roots
+                .iter()
+                .any(|root| Path::new(&link.logical).starts_with(root))
+        );
         let (_, excluded) = enumeration_scope(&roots, &roots, &[]);
         assert!(
             excluded.contains(&link.physical),

@@ -1,15 +1,15 @@
 //! Real APFS fixture validation. Changes only isolated temporary files below work/.
-use apfsearch_core::{scanner, SearchEngine};
-use serde_json::{json, Value};
+use apfsearch_core::{SearchEngine, scanner};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs,
-    os::unix::fs::{symlink, MetadataExt},
+    os::unix::fs::{MetadataExt, symlink},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -98,7 +98,7 @@ fn discrepancy(
             Some(actual) if actual != want => {
                 return Ok(Some(format!(
                     "Metadata differs for {path}: {actual:?} expected {want:?}"
-                )))
+                )));
             }
             _ => (),
         }

@@ -1,40 +1,52 @@
 //! Thread-safe C ABI. All JSON operations share the same engine used by the GUI and CLI.
 //! Callers must not close an engine handle while another thread is entering apfsearch_engine_call.
+mod bitmap_builder;
+mod chunked_vec;
 mod clone_identity;
 #[cfg(all(test, target_os = "macos"))]
 mod content_read_tests;
+mod cpu_executor;
 mod duplicates;
 mod file_events;
 mod file_identity;
 mod file_list_import;
 mod filesystem;
 pub mod index_store;
+mod label_pool;
 mod metadata_postings;
+mod name_column;
 mod numeric_columns;
 #[cfg(test)]
 mod numeric_columns_tests;
 #[cfg(test)]
 mod numeric_profile_tests;
+#[cfg(test)]
+mod ordered_page;
+#[cfg(test)]
+mod preferences_tests;
 pub mod query;
 #[cfg(test)]
 mod query_cache_tests;
+#[cfg(test)]
+mod query_latency_tests;
 mod relations;
 mod result_order;
 mod scan_resume;
 pub mod scanner;
+pub mod shared_text;
 mod snapshot_cache;
 mod snapshot_leases;
 mod status_signal;
 use arc_swap::ArcSwap;
 use index_store::{IndexStore, IndexedFile, SearchSnapshot};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    ffi::{c_char, c_void, CStr, CString},
+    ffi::{CStr, CString, c_char, c_void},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, RwLock, Weak,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -102,19 +114,19 @@ impl SearchEngine {
             .get("content_revision", json!(0))
             .as_u64()
             .unwrap_or(0);
-        let (mut snapshot, needs_cache_rebuild) =
-            if let Some((snapshot, _)) = index_store.cache_read() {
-                (snapshot, false)
-            } else {
+        let (mut snapshot, needs_cache_rebuild) = match index_store.cache_read() {
+            Some((snapshot, _)) => (snapshot, false),
+            _ => {
                 // Cache damage or removal must schedule a replacement even when no
                 // file metadata changed since the last successful checkpoint.
                 if !index_store.cache_is_dirty() {
                     index_store.set("cache_dirty", &json!(true))?;
                 }
-                let snapshot = SearchSnapshot::new(index_store.entries()?, generation);
+                let snapshot = index_store.snapshot(generation)?;
                 let needs_rebuild = !snapshot.is_empty();
                 (snapshot, needs_rebuild)
-            };
+            }
+        };
         index_store.clear_changes(revision)?;
         let roots = index_store.get("roots", json!([]));
         let uncovered = index_store.get("uncovered", json!([]));
@@ -162,10 +174,11 @@ impl SearchEngine {
             index_directory,
             leases: snapshot_leases::SnapshotLeases::default(),
         });
-        if resume && roots.as_array().is_some_and(|r| !r.is_empty()) {
-            if let Err(error) = engine.start_worker(&json!({"roots":roots,"watch":true}), true) {
-                engine.state.lock().unwrap()["errors"] = json!([error]);
-            }
+        if resume
+            && roots.as_array().is_some_and(|r| !r.is_empty())
+            && let Err(error) = engine.start_worker(&json!({"roots":roots,"watch":true}), true)
+        {
+            engine.state.lock().unwrap()["errors"] = json!([error]);
         }
         if needs_cache_rebuild && !(resume && roots.as_array().is_some_and(|r| !r.is_empty())) {
             // Make SQL-restored results available before rebuilding the large
@@ -263,7 +276,7 @@ impl SearchEngine {
                     .get("content_revision", json!(0))
                     .as_u64()
                     .unwrap_or(0);
-                SearchSnapshot::new(index_store.entries()?, generation)
+                index_store.snapshot(generation)?
             }
         };
         snapshot.content_revision = content_revision;
@@ -532,42 +545,55 @@ impl SearchEngine {
         }
     }
     fn preferences(&self, request: &Value) -> Result<Value, String> {
-        let index_store = self.index_store.lock().unwrap();
-        let allowed = ["macros", "bookmarks", "exclusions", "history", "settings"];
-        if let Some(values) = request
+        let values = request
             .get("set")
             .or_else(|| {
-                if request["action"] == "set" {
-                    request.get("values")
-                } else {
-                    None
-                }
+                (request["action"] == "set")
+                    .then(|| request.get("values"))
+                    .flatten()
             })
-            .and_then(Value::as_object)
-        {
-            for (key, value) in values {
-                if !allowed.contains(&key.as_str()) {
-                    return Err(format!("Unknown preference '{key}'"));
-                }
-                if key == "macros" && !value.is_object() {
-                    return Err("macros must be an object of strings".into());
-                }
-                index_store.set(key, value)?;
+            .and_then(Value::as_object);
+        let Some(values) = values else {
+            return Ok(self.preferences.read().unwrap().clone());
+        };
+        for (key, value) in values {
+            if !["macros", "bookmarks", "exclusions", "history", "settings"].contains(&key.as_str())
+            {
+                return Err(format!("Unknown preference '{key}'"));
+            }
+            if key == "macros" && !value.is_object() {
+                return Err("macros must be an object of strings".into());
             }
         }
-        let mut response = json!({});
-        for key in allowed {
-            response[key] = index_store.get(
-                key,
-                if key == "macros" || key == "settings" {
-                    json!({})
-                } else {
-                    json!([])
-                },
-            )
+        // Preferences are loaded at open and published only after their SQL
+        // transaction commits. Reads and identical updates need no database
+        // access, including while a disposable index cache is being rebuilt.
+        {
+            let current = self.preferences.read().unwrap();
+            if values
+                .iter()
+                .all(|(key, value)| current.get(key) == Some(value))
+            {
+                return Ok(current.clone());
+            }
         }
-        *self.preferences.write().unwrap() = response.clone();
-        Ok(response)
+        // The store lock serializes writers. Re-read after acquiring it so
+        // concurrent updates to different preferences cannot overwrite each other.
+        let index_store = self.index_store.lock().unwrap();
+        let mut next = self.preferences.read().unwrap().clone();
+        let changed: serde_json::Map<String, Value> = values
+            .iter()
+            .filter(|(key, value)| next.get(*key) != Some(*value))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        if !changed.is_empty() {
+            index_store.set_preferences(&changed)?;
+            for (key, value) in changed {
+                next[key] = value;
+            }
+            *self.preferences.write().unwrap() = next.clone();
+        }
+        Ok(next)
     }
     fn pin(&self, generation: Option<u64>) -> Result<Arc<SearchSnapshot>, String> {
         let current = self.snapshot.load_full();
@@ -620,15 +646,14 @@ impl SearchEngine {
             .unwrap_or_else(|| self.relation_coverage(snapshot.generation));
         let cancelled = Arc::new(AtomicBool::new(false));
         let id = request["request_id"].as_str().map(str::to_owned);
-        if let Some(id) = &id {
-            if let Some(previous) = self
+        if let Some(id) = &id
+            && let Some(previous) = self
                 .requests
                 .lock()
                 .unwrap()
                 .insert(id.clone(), cancelled.clone())
-            {
-                previous.store(true, Ordering::Relaxed);
-            }
+        {
+            previous.store(true, Ordering::Relaxed);
         }
         let _request = RequestGuard {
             requests: &self.requests,
@@ -859,25 +884,40 @@ impl SearchEngine {
                 snapshot.cache_matches(key.clone(), matched.clone());
             }
         }
+        if !all_files
+            && matching.is_none()
+            && !metadata_only
+            && !needs_content
+            && let Some(matched) =
+                snapshot.match_name_columns(&parsed_query, &excludes, &cancelled)?
+        {
+            let matched = Arc::new(matched);
+            if let Some(key) = &cache_key {
+                snapshot.cache_matches(key.clone(), matched.clone());
+            }
+            matching = Some(matched);
+        }
         if !all_files && matching.is_none() {
+            let evaluator = parsed_query.evaluator();
+            let exclusion_evaluators: Vec<_> =
+                excludes.iter().map(query::Query::evaluator).collect();
             let row_needs_content = !metadata_only
                 && (parsed_query.requires_content()
                     || excludes.iter().any(query::Query::requires_content));
-            let mut matched = roaring::RoaringBitmap::new();
+            let mut matched = bitmap_builder::RunBitmapBuilder::default();
             let candidates = snapshot.candidates_with_cancellation(&parsed_query, &cancelled)?;
             let iterator: Box<dyn Iterator<Item = u32> + '_> =
                 if let Some(candidate_set) = candidates {
-                    Box::new(candidate_set.into_iter())
+                    // Apply visibility once as bitmap algebra. Every row below
+                    // belongs to this pinned snapshot; historical postings must
+                    // never bypass its live mask.
+                    Box::new((candidate_set & &snapshot.live).into_iter())
                 } else {
                     Box::new(snapshot.live.iter())
                 };
             for slot in iterator {
                 if cancelled.load(Ordering::Relaxed) {
                     return Err("Query cancelled".into());
-                }
-                // Old postings can only be used with the live mask of this same snapshot.
-                if !snapshot.live.contains(slot) {
-                    continue;
                 }
                 let file = &snapshot.entries[slot as usize];
                 if row_needs_content && !parsed_query.may_match_without_content(file)? {
@@ -898,7 +938,7 @@ impl SearchEngine {
                     None
                 };
                 let mut excluded = false;
-                for exclusion in &excludes {
+                for exclusion in &exclusion_evaluators {
                     if !metadata_only && exclusion.matches_available(file, body)? {
                         excluded = true;
                         break;
@@ -907,13 +947,13 @@ impl SearchEngine {
                 if (if metadata_only {
                     parsed_query.may_match_before_extraction(file)?
                 } else {
-                    parsed_query.matches_available(file, body)?
+                    evaluator.matches_available(file, body)?
                 }) && !excluded
                 {
                     matched.insert(slot);
                 }
             }
-            let matched = Arc::new(matched);
+            let matched = Arc::new(matched.finish());
             if let Some(key) = cache_key {
                 snapshot.cache_matches(key, matched.clone());
             }
@@ -1702,11 +1742,9 @@ impl SearchEngine {
                     if !self.reconcile(&roots, &roots, since, true, true)? {
                         return Ok(());
                     }
-                    if watch {
-                        if let Ok(before) = &inspection {
-                            completed_mount_namespace =
-                                self.checkpoint_resume_proof(&roots, &before.proof)?;
-                        }
+                    if watch && let Ok(before) = &inspection {
+                        completed_mount_namespace =
+                            self.checkpoint_resume_proof(&roots, &before.proof)?;
                     }
                 }
                 self.scanning.store(false, Ordering::SeqCst);
@@ -1924,7 +1962,7 @@ fn read_text(indexed_file: &IndexedFile, warnings: &mut HashSet<String>) -> Opti
         "toml", "yaml", "yml", "xml", "html", "css", "csv", "log", "sh", "sql", "ini", "cfg",
         "plist", "tex",
     ]
-    .contains(&indexed_file.extension.as_str())
+    .contains(&indexed_file.extension.as_ref())
     {
         warnings.insert("Some files need the macOS content extractor or have unsupported formats; content results are partial".into());
         return None;
@@ -1934,7 +1972,7 @@ fn read_text(indexed_file: &IndexedFile, warnings: &mut HashSet<String>) -> Opti
         if fresh.is_symlink || fresh.is_dataless() || fresh.is_dir {
             return Err("File became a symlink, directory or cloud placeholder".into());
         }
-        if fresh.volume_id != indexed_file.volume_id
+        if fresh.volume_id != indexed_file.volume_id.as_ref()
             || fresh.file_id != indexed_file.file_id
             || fresh.size != indexed_file.size
             || fresh.modified_ns != indexed_file.modified_ns
@@ -2060,13 +2098,16 @@ impl Drop for RequestGuard<'_> {
 /// # Safety
 /// `path` must be null or a readable NUL-terminated string that remains valid
 /// for this call. Close a returned non-null handle exactly once.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn apfsearch_engine_open(path: *const c_char) -> *mut c_void {
     if path.is_null() {
         return std::ptr::null_mut();
     }
     let result = std::panic::catch_unwind(|| {
-        let path = CStr::from_ptr(path).to_str().map_err(|e| e.to_string())?;
+        // SAFETY: the non-null caller-owned path is valid for this call.
+        let path = unsafe { CStr::from_ptr(path) }
+            .to_str()
+            .map_err(|e| e.to_string())?;
         SearchEngine::open(Path::new(path))
     });
     match result {
@@ -2080,7 +2121,7 @@ pub unsafe extern "C" fn apfsearch_engine_open(path: *const c_char) -> *mut c_vo
 /// A non-null `handle` must come from `apfsearch_engine_open` and remain open throughout
 /// this call. `request` must be null or a readable NUL-terminated string. Release
 /// the result with `apfsearch_engine_free_string`, never another allocator.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn apfsearch_engine_call(
     handle: *mut c_void,
     request: *const c_char,
@@ -2089,8 +2130,11 @@ pub unsafe extern "C" fn apfsearch_engine_call(
         if handle.is_null() || request.is_null() {
             return json!({"success":false,"error":"Null engine or request","protocol_version":PROTOCOL_VERSION});
         }
-        let engine = &*(handle as *const Arc<SearchEngine>);
-        match serde_json::from_slice::<Value>(CStr::from_ptr(request).to_bytes()) {
+        // SAFETY: the caller keeps this open engine handle alive for the call.
+        let engine = unsafe { &*(handle as *const Arc<SearchEngine>) };
+        // SAFETY: the non-null request is NUL-terminated and readable for this call.
+        let request = unsafe { CStr::from_ptr(request) };
+        match serde_json::from_slice::<Value>(request.to_bytes()) {
             Ok(request) => engine.call(request),
             Err(e) => {
                 json!({"success":false,"error":format!("Invalid JSON: {e}"),"protocol_version":PROTOCOL_VERSION})
@@ -2106,10 +2150,11 @@ pub unsafe extern "C" fn apfsearch_engine_call(
 /// # Safety
 /// `value` must be null or an unmodified, not-yet-freed pointer returned by
 /// `apfsearch_engine_call`. No other thread may read it during or after this call.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn apfsearch_engine_free_string(value: *mut c_char) {
     if !value.is_null() {
-        drop(CString::from_raw(value));
+        // SAFETY: ownership of this exact response pointer returns once to Rust.
+        drop(unsafe { CString::from_raw(value) });
     }
 }
 /// Close an engine handle and signal its background worker to stop.
@@ -2117,10 +2162,12 @@ pub unsafe extern "C" fn apfsearch_engine_free_string(value: *mut c_char) {
 /// # Safety
 /// `handle` must be null or a live handle from `apfsearch_engine_open`, closed exactly
 /// once. No thread may enter or remain in `apfsearch_engine_call` with this handle.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn apfsearch_engine_close(handle: *mut c_void) {
     if !handle.is_null() {
-        let engine = Box::from_raw(handle as *mut Arc<SearchEngine>);
+        // SAFETY: this is the unique close of a handle allocated by engine_open;
+        // no concurrent call may still borrow it.
+        let engine = unsafe { Box::from_raw(handle as *mut Arc<SearchEngine>) };
         engine.stop.store(true, Ordering::Relaxed);
         engine.scan_cancel.store(true, Ordering::Relaxed);
         drop(engine);
@@ -2194,9 +2241,11 @@ mod reconciliation_tests {
         assert_eq!(status["initial_scan_complete"], true);
         assert_eq!(status["scanning"], false);
         // Updating only a directory's own metadata must not delete its children.
-        assert!(engine
-            .reconcile(std::slice::from_ref(&before), &roots, 40, false, false)
-            .unwrap());
+        assert!(
+            engine
+                .reconcile(std::slice::from_ref(&before), &roots, 40, false, false)
+                .unwrap()
+        );
         assert_eq!(
             engine.call(json!({"op":"query","text":"child.txt"}))["total"],
             1
@@ -2207,9 +2256,11 @@ mod reconciliation_tests {
         assert_eq!(updating["generation"], status["generation"]);
         let after = format!("{root}/after");
         std::fs::rename(&before, &after).unwrap();
-        assert!(engine
-            .reconcile(&[before.clone(), after.clone()], &roots, 41, true, false)
-            .unwrap());
+        assert!(
+            engine
+                .reconcile(&[before.clone(), after.clone()], &roots, 41, true, false)
+                .unwrap()
+        );
         let result = engine.call(json!({"op":"query","text":"child.txt"}));
         assert_eq!(result["total"], 1);
         assert_eq!(
@@ -2415,8 +2466,7 @@ mod reconciliation_tests {
             1
         );
         assert_eq!(
-            engine.call(json!({"op":"query","text":"","snapshot_lease":lease["snapshot_lease"]}))
-                ["rows"],
+            engine.call(json!({"op":"query","text":"","snapshot_lease":lease["snapshot_lease"]}))["rows"],
             old["rows"]
         );
         let snapshot = engine.snapshot.load();

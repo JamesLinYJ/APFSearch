@@ -69,14 +69,16 @@ fn restart_keeps_the_selected_physical_root_when_an_intermediate_directory_is_re
         engine.index_store.lock().unwrap().get("roots", Value::Null),
         roots
     );
-    assert!(engine
-        .index_store
-        .lock()
-        .unwrap()
-        .entries()
-        .unwrap()
-        .iter()
-        .all(|entry| Path::new(&entry.path).starts_with(actual.join("selected"))));
+    assert!(
+        engine
+            .index_store
+            .lock()
+            .unwrap()
+            .entries()
+            .unwrap()
+            .iter()
+            .all(|entry| Path::new(&entry.path).starts_with(actual.join("selected")))
+    );
 
     std::fs::remove_file(&actual).unwrap();
     std::fs::rename(&saved, &actual).unwrap();
@@ -586,10 +588,12 @@ fn stop_during_alias_verification_rolls_back_the_batch_without_hiding_database_e
         let status = engine.state.lock().unwrap().clone();
         if database_failure {
             assert_eq!(status["state"], "error", "{status}");
-            assert!(status["errors"][0]
-                .as_str()
-                .unwrap()
-                .contains("injected database write failure"));
+            assert!(
+                status["errors"][0]
+                    .as_str()
+                    .unwrap()
+                    .contains("injected database write failure")
+            );
         } else {
             assert_eq!(status["state"], "stopped", "{status}");
             assert_eq!(status["errors"], json!([]), "{status}");

@@ -1,8 +1,8 @@
 //! Restore a prepared index using an existing isolated synthetic fixture.
 //! Writes one derived cache; never rescans files or creates another database copy.
 use apfsearch_core::{
-    index_store::{IndexStore, SearchSnapshot},
     SearchEngine,
+    index_store::{IndexStore, SearchSnapshot},
 };
 use serde_json::json;
 use std::{path::PathBuf, time::Instant};

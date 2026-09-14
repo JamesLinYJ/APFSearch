@@ -11,7 +11,7 @@ use std::{
     collections::HashMap,
     rc::Rc,
 };
-use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
+use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
 
 pub fn fold(s: &str) -> String {
     if s.is_ascii() {
@@ -44,6 +44,30 @@ pub enum Query {
     Or(Vec<Query>),
     Not(Box<Query>),
     Term(Term),
+}
+
+/// Reusable row evaluator. Its immutable borrow prevents resolving or changing
+/// the expression while the derived execution properties are in use.
+pub struct QueryEvaluator<'a> {
+    query: &'a Query,
+    needs_content: bool,
+    needs_relations: bool,
+}
+
+impl QueryEvaluator<'_> {
+    pub fn matches_available(
+        &self,
+        file: &IndexedFile,
+        content: Option<&str>,
+    ) -> Result<bool, String> {
+        if content.is_none() && self.needs_content {
+            return Ok(self.query.metadata_truth(file)? == Some(true));
+        }
+        if self.needs_relations {
+            return Ok(self.query.indexed_truth(file, content)? == Some(true));
+        }
+        self.query.matches_inner(file, content, &OnceCell::new())
+    }
 }
 #[derive(Debug)]
 pub enum Term {
@@ -446,6 +470,7 @@ pub fn parse_at(
 ) -> Result<Query, String> {
     parse_depth(input, macros, 0, now)
 }
+
 fn parse_depth(
     input: &str,
     macros: &HashMap<String, String>,
@@ -687,48 +712,73 @@ fn atom_with_options(
     if options.target.is_none()
         && !options.regex
         && !literal_from.is_some_and(|offset| original.len() - s.len() >= offset)
+        && let Some((key, val)) = s.split_once(':')
     {
-        if let Some((key, val)) = s.split_once(':') {
-            let key = keyword(key);
-            let term = match key.as_str() {
-                "ext" | "extension" if !options.sensitive && !options.diacritics => Term::Extension(val.split(';').map(|s| fold_search(s.trim_start_matches('.'))).collect()),
-                "ext" | "extension" => {
-                    let queries = val.split(';').map(|v| { let mut o = options.clone(); o.whole = true;
+        let key = keyword(key);
+        let term = match key.as_str() {
+            "ext" | "extension" if !options.sensitive && !options.diacritics => Term::Extension(
+                val.split(';')
+                    .map(|s| fold_search(s.trim_start_matches('.')))
+                    .collect(),
+            ),
+            "ext" | "extension" => {
+                let queries = val
+                    .split(';')
+                    .map(|v| {
+                        let mut o = options.clone();
+                        o.whole = true;
                         text_query(v.trim_start_matches('.'), &o, TextTarget::Extension)
-                    }).collect::<Result<Vec<_>, _>>()?;
-                    return Ok(restrict_type(Query::Or(queries), is_dir));
-                },
-                "type" => match val.to_ascii_lowercase().as_str() { "file" => Term::IsDir(false), "folder" | "directory" => Term::IsDir(true), "symlink" | "link" => Term::IsSymlink, _ => return Err("type: accepts file, folder, or symlink".into()) },
-                "hidden" if val.is_empty() => Term::Hidden, "symlink" if val.is_empty() => Term::IsSymlink,
-                "empty" if val.is_empty() => number_term("childcount", "=0", false, options.now)?,
-                "size" => number_term(&key, val, false, options.now)?,
-                key if numeric_property(key) || crate::relations::is_metric(key) => number_term(key, val, false, options.now)?,
-                "dm" | "datemodified" | "modified" => number_term("modified", val, true, options.now)?,
-                "dc" | "datecreated" | "created" => number_term("created", val, true, options.now)?,
-                "attrib" | "attributes" => {
-                    let terms = val.chars().map(|c| match c.to_ascii_lowercase() {
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok(restrict_type(Query::Or(queries), is_dir));
+            }
+            "type" => match val.to_ascii_lowercase().as_str() {
+                "file" => Term::IsDir(false),
+                "folder" | "directory" => Term::IsDir(true),
+                "symlink" | "link" => Term::IsSymlink,
+                _ => return Err("type: accepts file, folder, or symlink".into()),
+            },
+            "hidden" if val.is_empty() => Term::Hidden,
+            "symlink" if val.is_empty() => Term::IsSymlink,
+            "empty" if val.is_empty() => number_term("childcount", "=0", false, options.now)?,
+            "size" => number_term(&key, val, false, options.now)?,
+            key if numeric_property(key) || crate::relations::is_metric(key) => {
+                number_term(key, val, false, options.now)?
+            }
+            "dm" | "datemodified" | "modified" => number_term("modified", val, true, options.now)?,
+            "dc" | "datecreated" | "created" => number_term("created", val, true, options.now)?,
+            "attrib" | "attributes" => {
+                let terms = val.chars().map(|c| match c.to_ascii_lowercase() {
                         'h' => Ok(Query::Term(Term::Hidden)), 'l' => Ok(Query::Term(Term::IsSymlink)),
                         _ => Err("attrib: supports macOS hidden (h) and symlink (l); use flags: for native flags".to_string()),
                     }).collect::<Result<Vec<_>, _>>()?;
-                    if terms.is_empty() { return Err("attrib: requires at least one attribute".into()); }
-                    return Ok(restrict_type(Query::And(terms), is_dir));
-                },
-                "flags" => {
-                    let mut flags = 0;
-                    for name in val.split(';') {
-                        flags |= match keyword(name).as_str() {
-                            "hidden" => 0x8000, "immutable" => 0x0002 | 0x0002_0000,
-                            "append" => 0x0004 | 0x0004_0000, "nodump" => 0x0001,
-                            "compressed" => 0x0020, "dataless" | "placeholder" => 0x4000_0000,
-                            _ => return Err(format!("Unsupported native flag '{name}'")),
-                        };
-                    }
-                    Term::Flags(flags)
-                },
-                _ => return Err(format!("Unsupported search function '{key}:' (Windows-only properties are not silently ignored)")),
-            };
-            return Ok(restrict_type(Query::Term(term), is_dir));
-        }
+                if terms.is_empty() {
+                    return Err("attrib: requires at least one attribute".into());
+                }
+                return Ok(restrict_type(Query::And(terms), is_dir));
+            }
+            "flags" => {
+                let mut flags = 0;
+                for name in val.split(';') {
+                    flags |= match keyword(name).as_str() {
+                        "hidden" => 0x8000,
+                        "immutable" => 0x0002 | 0x0002_0000,
+                        "append" => 0x0004 | 0x0004_0000,
+                        "nodump" => 0x0001,
+                        "compressed" => 0x0020,
+                        "dataless" | "placeholder" => 0x4000_0000,
+                        _ => return Err(format!("Unsupported native flag '{name}'")),
+                    };
+                }
+                Term::Flags(flags)
+            }
+            _ => {
+                return Err(format!(
+                    "Unsupported search function '{key}:' (Windows-only properties are not silently ignored)"
+                ));
+            }
+        };
+        return Ok(restrict_type(Query::Term(term), is_dir));
     }
     if options.field == Field::Parent && options.whole && s.len() > 1 {
         s = s.trim_end_matches('/');
@@ -778,7 +828,7 @@ fn text_query(s: &str, options: &MatchOptions, target: TextTarget) -> Result<Que
                 return Ok(Query::Term(Term::Matched {
                     target,
                     matcher: TextMatcher::new(s, options, false)?,
-                }))
+                }));
             }
         };
         return Ok(Query::Term(term));
@@ -801,11 +851,7 @@ fn normalized(s: &str, options: &MatchOptions) -> String {
     } else {
         s.nfd().filter(|c| !is_combining_mark(*c)).collect()
     };
-    if options.sensitive {
-        s
-    } else {
-        fold(&s)
-    }
+    if options.sensitive { s } else { fold(&s) }
 }
 impl TextMatcher {
     fn new(s: &str, options: &MatchOptions, wildcard: bool) -> Result<Self, String> {
@@ -967,7 +1013,7 @@ fn local_first_weekday() -> u32 {
     #[cfg(target_os = "macos")]
     unsafe {
         #[link(name = "CoreFoundation", kind = "framework")]
-        extern "C" {
+        unsafe extern "C" {
             fn CFCalendarCopyCurrent() -> *const std::ffi::c_void;
             fn CFCalendarGetFirstWeekday(calendar: *const std::ffi::c_void) -> isize;
             fn CFRelease(value: *const std::ffi::c_void);
@@ -1036,10 +1082,10 @@ fn midnight<T: TimeZone>(date: NaiveDate, zone: &T) -> Result<i64, String> {
     // Some regions change clocks at midnight, and can even skip a calendar day.
     // Select the first representable instant, rather than assuming 86,400 seconds.
     for minute in 0..=1440 {
-        if let Some(dt) = zone
+        let local_time = zone
             .from_local_datetime(&(base + DateDuration::minutes(minute)))
-            .earliest()
-        {
+            .earliest();
+        if let Some(dt) = local_time {
             return Ok(dt.timestamp());
         }
     }
@@ -1191,6 +1237,14 @@ fn number_term(
 }
 
 impl Query {
+    pub fn evaluator(&self) -> QueryEvaluator<'_> {
+        QueryEvaluator {
+            query: self,
+            needs_content: self.requires_content(),
+            needs_relations: self.requires_relations(),
+        }
+    }
+
     pub(crate) fn requires_relations(&self) -> bool {
         match self {
             Self::Term(Term::Related { .. } | Term::Resolved(_)) => true,
@@ -1485,7 +1539,7 @@ impl Term {
     fn matches(&self, file: &IndexedFile, content: Option<&str>) -> Result<bool, String> {
         Ok(match self {
             Self::Related { .. } => {
-                return Err("Relationship predicates require a search snapshot".into())
+                return Err("Relationship predicates require a search snapshot".into());
             }
             Self::Resolved(result) => result.truth(file) == Some(true),
             Self::Flags(mask) => file.flags & mask != 0,
@@ -1525,7 +1579,9 @@ impl Term {
             },
             Self::Extension(extensions) => {
                 if file.folded_extension.is_ascii() {
-                    extensions.contains(&file.folded_extension)
+                    extensions
+                        .iter()
+                        .any(|extension| extension == file.folded_extension.as_ref())
                 } else {
                     let extension = fold_search(&file.extension);
                     extensions.contains(&extension)
@@ -1548,11 +1604,7 @@ impl Term {
                     "modified" | "created" => false,
                     other => file.properties.get(other).and_then(Value::as_f64).is_none(),
                 };
-                if *negate {
-                    !unknown
-                } else {
-                    unknown
-                }
+                if *negate { !unknown } else { unknown }
             }
             Self::Number {
                 field,
@@ -1577,11 +1629,7 @@ impl Term {
                 n.is_some_and(|n| {
                     let inside = (if *include_low { n >= *low } else { n > *low })
                         && (if *include_high { n <= *high } else { n < *high });
-                    if *negate {
-                        !inside
-                    } else {
-                        inside
-                    }
+                    if *negate { !inside } else { inside }
                 })
             }
         })
@@ -1690,11 +1738,13 @@ mod date_tests {
     #[test]
     fn natural_comparison_handles_big_numbers_and_unicode() {
         assert!(natural_cmp("report2.txt", "report10.txt").is_lt());
-        assert!(natural_cmp(
-            "项目9999999999999999999999999",
-            "项目10000000000000000000000000"
-        )
-        .is_lt());
+        assert!(
+            natural_cmp(
+                "项目9999999999999999999999999",
+                "项目10000000000000000000000000"
+            )
+            .is_lt()
+        );
         assert!(natural_cmp("café2", "cafe\u{301}10").is_lt());
     }
 }

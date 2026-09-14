@@ -60,7 +60,7 @@ fn a_restored_middle_id_appends_stable_slots_without_mutating_the_old_snapshot()
     assert_eq!(updated.entries[0].size, 999);
     assert_eq!(previous.entries[0].size, 10);
     assert_eq!(remapped.entries[0].size, 10);
-    assert!(Arc::ptr_eq(
+    assert!(crate::shared_text::SharedText::ptr_eq(
         &remapped.entries[0].search_name,
         &updated.entries[0].search_name
     ));
@@ -382,7 +382,7 @@ fn sorted_prefix_index_only_allocates_entries_for_the_out_of_order_tail() {
         later.entries[0].clone(),
     ];
     assert_eq!(
-        index_store::FileSlots::from_entries(&repeated).err(),
+        index_store::FileSlots::from_entries(&repeated.into()).err(),
         Some("duplicate_persistent_file_id")
     );
 }
@@ -431,5 +431,8 @@ fn restoring_102_middle_ids_reuses_original_rows_and_unaffected_posting_bitmaps(
             Some(1000 + index as usize)
         );
     }
-    eprintln!("102 restored IDs / 1000 retained rows: {:.3}ms; 1000 Arc-identical rows, one unchanged posting Arc, 102 sparse ID entries", elapsed.as_secs_f64() * 1000.0);
+    eprintln!(
+        "102 restored IDs / 1000 retained rows: {:.3}ms; 1000 Arc-identical rows, one unchanged posting Arc, 102 sparse ID entries",
+        elapsed.as_secs_f64() * 1000.0
+    );
 }

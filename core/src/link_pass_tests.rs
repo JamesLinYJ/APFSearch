@@ -313,10 +313,12 @@ fn unavailable_aliases_prevent_reuse_after_an_earlier_success() {
         retried, 1,
         "an incomplete verification cannot reuse prior success"
     );
-    assert!(fixture
-        .store
-        .get("uncovered", json!([]))
-        .as_array()
-        .unwrap()
-        .contains(&json!(unavailable)));
+    assert!(
+        fixture
+            .store
+            .get("uncovered", json!([]))
+            .as_array()
+            .unwrap()
+            .contains(&json!(unavailable))
+    );
 }

@@ -1,11 +1,52 @@
-use apfsearch_core::{index_store::IndexedFile, query, SearchEngine};
-use serde_json::{json, Value};
+use apfsearch_core::{SearchEngine, index_store::IndexedFile, query};
+use serde_json::{Value, json};
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
 fn entry(name: &str) -> IndexedFile {
     let mut e:IndexedFile=serde_json::from_value(json!({"id":1,"path":format!("/Users/样本/{name}"),"name":name,"extension":Path::new(name).extension().unwrap_or_default().to_string_lossy(),"size":2048,"modified":1726185600_i64,"created":1726099200_i64,"changed":1726185600_i64,"is_dir":false,"is_symlink":false,"file_id":12,"parent_id":3,"volume_id":"APFS-test","flags":0,"properties":{"width":1920,"height":1080}})).unwrap();
     e.prepare();
     e
 }
+#[test]
+fn reusable_evaluator_preserves_unknown_content_and_boolean_semantics() {
+    let file = entry("Straße café Report12.txt");
+    for (text, absent, matching, unrelated) in [
+        ("report", true, true, true),
+        ("case:report", false, false, false),
+        ("strasse cafe", true, true, true),
+        ("regex:\"Report(?=12)\"", true, true, true),
+        ("content:needle", false, true, false),
+        ("!content:needle", false, false, true),
+        ("report | content:needle", true, true, true),
+        ("report !content:needle", false, false, true),
+        ("ext:pdf content:needle", false, false, false),
+        ("report | child:report", true, true, true),
+    ] {
+        let query = query::parse(text, &HashMap::new()).unwrap();
+        let evaluator = query.evaluator();
+        for (body, expected) in [
+            (None, absent),
+            (Some("needle"), matching),
+            (Some("other"), unrelated),
+        ] {
+            assert_eq!(
+                evaluator.matches_available(&file, body).unwrap(),
+                expected,
+                "{text} {body:?}"
+            );
+            assert_eq!(
+                evaluator.matches_available(&file, body),
+                query.matches_available(&file, body)
+            );
+        }
+    }
+    for text in ["child:report", "!child:report"] {
+        let query = query::parse(text, &HashMap::new()).unwrap();
+        let expected = Err("Relationship predicates require a search snapshot".to_owned());
+        assert_eq!(query.evaluator().matches_available(&file, None), expected);
+        assert_eq!(query.matches_available(&file, None), expected);
+    }
+}
+
 #[test]
 fn query_grammar_unicode_and_pcre() {
     let e = entry("Straße café Report12.txt");
@@ -63,22 +104,30 @@ fn query_grammar_unicode_and_pcre() {
 fn content_negation_candidates_are_conservative() {
     let e = entry("report.txt");
     let macros = HashMap::from([("docs".to_string(), "ext:txt;md".to_string())]);
-    assert!(query::parse("docs: !content:missing", &macros)
-        .unwrap()
-        .may_match_without_content(&e)
-        .unwrap());
-    assert!(!query::parse("ext:pdf !content:missing", &macros)
-        .unwrap()
-        .may_match_without_content(&e)
-        .unwrap());
-    assert!(query::parse("content:\"needle two\"", &macros)
-        .unwrap()
-        .matches(&e, Some("NEEDLE two adjacent"))
-        .unwrap());
-    assert!(!query::parse("content:\"needle two\"", &macros)
-        .unwrap()
-        .matches(&e, Some("needle unrelated two"))
-        .unwrap());
+    assert!(
+        query::parse("docs: !content:missing", &macros)
+            .unwrap()
+            .may_match_without_content(&e)
+            .unwrap()
+    );
+    assert!(
+        !query::parse("ext:pdf !content:missing", &macros)
+            .unwrap()
+            .may_match_without_content(&e)
+            .unwrap()
+    );
+    assert!(
+        query::parse("content:\"needle two\"", &macros)
+            .unwrap()
+            .matches(&e, Some("NEEDLE two adjacent"))
+            .unwrap()
+    );
+    assert!(
+        !query::parse("content:\"needle two\"", &macros)
+            .unwrap()
+            .matches(&e, Some("needle unrelated two"))
+            .unwrap()
+    );
     let cyclic = HashMap::from([("x".into(), "x:".into())]);
     assert!(query::parse("x:", &cyclic).is_err());
 }
@@ -317,40 +366,54 @@ fn unknown_directory_size_is_not_a_zero_byte_file() {
     let mut e = entry("folder");
     e.is_dir = true;
     e.size = 0;
-    assert!(!query::parse("size:0", &HashMap::new())
-        .unwrap()
-        .matches(&e, None)
-        .unwrap());
+    assert!(
+        !query::parse("size:0", &HashMap::new())
+            .unwrap()
+            .matches(&e, None)
+            .unwrap()
+    );
     e.is_dir = false;
-    assert!(query::parse("size:0", &HashMap::new())
-        .unwrap()
-        .matches(&e, None)
-        .unwrap());
+    assert!(
+        query::parse("size:0", &HashMap::new())
+            .unwrap()
+            .matches(&e, None)
+            .unwrap()
+    );
 }
 #[test]
 fn content_case_and_file_prefixes_follow_requested_modifier() {
     let mut e = entry("Report.txt");
-    assert!(query::parse("file:report", &HashMap::new())
-        .unwrap()
-        .matches(&e, None)
-        .unwrap());
-    assert!(!query::parse("folder:report", &HashMap::new())
-        .unwrap()
-        .matches(&e, None)
-        .unwrap());
-    assert!(!query::parse("case:content:HELLO", &HashMap::new())
-        .unwrap()
-        .matches_available(&e, Some("hello"))
-        .unwrap());
-    assert!(query::parse("content:HELLO", &HashMap::new())
-        .unwrap()
-        .matches_available(&e, Some("hello"))
-        .unwrap());
+    assert!(
+        query::parse("file:report", &HashMap::new())
+            .unwrap()
+            .matches(&e, None)
+            .unwrap()
+    );
+    assert!(
+        !query::parse("folder:report", &HashMap::new())
+            .unwrap()
+            .matches(&e, None)
+            .unwrap()
+    );
+    assert!(
+        !query::parse("case:content:HELLO", &HashMap::new())
+            .unwrap()
+            .matches_available(&e, Some("hello"))
+            .unwrap()
+    );
+    assert!(
+        query::parse("content:HELLO", &HashMap::new())
+            .unwrap()
+            .matches_available(&e, Some("hello"))
+            .unwrap()
+    );
     e.is_dir = true;
-    assert!(query::parse("folder:report", &HashMap::new())
-        .unwrap()
-        .matches(&e, None)
-        .unwrap());
+    assert!(
+        query::parse("folder:report", &HashMap::new())
+            .unwrap()
+            .matches(&e, None)
+            .unwrap()
+    );
 }
 #[test]
 fn stale_snapshot_cannot_clear_new_batch_dirty_flag() {
@@ -403,14 +466,18 @@ fn date_comparisons_use_exclusive_next_calendar_boundary() {
         )
     }
     e.modified = midnight(2024, 3, 1);
-    assert!(!query::parse("dm:2024-02", &HashMap::new())
-        .unwrap()
-        .matches(&e, None)
-        .unwrap());
-    assert!(query::parse("dm:>2024-02", &HashMap::new())
-        .unwrap()
-        .matches(&e, None)
-        .unwrap());
+    assert!(
+        !query::parse("dm:2024-02", &HashMap::new())
+            .unwrap()
+            .matches(&e, None)
+            .unwrap()
+    );
+    assert!(
+        query::parse("dm:>2024-02", &HashMap::new())
+            .unwrap()
+            .matches(&e, None)
+            .unwrap()
+    );
     for text in [
         "dm:today",
         "dm:yesterday",
@@ -585,7 +652,7 @@ fn incremental_snapshot_matches_full_rebuild_for_metadata_and_renames() {
     let rebuilt = SearchSnapshot::new(entries.clone(), 2);
     assert_eq!(reused.trigrams, rebuilt.trigrams);
     assert_eq!(reused.name_order, rebuilt.name_order);
-    for (a, b) in reused.entries.iter().zip(&rebuilt.entries) {
+    for (a, b) in reused.entries.iter().zip(rebuilt.entries.iter()) {
         assert_eq!(a.folded_path, b.folded_path);
         assert_eq!(a.folded_name, b.folded_name);
         assert_eq!(a.size, b.size);

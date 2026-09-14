@@ -1,5 +1,5 @@
 use apfsearch_core::SearchEngine;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 fn engine() -> (tempfile::TempDir, Arc<SearchEngine>) {
     let directory = tempfile::tempdir().unwrap();
@@ -110,8 +110,7 @@ fn cancellation_aborts_staging_and_releases_session() {
     );
     ok(&engine, json!({"op":"cancel","request_id":"cancel-import"}));
     assert_eq!(
-        engine.call(json!({"op":"finish_file_list_import","request_id":"cancel-import"}))
-            ["success"],
+        engine.call(json!({"op":"finish_file_list_import","request_id":"cancel-import"}))["success"],
         false
     );
     assert_eq!(query(&engine)["generation"], before["generation"]);

@@ -439,14 +439,18 @@ mod tests {
         assert_eq!(retained.exact(&parsed("a"), &live), Some(old_a));
         let mut tombstoned = live.clone();
         tombstoned.remove(0);
-        assert!(!retained
-            .exact(&parsed("a"), &tombstoned)
-            .unwrap()
-            .contains(0));
-        assert!(!retained
-            .exact(&parsed("!zz"), &tombstoned)
-            .unwrap()
-            .contains(0));
+        assert!(
+            !retained
+                .exact(&parsed("a"), &tombstoned)
+                .unwrap()
+                .contains(0)
+        );
+        assert!(
+            !retained
+                .exact(&parsed("!zz"), &tombstoned)
+                .unwrap()
+                .contains(0)
+        );
     }
     #[test]
     fn cached_postings_round_trip_and_reject_malformed_counts_keys_and_slots() {

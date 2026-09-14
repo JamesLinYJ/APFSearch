@@ -4,7 +4,7 @@
 //! structs. Directory descriptors are owned, and callers use closures and `io::Result`.
 use std::{
     borrow::Cow,
-    ffi::{c_char, CStr, CString},
+    ffi::{CStr, CString, c_char},
     fs::OpenOptions,
     io,
     mem::MaybeUninit,
@@ -280,7 +280,25 @@ fn volume_id(fs: &libc::statfs) -> io::Result<String> {
         && data[4..].iter().any(|v| *v != 0)
     {
         let uuid = &data[4..];
-        return Ok(format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",uuid[0],uuid[1],uuid[2],uuid[3],uuid[4],uuid[5],uuid[6],uuid[7],uuid[8],uuid[9],uuid[10],uuid[11],uuid[12],uuid[13],uuid[14],uuid[15]));
+        return Ok(format!(
+            "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            uuid[0],
+            uuid[1],
+            uuid[2],
+            uuid[3],
+            uuid[4],
+            uuid[5],
+            uuid[6],
+            uuid[7],
+            uuid[8],
+            uuid[9],
+            uuid[10],
+            uuid[11],
+            uuid[12],
+            uuid[13],
+            uuid[14],
+            uuid[15]
+        ));
     }
     // fsid_t is an opaque two-int ABI object in libc. Copy its representation
     // rather than access private fields or label this mount-only fallback UUID.

@@ -3,8 +3,8 @@
 use crate::{index_store::IndexedFile, query::Term};
 use roaring::RoaringBitmap;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc,
+    atomic::{AtomicBool, Ordering},
 };
 
 const BLOCK_ENTRIES: usize = 4096;
@@ -57,9 +57,9 @@ impl Column {
         block.values.push(value);
         block.include(value);
         if !value.is_nan() {
-            Arc::make_mut(&mut self.known)
-                .try_push(self.length as u32)
-                .expect("Numeric column slots append in increasing order");
+            // Roaring's checked append searches the current maximum in dense
+            // containers on every value. Direct insertion addresses its bit.
+            Arc::make_mut(&mut self.known).insert(self.length as u32);
         }
         self.length += 1;
     }
@@ -170,9 +170,9 @@ impl NumericColumns {
     pub(crate) fn supports(term: &Term) -> bool {
         matches!(term, Term::Number { field, .. } | Term::Unknown { field, .. } if matches!(field.as_str(), "size" | "modified" | "created"))
     }
-    pub(crate) fn build(entries: &[Arc<IndexedFile>]) -> Self {
+    pub(crate) fn build(entries: &crate::index_store::EntryTable) -> Self {
         let mut columns = Self::default();
-        for file in entries {
+        for file in entries.iter() {
             columns.size.push(size_value(file));
             columns.modified.push(file.modified as f64);
             columns.created.push(file.created as f64);

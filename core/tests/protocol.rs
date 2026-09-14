@@ -2,7 +2,7 @@ use apfsearch_core::{
     apfsearch_engine_call, apfsearch_engine_close, apfsearch_engine_free_string,
     apfsearch_engine_open,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     ffi::{CStr, CString},
     ptr,

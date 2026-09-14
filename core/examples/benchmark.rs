@@ -1,8 +1,8 @@
 //! Synthetic metadata benchmark; never reads a user's files or starts a watcher.
 //! cargo run --release --example benchmark -- [--count 1000000] [--runs 30]
 //! Re-run a created database: --reuse /absolute/path/to/benchmark.sqlite3
-use apfsearch_core::{index_store::IndexStore, scanner::ScannedFile, SearchEngine};
-use serde_json::{json, Value};
+use apfsearch_core::{SearchEngine, index_store::IndexStore, scanner::ScannedFile};
+use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     path::PathBuf,

@@ -77,7 +77,7 @@ enum RuntimeWindowBenchmark {
             check("empty_samples_have_no_percentile", percentile([], 0.95) == nil)
             check("actual_display_available", !NSScreen.screens.isEmpty)
             let controller = SearchWindowController(offlineListID: UUID().uuidString)
-            check("startup_isolated_without_requests", controller.requestIDs.isEmpty && controller.queryTimer == nil && controller.historyTimer == nil && !controller.statusRequestPending && controller.statusRetry == nil)
+            check("startup_isolated_without_requests", controller.requestIDs.isEmpty && controller.pendingQuery == nil && controller.historyTimer == nil && !controller.statusRequestPending && controller.statusRetry == nil)
             controller.window?.makeKeyAndOrderFront(nil)
             controller.window?.contentView?.layoutSubtreeIfNeeded(); controller.table.displayIfNeeded()
             check("actual_appkit_window_is_visible", controller.window?.isVisible == true)
@@ -88,10 +88,10 @@ enum RuntimeWindowBenchmark {
                 let phase = WindowBenchmarkPhases.snapshot()["input_handler_enter"]
                 check("optional_phase_hook_runs_on_production_input", phase != nil && phase! >= 0)
             }
-            check("production_input_starts_debounce", controller.pendingInputStartedAt != nil && controller.queryTimer?.isValid == true && controller.requestIDs.isEmpty)
+            check("production_input_queues_query", controller.pendingInputStartedAt != nil && controller.pendingQuery != nil && controller.requestIDs.isEmpty)
             // Stay on the main actor and cancel before the run loop can fire it:
             // this preflight never sends a transport request to the stopped agent.
-            controller.queryTimer?.invalidate(); controller.historyTimer?.invalidate(); controller.window?.orderOut(nil)
+            controller.pendingQuery?.cancel(); controller.pendingQuery = nil; controller.historyTimer?.invalidate(); controller.window?.orderOut(nil)
             let passed = checks.allSatisfy { $0["passed"] as? Bool == true }
             print(String(decoding: jsonData(["success": passed, "screen_count": NSScreen.screens.count, "tests": checks, "boundary": "No XPC calls: AppKit/configuration preflight only"]), as: UTF8.self))
             exit(passed ? 0 : 1)
@@ -114,7 +114,7 @@ enum RuntimeWindowBenchmark {
         let appURL = URL(fileURLWithPath: config["application_bundle"] as? String ?? "/Applications/APFSearch.app")
         var report: [String: Any] = [
             "schema_version": 1, "configuration": config, "started_at_utc": ISO8601DateFormatter().string(from: Date()),
-            "boundary": "Programmatic controlTextDidChange on production SearchWindowController -> production 16ms debounce -> unmodified SearchClient and authenticated real Mach XPC -> AppKit layout/table.displayIfNeeded submission. Includes controller/table work; excludes physical keyboard, IME composition and compositor presentation.",
+            "boundary": "Programmatic controlTextDidChange on production SearchWindowController -> production event-loop input coalescing -> unmodified SearchClient and authenticated real Mach XPC -> AppKit layout/table.displayIfNeeded submission. Includes controller/table work; excludes physical keyboard, IME composition and compositor presentation.",
             "screen_count": NSScreen.screens.count,
             "screens": NSScreen.screens.map { ["name": $0.localizedName, "scale": $0.backingScaleFactor, "width": $0.frame.width, "height": $0.frame.height] as [String: Any] },
             "defaults_domain": Bundle.main.bundleIdentifier ?? "", "reduce_motion_enabled": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
@@ -183,7 +183,7 @@ enum RuntimeWindowBenchmark {
                 if timedOut {
                     sample["end_to_end_lower_bound_ms"] = (ProcessInfo.processInfo.systemUptime - started) * 1000
                     sample["cancelled_request_ids"] = Array(controller.requestIDs)
-                    controller.queryTimer?.invalidate(); controller.cancelQueries(); controller.querySequence += 1
+                    controller.pendingQuery?.cancel(); controller.pendingQuery = nil; controller.cancelQueries(); controller.querySequence += 1
                     sample["success"] = false; samples.append(sample); aborted = true; stable = false; targetsPassed = false; break
                 }
                 let phaseMarks = WindowBenchmarkPhases.snapshot()
@@ -218,7 +218,7 @@ enum RuntimeWindowBenchmark {
                             "statistics": ["measured_samples": measured.count, "p50_ms": percentile(latencies, 0.5).map { $0 as Any } ?? NSNull(), "p95_ms": complete ? (p95.map { $0 as Any } ?? NSNull()) : NSNull(), "completed_samples_p95_ms": p95.map { $0 as Any } ?? NSNull(), "max_ms": latencies.max().map { $0 as Any } ?? NSNull(), "p95_at_most_100ms": targetPassed]])
             report["queries"] = results; save()
         }
-        controller.historyTimer?.invalidate(); controller.queryTimer?.invalidate(); controller.stopStatusObservation(); controller.cancelQueries(); controller.window?.orderOut(nil)
+        controller.historyTimer?.invalidate(); controller.pendingQuery?.cancel(); controller.pendingQuery = nil; controller.stopStatusObservation(); controller.cancelQueries(); controller.window?.orderOut(nil)
         let afterPreferences = await request(["op": "preferences", "action": "get"], timeout: setupTimeout)
         let afterValues = afterPreferences["values"] as? [String: Any] ?? afterPreferences
         let afterHistory = afterValues["history"] ?? []

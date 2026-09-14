@@ -63,9 +63,14 @@ fn evaluate(snapshot: &SearchSnapshot, text: &str, coverage: &Value) -> Vec<Stri
         &mut |_| Ok(None),
     )
     .unwrap();
+    let evaluator = query.evaluator();
     let mut result: Vec<_> = snapshot
         .visible_entries()
-        .filter(|file| query.matches_available(file, None).unwrap())
+        .filter(|file| {
+            let matched = evaluator.matches_available(file, None).unwrap();
+            assert_eq!(matched, query.matches_available(file, None).unwrap());
+            matched
+        })
         .map(|file| file.path.clone())
         .collect();
     result.sort();
@@ -200,9 +205,11 @@ fn cached_topology_is_shared_only_within_its_immutable_generation() {
 #[test]
 fn cancellation_and_unknown_content_never_become_successful_empty_results() {
     let snapshot = fixture();
-    assert!(snapshot
-        .directory_hierarchy(&AtomicBool::new(true))
-        .is_err());
+    assert!(
+        snapshot
+            .directory_hierarchy(&AtomicBool::new(true))
+            .is_err()
+    );
     assert!(snapshot.hierarchy.get().is_none());
     assert_eq!(
         evaluate(
@@ -216,15 +223,17 @@ fn cancellation_and_unknown_content_never_become_successful_empty_results() {
     let tree = snapshot
         .directory_hierarchy(&AtomicBool::new(false))
         .unwrap();
-    assert!(resolve(
-        &mut query,
-        &snapshot,
-        tree,
-        &coverage(),
-        &AtomicBool::new(true),
-        &mut |_| panic!("cancelled query read content")
-    )
-    .is_err());
+    assert!(
+        resolve(
+            &mut query,
+            &snapshot,
+            tree,
+            &coverage(),
+            &AtomicBool::new(true),
+            &mut |_| panic!("cancelled query read content")
+        )
+        .is_err()
+    );
 }
 #[test]
 fn overflowing_logical_size_remains_unknown_without_wrapping() {
@@ -236,8 +245,12 @@ fn overflowing_logical_size_remains_unknown_without_wrapping() {
         }
     }
     let overflowed = SearchSnapshot::new(files, 2);
-    assert!(evaluate(&overflowed, "foldersize:unknown", &coverage())
-        .contains(&"/fixture/alpha".to_string()));
-    assert!(!evaluate(&overflowed, "foldersize:=0", &coverage())
-        .contains(&"/fixture/alpha".to_string()));
+    assert!(
+        evaluate(&overflowed, "foldersize:unknown", &coverage())
+            .contains(&"/fixture/alpha".to_string())
+    );
+    assert!(
+        !evaluate(&overflowed, "foldersize:=0", &coverage())
+            .contains(&"/fixture/alpha".to_string())
+    );
 }

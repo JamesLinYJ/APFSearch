@@ -3,7 +3,7 @@
 use apfsearch_core::scanner::Watcher;
 use std::{
     fs,
-    sync::{mpsc, Arc, Barrier},
+    sync::{Arc, Barrier, mpsc},
     thread,
     time::{Duration, Instant},
 };

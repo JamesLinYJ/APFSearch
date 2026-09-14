@@ -1,6 +1,8 @@
 //! Disposable prepared search snapshots, published with atomic rename.
 //! SQLite remains authoritative. The cache restores normalized columns, postings,
 //! visibility and name order without repeating Unicode work or sorting on launch.
+use crate::label_pool::LabelPool;
+use crate::shared_text::{SharedText, TextArena};
 use crate::{
     index_store::{FileSlots, IndexedFile, SearchSnapshot},
     metadata_postings::MetadataPostings,
@@ -14,8 +16,8 @@ use std::{
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicU64, Ordering},
     },
 };
 // Slot order remains stable when an older SQLite ID becomes visible again.
@@ -25,7 +27,8 @@ const RECORD: usize = 212;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) struct PreparedSnapshot {
-    pub entries: Vec<Arc<IndexedFile>>,
+    pub entries: crate::index_store::EntryTable,
+    pub labels: Arc<LabelPool>,
     pub file_slots: FileSlots,
     pub live: RoaringBitmap,
     pub trigrams: Arc<HashMap<[u8; 3], Arc<RoaringBitmap>>>,
@@ -122,12 +125,23 @@ fn write_snapshot(path: &Path, snapshot: &SearchSnapshot, revision: u64) -> io::
         .mode(0o600)
         .open(&temporary.0)?;
     let mut output = BufWriter::new(file);
+    encode_snapshot(&mut output, snapshot, revision)?;
+    output.flush()?;
+    output.get_ref().sync_all()?;
+    drop(output);
+    std::fs::rename(&temporary.0, path)
+}
+fn encode_snapshot(
+    output: &mut (impl Write + Seek),
+    snapshot: &SearchSnapshot,
+    revision: u64,
+) -> io::Result<()> {
     let mut header = [0u8; HEADER];
     output.write_all(&header)?;
     let mut payload_hash = blake3::Hasher::new();
     let (pool_bytes, index_bytes) = {
         let mut writer = PayloadWriter {
-            output: &mut output,
+            output: &mut *output,
             hash: &mut payload_hash,
             bytes: 0,
         };
@@ -135,7 +149,13 @@ fn write_snapshot(path: &Path, snapshot: &SearchSnapshot, revision: u64) -> io::
         let mut strings = HashMap::new();
         let mut properties = HashMap::<String, StringReference>::new();
         let empty_properties = intern("{}", &mut strings, &mut pool)?;
-        for entry in &snapshot.entries {
+        // Keep the hot search-name column contiguous within the existing pool.
+        // All later references still use the same global interning table, so
+        // this changes byte placement rather than duplicating text or I/O.
+        for entry in snapshot.entries.iter() {
+            intern(entry.search_name.as_ref(), &mut strings, &mut pool)?;
+        }
+        for entry in snapshot.entries.iter() {
             let properties_reference = if entry
                 .properties
                 .as_object()
@@ -164,8 +184,8 @@ fn write_snapshot(path: &Path, snapshot: &SearchSnapshot, revision: u64) -> io::
             for text in [
                 entry.parent.as_ref(),
                 entry.name.as_str(),
-                entry.extension.as_str(),
-                entry.volume_id.as_str(),
+                entry.extension.as_ref(),
+                entry.volume_id.as_ref(),
             ] {
                 push_reference(
                     &mut row,
@@ -177,7 +197,7 @@ fn write_snapshot(path: &Path, snapshot: &SearchSnapshot, revision: u64) -> io::
             for text in [
                 override_path,
                 entry.folded_name.as_ref(),
-                entry.folded_extension.as_str(),
+                entry.folded_extension.as_ref(),
                 entry.folded_path.as_ref(),
                 entry.search_name.as_ref(),
                 entry.search_path.as_ref(),
@@ -247,10 +267,7 @@ fn write_snapshot(path: &Path, snapshot: &SearchSnapshot, revision: u64) -> io::
     output.write_all(digest.as_bytes())?;
     output.seek(SeekFrom::Start(0))?;
     output.write_all(&header)?;
-    output.flush()?;
-    output.get_ref().sync_all()?;
-    drop(output);
-    std::fs::rename(&temporary.0, path)
+    Ok(())
 }
 fn get64(data: &[u8], position: &mut usize) -> Option<u64> {
     let value = u64::from_le_bytes(
@@ -272,16 +289,17 @@ fn get32(data: &[u8], position: &mut usize) -> Option<u32> {
 }
 struct StringPool<'a> {
     bytes: &'a [u8],
-    shared: HashMap<StringReference, Arc<str>>,
+    arena: TextArena,
+    labels: Arc<LabelPool>,
 }
-impl StringPool<'_> {
+impl<'a> StringPool<'a> {
     fn reference(row: &[u8], position: &mut usize) -> Option<StringReference> {
         Some(StringReference {
             offset: get64(row, position)?,
             length: get32(row, position)?,
         })
     }
-    fn text(&self, reference: StringReference) -> Option<&str> {
+    fn text(&self, reference: StringReference) -> Option<&'a str> {
         let start = usize::try_from(reference.offset).ok()?;
         std::str::from_utf8(
             self.bytes
@@ -289,17 +307,20 @@ impl StringPool<'_> {
         )
         .ok()
     }
-    fn owned(&self, row: &[u8], position: &mut usize) -> Option<String> {
-        Some(self.text(Self::reference(row, position)?)?.into())
+    fn borrowed(&self, row: &[u8], position: &mut usize) -> Option<&'a str> {
+        self.text(Self::reference(row, position)?)
     }
-    fn shared(&mut self, row: &[u8], position: &mut usize) -> Option<Arc<str>> {
+    fn label(&mut self, row: &[u8], position: &mut usize) -> Option<Arc<str>> {
+        let text = self.borrowed(row, position)?;
+        Some(LabelPool::intern(&mut self.labels, text))
+    }
+    fn owned(&self, row: &[u8], position: &mut usize) -> Option<String> {
+        Some(self.borrowed(row, position)?.into())
+    }
+    fn shared(&mut self, row: &[u8], position: &mut usize) -> Option<SharedText> {
         let reference = Self::reference(row, position)?;
-        if let Some(text) = self.shared.get(&reference) {
-            return Some(text.clone());
-        }
-        let text: Arc<str> = self.text(reference)?.into();
-        self.shared.insert(reference, text.clone());
-        Some(text)
+        self.arena
+            .get(usize::try_from(reference.offset).ok()?, reference.length)
     }
 }
 fn read_bitmap(reader: &mut impl Read, count: usize) -> Option<RoaringBitmap> {
@@ -316,7 +337,30 @@ pub fn read(path: &Path, generation: u64, revision: u64) -> Option<(SearchSnapsh
     let mapped = unsafe { memmap2::Mmap::map(&file).ok()? };
     decode(&mapped, generation, revision).map(|snapshot| (snapshot, generation))
 }
+const PARALLEL_CHECKSUM_MIN_BYTES: usize = 8 * 1024 * 1024;
+
+fn payload_digest(bytes: &[u8]) -> blake3::Hash {
+    if bytes.len() >= PARALLEL_CHECKSUM_MIN_BYTES
+        && let Some(permit) = crate::cpu_executor::acquire_all()
+    {
+        return permit.run(|| {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update_rayon(bytes);
+            hasher.finalize()
+        });
+    }
+    blake3::hash(bytes)
+}
+
 fn decode(data: &[u8], generation: u64, revision: u64) -> Option<SearchSnapshot> {
+    decode_with_metrics(data, generation, revision, |_, _| {})
+}
+fn decode_with_metrics(
+    data: &[u8],
+    generation: u64,
+    revision: u64,
+    mut phase: impl FnMut(&str, usize),
+) -> Option<SearchSnapshot> {
     if data.get(..8)? != MAGIC {
         return None;
     }
@@ -339,14 +383,16 @@ fn decode(data: &[u8], generation: u64, revision: u64) -> Option<SearchSnapshot>
     }
     let expected = checksum(
         data.get(..HEADER)?,
-        &blake3::hash(data.get(HEADER..payload_end)?),
+        &payload_digest(data.get(HEADER..payload_end)?),
     );
     if expected.as_bytes() != data.get(payload_end..)? {
         return None;
     }
+    phase("checksum_verified", 0);
     let mut pool = StringPool {
         bytes: data.get(pool_start..index_start)?,
-        shared: HashMap::new(),
+        labels: Arc::new(LabelPool::default()),
+        arena: TextArena::new(data.get(pool_start..index_start)?)?,
     };
     let mut entries: Vec<Arc<IndexedFile>> = Vec::with_capacity(count);
     for row in data.get(HEADER..pool_start)?.as_chunks::<RECORD>().0 {
@@ -354,20 +400,30 @@ fn decode(data: &[u8], generation: u64, revision: u64) -> Option<SearchSnapshot>
         let id = get64(row, &mut position)? as i64;
         let parent = pool.shared(row, &mut position)?;
         let name = pool.owned(row, &mut position)?;
-        let extension = pool.owned(row, &mut position)?;
-        let volume_id = pool.owned(row, &mut position)?;
-        let properties_text = pool.owned(row, &mut position)?;
-        let override_path = pool.owned(row, &mut position)?;
+        let extension = pool.label(row, &mut position)?;
+        let volume_id = pool.label(row, &mut position)?;
+        let properties_text = pool.borrowed(row, &mut position)?;
+        let override_path = pool.borrowed(row, &mut position)?;
         let path = if override_path.is_empty() {
-            Path::new(parent.as_ref())
-                .join(&name)
-                .to_string_lossy()
-                .into_owned()
+            // Pre-size the owned path before pushing components: shrinking a
+            // grown allocation need not release its physical allocator block.
+            let base = if Path::new(&name).is_absolute() {
+                ""
+            } else {
+                parent.as_ref()
+            };
+            let separator =
+                usize::from(!base.is_empty() && !base.ends_with(std::path::MAIN_SEPARATOR));
+            let capacity = base.len().checked_add(name.len())?.checked_add(separator)?;
+            let mut path = PathBuf::with_capacity(capacity);
+            path.push(base);
+            path.push(&name);
+            path.into_os_string().into_string().ok()?
         } else {
-            override_path
+            override_path.to_owned()
         };
         let folded_name = pool.shared(row, &mut position)?;
-        let folded_extension = pool.owned(row, &mut position)?;
+        let folded_extension = pool.label(row, &mut position)?;
         let folded_path = pool.shared(row, &mut position)?;
         let search_name = pool.shared(row, &mut position)?;
         let search_path = pool.shared(row, &mut position)?;
@@ -393,7 +449,7 @@ fn decode(data: &[u8], generation: u64, revision: u64) -> Option<SearchSnapshot>
             properties: if properties_text == "{}" {
                 json!({})
             } else {
-                serde_json::from_str(&properties_text).ok()?
+                serde_json::from_str(properties_text).ok()?
             },
             parent,
             folded_name,
@@ -415,9 +471,13 @@ fn decode(data: &[u8], generation: u64, revision: u64) -> Option<SearchSnapshot>
             content_indexed: bits & 4 != 0,
         }));
     }
+    phase("records_restored", 0);
+    let labels = pool.labels.clone();
     drop(pool);
+    phase("string_table_released", 0);
     // The usual sorted prefix needs no permanent ID map. Sparse appended IDs
     // are checked against both that prefix and each other by FileSlots.
+    let entries: crate::index_store::EntryTable = entries.into();
     let file_slots = FileSlots::from_entries(&entries).ok()?;
     let mut indexes = Cursor::new(data.get(index_start..payload_end)?);
     let live = read_bitmap(&mut indexes, count)?;
@@ -478,8 +538,10 @@ fn decode(data: &[u8], generation: u64, revision: u64) -> Option<SearchSnapshot>
     if indexes.position() != index_bytes as u64 {
         return None;
     }
-    Some(SearchSnapshot::from_prepared_cache(PreparedSnapshot {
+    phase("postings_restored", 0);
+    let snapshot = SearchSnapshot::from_prepared_cache(PreparedSnapshot {
         entries,
+        labels,
         file_slots,
         live,
         trigrams: Arc::new(trigrams),
@@ -489,13 +551,36 @@ fn decode(data: &[u8], generation: u64, revision: u64) -> Option<SearchSnapshot>
         metadata_postings,
         generation,
         content_revision,
-    }))
+    });
+    phase("snapshot_ready", 0);
+    Some(snapshot)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn parallel_payload_digest_preserves_full_blake3_verification() {
+        for length in [
+            0,
+            1023,
+            1024,
+            PARALLEL_CHECKSUM_MIN_BYTES - 1,
+            PARALLEL_CHECKSUM_MIN_BYTES,
+            PARALLEL_CHECKSUM_MIN_BYTES + 1025,
+        ] {
+            let mut bytes: Vec<u8> = (0..length).map(|index| (index % 251) as u8).collect();
+            let original = payload_digest(&bytes);
+            assert_eq!(original, blake3::hash(&bytes));
+            if let Some(last) = bytes.last_mut() {
+                *last ^= 1;
+                assert_ne!(original, payload_digest(&bytes));
+                assert_eq!(payload_digest(&bytes), blake3::hash(&bytes));
+            }
+        }
+    }
 
     fn update_checksum(bytes: &mut [u8]) {
         let end = bytes.len() - 32;
@@ -565,6 +650,41 @@ mod tests {
             assert_eq!(before.ino(), after.ino());
             assert_eq!(before.mtime_nsec(), after.mtime_nsec());
         }
+    }
+
+    #[test]
+    fn restored_paths_and_properties_outlive_the_cache_mapping() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache = directory.path().join("owned.snapshot.bin");
+        let entries = [
+            ("/", "/"),
+            ("/fixture/路径 café.txt", "路径 café.txt"),
+            ("/fixture/original.txt", "display-alias.txt"),
+            ("/fixture//nested/item", "item"),
+            ("/fixture/trailing/", ""),
+            ("relative/file.txt", "file.txt"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (path, name))| {
+            let mut file = entry(index as i64 + 1, name);
+            file.path = path.into();
+            file.properties = if index % 2 == 0 {
+                json!({})
+            } else {
+                json!({"description":"属性文本 café", "nested":{"tags":["one", "二"]}})
+            };
+            file
+        })
+        .collect();
+        let original = SearchSnapshot::new(entries, 1);
+        write(&cache, &original, 1).unwrap();
+        let (restored, _) = read(&cache, 1, 1).unwrap();
+        std::fs::remove_file(cache).unwrap();
+        assert_eq!(
+            serde_json::to_value(&restored.entries).unwrap(),
+            serde_json::to_value(&original.entries).unwrap()
+        );
     }
 
     #[test]
@@ -654,18 +774,18 @@ mod tests {
             serde_json::to_value(&restored.entries).unwrap(),
             serde_json::to_value(&original.entries).unwrap()
         );
-        for (before, after) in original.entries.iter().zip(&restored.entries) {
+        for (before, after) in original.entries.iter().zip(restored.entries.iter()) {
             assert_eq!(before.folded_name, after.folded_name);
             assert_eq!(before.search_name, after.search_name);
             assert_eq!(before.folded_path, after.folded_path);
             assert_eq!(before.search_path, after.search_path);
             assert_eq!(before.parent, after.parent);
         }
-        assert!(Arc::ptr_eq(
+        assert!(SharedText::ptr_eq(
             &restored.entries[0].parent,
             &restored.entries[2].parent
         ));
-        assert!(Arc::ptr_eq(
+        assert!(SharedText::ptr_eq(
             &restored.entries[0].folded_name,
             &restored.entries[0].search_name
         ));
@@ -737,3 +857,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, target_os = "macos"))]
+#[path = "cache_memory_tests.rs"]
+mod memory_tests;

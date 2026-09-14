@@ -2,7 +2,7 @@
 //! entries (hard-link aliases) are reported separately from independent objects.
 use crate::{index_store::SearchSnapshot, query};
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap},
     fs::{File, Metadata, OpenOptions},

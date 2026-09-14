@@ -10,8 +10,9 @@ use serde_json::json;
 use std::{
     collections::HashMap,
     sync::{
+        Arc, Barrier,
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Barrier,
+        mpsc,
     },
     thread,
 };
@@ -165,8 +166,13 @@ fn numeric_size_precision_and_large_integer_casts_match_full_evaluator() {
             for include_low in [false, true] {
                 for include_high in [false, true] {
                     for negate in [false, true] {
-                        check(&snapshot, &number("size", low, high, include_low, include_high, negate),
-                            &format!("bounds {low:?}..{high:?}, {include_low}/{include_high}, negate={negate}"));
+                        check(
+                            &snapshot,
+                            &number("size", low, high, include_low, include_high, negate),
+                            &format!(
+                                "bounds {low:?}..{high:?}, {include_low}/{include_high}, negate={negate}"
+                            ),
+                        );
                     }
                 }
             }

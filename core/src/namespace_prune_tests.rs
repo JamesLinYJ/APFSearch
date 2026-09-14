@@ -231,9 +231,11 @@ fn cancelled_or_failed_namespace_prune_rolls_back_every_scope_and_journal() {
             );
         }
         if fail {
-            assert!(result
-                .unwrap_err()
-                .contains("injected namespace prune failure"));
+            assert!(
+                result
+                    .unwrap_err()
+                    .contains("injected namespace prune failure")
+            );
         } else {
             assert_eq!(result.unwrap(), None);
             assert!(cancelled.load(Ordering::Relaxed));

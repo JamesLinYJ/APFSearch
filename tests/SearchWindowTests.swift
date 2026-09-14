@@ -289,7 +289,7 @@ enum SearchWindowTests {
             c.updateStatus()
             await settle("status_\(iteration)", duration: 0.02)
         }
-        c.queryTimer?.invalidate(); c.historyTimer?.invalidate(); c.stopStatusObservation()
+        c.pendingQuery?.cancel(); c.pendingQuery = nil; c.historyTimer?.invalidate(); c.stopStatusObservation()
         let requestedSizeWasAccepted = abs(baseline.width - targetSize.width) <= 0.5 && abs(baseline.height - targetSize.height) <= 0.5
         check("window_outer_frame_stays_fixed_\(Int(targetSize.width))x\(Int(targetSize.height))", requestedSizeWasAccepted && maxDelta <= 0.5, ["nominal_width": size.width, "nominal_height": size.height, "requested_width": targetSize.width, "requested_height": targetSize.height, "screen_visible_frame": NSStringFromRect(screen.visibleFrame), "baseline": NSStringFromRect(baseline), "samples": samples, "max_frame_delta_points": maxDelta, "first_changed_action": firstChange, "sidebar_actions": 20, "sidebar_samples": sidebarSamples])
         if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
@@ -368,7 +368,7 @@ enum SearchWindowTests {
         check("appkit_deletion_does_not_reload_shifted_rows", deleteReloads.isEmpty, ["reloaded": Array(deleteReloads)])
         check("appkit_deletion_finishes_with_correct_count_and_identity", c.table.numberOfRows == 20 && c.selectedPaths == [row(5)["path"] as! String], ["selection": c.selectedPaths])
 
-        // Hold a reply, then type without running the debounce timer. The old
+        // Hold a reply, then type before queued input work runs. The old
         // reply must not become actionable or replace the displayed snapshot.
         let typing = await controller(base)
         typing.search.stringValue = "old"; typing.runQuery()
@@ -376,8 +376,32 @@ enum SearchWindowTests {
         typing.search.stringValue = "new"
         typing.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: typing.search))
         held?.completion(reply([row(99)]))
-        check("input_invalidates_reply_before_debounce_fires", !typing.resultsAreCurrent && typing.cachedRows[0]?["path"] as? String == base[0]["path"] as? String, ["results_current": typing.resultsAreCurrent, "first_path": typing.cachedRows[0]?["path"] as? String ?? ""])
-        typing.queryTimer?.invalidate(); typing.historyTimer?.invalidate(); SearchClient.shared.clear()
+        check("input_invalidates_reply_before_queued_query", !typing.resultsAreCurrent && typing.cachedRows[0]?["path"] as? String == base[0]["path"] as? String, ["results_current": typing.resultsAreCurrent, "first_path": typing.cachedRows[0]?["path"] as? String ?? ""])
+        typing.pendingQuery?.cancel(); typing.pendingQuery = nil; typing.historyTimer?.invalidate(); SearchClient.shared.clear()
+
+        for text in ["r", "re", "report"] {
+            typing.search.stringValue = text
+            typing.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: typing.search))
+        }
+        check("input_notifications_do_not_dispatch_synchronously", SearchClient.shared.takeQuery() == nil)
+        await pump()
+        let coalesced = SearchClient.shared.takeQuery()
+        check("input_burst_dispatches_only_latest_query", coalesced?.request["text"] as? String == "report" && SearchClient.shared.takeQuery() == nil)
+        typing.cancelQueries(); SearchClient.shared.clear()
+        typing.window?.makeFirstResponder(typing.search)
+        if let editor = typing.search.currentEditor() as? NSTextView {
+            editor.setMarkedText("zhong", selectedRange: NSRange(location: 5, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
+            typing.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: typing.search))
+            await pump()
+            check("marked_text_does_not_dispatch_query", editor.hasMarkedText() && SearchClient.shared.takeQuery() == nil)
+            editor.unmarkText(); typing.search.stringValue = "中文"
+            typing.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: typing.search))
+            await pump()
+            check("committed_text_dispatches_query", SearchClient.shared.takeQuery()?.request["text"] as? String == "中文")
+        } else {
+            unavailable.append(["test": "input_method_composition", "reason": "Native field editor unavailable"])
+        }
+        typing.cancelQueries(); typing.historyTimer?.invalidate(); SearchClient.shared.clear()
 
         // Deliver two different query replies while AppKit is moving rows.
         // Neither may tear down an in-flight insertion; only the newest query
@@ -495,6 +519,25 @@ enum SearchWindowTests {
         check("uncached_first_visible_row_sends_no_anchor_pair", missingAnchor != nil && missingAnchor?["anchor_path"] == nil && missingAnchor?["anchor_id"] == nil && missingAnchor?["anchor_delta"] == nil)
         anchorFallback.cancelQueries(); SearchClient.shared.clear()
 
+        let growing = await controller([row(0)])
+        growing.table.testReloadedRows.removeAll()
+        let expandedRows = (100..<130).map { row($0) }
+        growing.applyResultRows(expandedRows, offset: 0, count: expandedRows.count, replaceCache: true, animate: false)
+        growing.window?.contentView?.layoutSubtreeIfNeeded(); growing.table.displayIfNeeded()
+        await pump()
+        let growthReloads = growing.table.testReloadedRows.reduce(into: IndexSet()) { $0.formUnion($1) }
+        check("growing_results_reload_surviving_rows_only", growthReloads == IndexSet(integer: 0), ["reloaded_rows": Array(growthReloads)])
+        let visibleGrowth = growing.table.rows(in: growing.table.visibleRect)
+        let growthEnd = min(expandedRows.count, visibleGrowth.location + visibleGrowth.length)
+        var correctGrowth = visibleGrowth.location != NSNotFound && growthEnd > visibleGrowth.location
+        if correctGrowth {
+            for index in visibleGrowth.location..<growthEnd {
+                let cell = growing.table.view(atColumn: 0, row: index, makeIfNecessary: false) as? NSTableCellView
+                correctGrowth = correctGrowth && cell?.textField?.stringValue == growing.displayName(expandedRows[index], path: expandedRows[index]["path"] as! String)
+            }
+        }
+        checkDisplay("growing_results_show_updated_surviving_and_new_cells", correctGrowth)
+
         let layout = await controller(base)
         layout.offlineListID = nil; layout.roots = ["/UIRegression"]
         layout.currentStatus = ["success": true, "count": base.count, "scanning": false]
@@ -553,7 +596,7 @@ enum SearchWindowTests {
         await windowFrameRegression(NSSize(width: 850, height: 600))
         await windowFrameRegression(NSSize(width: 1150, height: 740))
         for controller in controllers {
-            controller.queryTimer?.invalidate(); controller.historyTimer?.invalidate(); controller.stopStatusObservation()
+            controller.pendingQuery?.cancel(); controller.pendingQuery = nil; controller.historyTimer?.invalidate(); controller.stopStatusObservation()
             controller.window?.orderOut(nil)
         }
         let passed = assertions.filter { $0["passed"] as? Bool == true }.count

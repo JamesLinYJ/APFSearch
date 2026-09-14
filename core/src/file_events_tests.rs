@@ -2,8 +2,9 @@ use super::*;
 use std::{
     fs,
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc,
     },
     thread,
     time::Duration,

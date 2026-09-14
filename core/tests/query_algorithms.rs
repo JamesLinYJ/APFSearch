@@ -2,7 +2,7 @@ use apfsearch_core::{
     index_store::{IndexedFile, SearchSnapshot},
     query::{self, Query},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeSet, HashMap},
     path::Path,
@@ -106,12 +106,16 @@ fn substring_candidates_are_a_superset_for_unicode_and_boolean_combinations() {
         }
     }
     assert!(parse("cafe").matches(&entry("café.txt", 1), None).unwrap());
-    assert!(!parse("diacritics:cafe")
-        .matches(&entry("café.txt", 1), None)
-        .unwrap());
-    assert!(parse("diacritics:café")
-        .matches(&entry("cafe\u{301}.txt", 1), None)
-        .unwrap());
+    assert!(
+        !parse("diacritics:cafe")
+            .matches(&entry("café.txt", 1), None)
+            .unwrap()
+    );
+    assert!(
+        parse("diacritics:café")
+            .matches(&entry("cafe\u{301}.txt", 1), None)
+            .unwrap()
+    );
 }
 #[test]
 fn extraction_prefilters_never_drop_a_possible_match_under_nested_not_or_and() {
@@ -173,33 +177,56 @@ fn scoped_modifiers_override_locally_and_file_group_keeps_negation_inside() {
     dir.is_dir = true;
     assert!(!parse("file:<!missing>").matches(&dir, None).unwrap());
     assert!(parse("!file:<missing>").matches(&dir, None).unwrap());
-    assert!(parse("content:<alpha !gamma>")
-        .matches(&e, Some("ALPHA beta"))
-        .unwrap());
-    assert!(!parse("content:<alpha !gamma>")
-        .matches_available(&e, None)
-        .unwrap());
-    assert!(parse("regex:gr(a|e)y")
-        .matches(&entry("gray.txt", 1), None)
-        .unwrap());
-    assert!(parse("no-wildcards:?")
-        .matches(&entry("why?.txt", 1), None)
-        .unwrap());
-    assert!(!parse("whole:alpha")
-        .matches(&entry("alpha.txt", 1), None)
-        .unwrap());
-    assert!(parse("CASE:EXT:TXT")
-        .matches(&entry("README.TXT", 1), None)
-        .unwrap());
+    assert!(
+        parse("content:<alpha !gamma>")
+            .matches(&e, Some("ALPHA beta"))
+            .unwrap()
+    );
+    assert!(
+        !parse("content:<alpha !gamma>")
+            .matches_available(&e, None)
+            .unwrap()
+    );
+    assert!(
+        parse("regex:gr(a|e)y")
+            .matches(&entry("gray.txt", 1), None)
+            .unwrap()
+    );
+    assert!(
+        parse("no-wildcards:?")
+            .matches(&entry("why?.txt", 1), None)
+            .unwrap()
+    );
+    assert!(
+        !parse("whole:alpha")
+            .matches(&entry("alpha.txt", 1), None)
+            .unwrap()
+    );
+    assert!(
+        parse("CASE:EXT:TXT")
+            .matches(&entry("README.TXT", 1), None)
+            .unwrap()
+    );
     let macros = HashMap::from([("pair".to_string(), "alpha beta".to_string())]);
-    assert!(query::parse("content:<pair:>", &macros)
-        .unwrap()
-        .matches(&e, Some("alpha beta"))
-        .unwrap());
+    assert!(
+        query::parse("content:<pair:>", &macros)
+            .unwrap()
+            .matches(&e, Some("alpha beta"))
+            .unwrap()
+    );
 }
 #[test]
 fn malformed_regex_group_and_numeric_boundaries_are_errors_or_precise() {
-    for s in ["content:<alpha", "content:<>", "case:<foo>|", "regex:[", "width:1zz", "size:999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999tb"] { assert!(query::parse(s,&HashMap::new()).is_err(),"{s}"); }
+    for s in [
+        "content:<alpha",
+        "content:<>",
+        "case:<foo>|",
+        "regex:[",
+        "width:1zz",
+        "size:999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999tb",
+    ] {
+        assert!(query::parse(s, &HashMap::new()).is_err(), "{s}");
+    }
     for n in [0, 1023, 1024, 1025, 1535, 1536, 1638, 1639, 2047, 2048] {
         let mut e = entry("size.bin", 1);
         e.size = n;
@@ -216,12 +243,16 @@ fn malformed_regex_group_and_numeric_boundaries_are_errors_or_precise() {
         }
     }
     // Wildcard matching is the whole value, including valid filename newlines.
-    assert!(parse("name:foo*")
-        .matches(&entry("foo\nbar", 1), None)
-        .unwrap());
-    assert!(!parse("name:foo?")
-        .matches(&entry("fooX\n", 1), None)
-        .unwrap());
+    assert!(
+        parse("name:foo*")
+            .matches(&entry("foo\nbar", 1), None)
+            .unwrap()
+    );
+    assert!(
+        !parse("name:foo?")
+            .matches(&entry("fooX\n", 1), None)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -235,11 +266,13 @@ fn regex_lexer_preserves_escaped_punctuation_and_limits_recursive_work() {
     ] {
         assert!(parse(q).matches(&entry(name, 1), None).unwrap(), "{q}");
     }
-    assert!(query::parse(
-        &format!("{}x{}", "<".repeat(200), ">".repeat(200)),
-        &HashMap::new()
-    )
-    .is_err());
+    assert!(
+        query::parse(
+            &format!("{}x{}", "<".repeat(200), ">".repeat(200)),
+            &HashMap::new()
+        )
+        .is_err()
+    );
     assert!(query::parse(&format!("{}x", "!".repeat(200)), &HashMap::new()).is_err());
     assert!(query::parse(&"x".repeat(65537), &HashMap::new()).is_err());
     let mut macros = HashMap::new();
@@ -256,24 +289,32 @@ fn regex_lexer_preserves_escaped_punctuation_and_limits_recursive_work() {
 #[test]
 fn parent_scope_unknown_numeric_values_and_relative_dates() {
     let e = entry("file.txt", 1);
-    assert!(parse("parent:/algorithm-fixture/")
-        .matches(&e, None)
-        .unwrap());
+    assert!(
+        parse("parent:/algorithm-fixture/")
+            .matches(&e, None)
+            .unwrap()
+    );
     assert!(!parse("parent:/algorithm").matches(&e, None).unwrap());
     assert!(parse("path-part:algorithm").matches(&e, None).unwrap());
     let mut nested = e.clone();
     nested.path = "/algorithm-fixture/sub/file.txt".into();
     nested.prepare();
-    assert!(!parse("parent:/algorithm-fixture")
-        .matches(&nested, None)
-        .unwrap());
-    assert!(parse("location:/algorithm-fixture")
-        .matches(&nested, None)
-        .unwrap());
+    assert!(
+        !parse("parent:/algorithm-fixture")
+            .matches(&nested, None)
+            .unwrap()
+    );
+    assert!(
+        parse("location:/algorithm-fixture")
+            .matches(&nested, None)
+            .unwrap()
+    );
     assert!(parse("width:unknown").matches(&e, None).unwrap());
-    assert!(parse("width:unknown")
-        .may_match_before_extraction(&e)
-        .unwrap());
+    assert!(
+        parse("width:unknown")
+            .may_match_before_extraction(&e)
+            .unwrap()
+    );
     let mut known = e.clone();
     known.properties = json!({"width":0});
     assert!(!parse("width:unknown").matches(&known, None).unwrap());
@@ -289,9 +330,11 @@ fn parent_scope_unknown_numeric_values_and_relative_dates() {
     assert!(parse("dm:2days").matches(&recent, None).unwrap());
     assert!(parse("dm:1month").matches(&recent, None).unwrap());
     assert!(parse("dm:1year").matches(&recent, None).unwrap());
-    assert!(parse(r#"suffix:" a ""#)
-        .matches(&entry(" a a ", 1), None)
-        .unwrap());
+    assert!(
+        parse(r#"suffix:" a ""#)
+            .matches(&entry(" a a ", 1), None)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -310,15 +353,21 @@ fn lease_query_clock_and_extension_property_semantics_are_stable() {
     );
     assert!(parse("extension:jpg").matches(&e, None).unwrap());
     assert!(!parse("ext:jpg").matches(&e, None).unwrap());
-    assert!(parse("regex:extension:^jpg[0-9]$")
-        .matches(&e, None)
-        .unwrap());
-    assert!(parse("ext:cafe")
-        .matches(&entry("file.café", 1), None)
-        .unwrap());
-    assert!(!parse("diacritics:ext:cafe")
-        .matches(&entry("file.café", 1), None)
-        .unwrap());
+    assert!(
+        parse("regex:extension:^jpg[0-9]$")
+            .matches(&e, None)
+            .unwrap()
+    );
+    assert!(
+        parse("ext:cafe")
+            .matches(&entry("file.café", 1), None)
+            .unwrap()
+    );
+    assert!(
+        !parse("diacritics:ext:cafe")
+            .matches(&entry("file.café", 1), None)
+            .unwrap()
+    );
 }
 
 #[test]
@@ -333,8 +382,10 @@ fn quotes_escape_function_names_and_operator_characters() {
         assert!(parse(q).matches(&entry(name, 1), None).unwrap(), "{q}");
     }
     let macros = HashMap::from([("docs".to_string(), "ext:pdf".to_string())]);
-    assert!(query::parse(r#""docs:""#, &macros)
-        .unwrap()
-        .matches(&entry("docs:.txt", 1), None)
-        .unwrap());
+    assert!(
+        query::parse(r#""docs:""#, &macros)
+            .unwrap()
+            .matches(&entry("docs:.txt", 1), None)
+            .unwrap()
+    );
 }

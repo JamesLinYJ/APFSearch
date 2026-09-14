@@ -5,8 +5,8 @@ use serde_json::Value;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -187,9 +187,11 @@ mod tests {
         assert!(leases.get_at(&id, start + Duration::from_secs(9)).is_ok());
         assert!(leases.get_at(&id, start + Duration::from_secs(18)).is_ok());
         assert!(leases.get_at(&id, start + Duration::from_secs(29)).is_err());
-        assert!(leases
-            .retain_at(snapshot(2), json!({}), start + Duration::from_secs(29))
-            .is_ok());
+        assert!(
+            leases
+                .retain_at(snapshot(2), json!({}), start + Duration::from_secs(29))
+                .is_ok()
+        );
     }
     #[test]
     fn window_capacity_is_bounded_and_does_not_consume_operation_slots() {
@@ -230,9 +232,11 @@ mod tests {
             leases.discard_expired_at(start + Duration::from_secs(11)),
             1
         );
-        assert!(leases
-            .get_at(&token, start + Duration::from_secs(11))
-            .is_err());
+        assert!(
+            leases
+                .get_at(&token, start + Duration::from_secs(11))
+                .is_err()
+        );
         assert_eq!(reader.snapshot.generation, 7);
     }
     #[test]
@@ -258,9 +262,11 @@ mod tests {
             first_weak.upgrade().is_some(),
             "inflight reader owns its snapshot"
         );
-        assert!(leases
-            .get_at(&active_id, start + Duration::from_secs(12))
-            .is_ok());
+        assert!(
+            leases
+                .get_at(&active_id, start + Duration::from_secs(12))
+                .is_ok()
+        );
         assert!(active_weak.upgrade().is_some());
         assert_eq!(
             leases.discard_expired_at(start + Duration::from_secs(12)),
@@ -271,8 +277,10 @@ mod tests {
             first_weak.upgrade().is_none(),
             "expired lease no longer retains data"
         );
-        assert!(leases
-            .get_at(&first_id, start + Duration::from_secs(12))
-            .is_err());
+        assert!(
+            leases
+                .get_at(&first_id, start + Duration::from_secs(12))
+                .is_err()
+        );
     }
 }

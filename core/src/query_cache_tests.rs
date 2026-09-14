@@ -84,8 +84,7 @@ fn many_window_queries_preserve_their_pages_and_leave_export_capacity() {
         );
     }
     assert_eq!(
-        engine.call(json!({"op":"release_snapshot","snapshot_lease":export["snapshot_lease"]}))
-            ["released"],
+        engine.call(json!({"op":"release_snapshot","snapshot_lease":export["snapshot_lease"]}))["released"],
         true
     );
 }
@@ -179,13 +178,19 @@ fn string_columns_share_equivalent_folds_and_parent_names() {
     let (_temporary, engine, _) = fixture(20);
     let snapshot = engine.snapshot.load_full();
     for file in snapshot.visible_entries() {
-        assert!(Arc::ptr_eq(&file.folded_path, &file.search_path));
-        assert!(Arc::ptr_eq(&file.folded_name, &file.search_name));
+        assert!(crate::shared_text::SharedText::ptr_eq(
+            &file.folded_path,
+            &file.search_path
+        ));
+        assert!(crate::shared_text::SharedText::ptr_eq(
+            &file.folded_name,
+            &file.search_name
+        ));
     }
     let mut entries: Vec<_> = snapshot.visible_entries().cloned().collect();
     entries[1].path = "/query-cache-fixture/Group00000/other.txt".into();
     let prepared = SearchSnapshot::new(entries, 99);
-    assert!(Arc::ptr_eq(
+    assert!(crate::shared_text::SharedText::ptr_eq(
         &prepared.entries[0].parent,
         &prepared.entries[1].parent
     ));
@@ -429,7 +434,7 @@ fn build_sized_delta_keeps_unchanged_entries_and_postings_shared() {
         &metadata.entries[30_000],
         &previous.entries[30_000]
     ));
-    assert!(Arc::ptr_eq(
+    assert!(crate::shared_text::SharedText::ptr_eq(
         &metadata.entries[0].folded_path,
         &previous.entries[0].folded_path
     ));
@@ -741,4 +746,93 @@ fn incremental_refresh_restores_a_reappeared_id_without_changing_publication_sem
         engine.index_store.lock().unwrap().get("revision", json!(0)),
         diagnostic["target_revision"]
     );
+}
+
+#[test]
+fn incremental_orders_match_full_sort_across_sparse_and_dense_changes() {
+    let (_temporary, engine, _) = fixture(4096);
+    let mut current = engine.snapshot.load_full();
+    let cancelled = AtomicBool::new(false);
+    let orders = [
+        json!([{"field":"name"}]),
+        json!([{"field":"path"}]),
+        json!([{"field":"size","ascending":false},{"field":"name"}]),
+    ]
+    .map(|value| result_order::ResultOrder::parse(&value).unwrap());
+    for (step, count) in [1usize, 4, 100, 2, 160, 3].into_iter().enumerate() {
+        // Populate secondary sort caches before changing the underlying rows.
+        let old_orders: Vec<_> = orders
+            .iter()
+            .map(|order| current.result_order(order, &cancelled).unwrap())
+            .collect();
+        let mut changes = Vec::new();
+        if step > 0 {
+            // The first changed slot of the preceding batch was deleted.
+            // Restore that same identity, which is absent from the old order.
+            let slot = (step - 1) * 41;
+            assert!(!current.live.contains(slot as u32));
+            let restored = current.entries[slot].as_ref().clone();
+            changes.push((restored.id, Some(restored)));
+        }
+        for index in 0..count {
+            let slot = (index * 17 + step * 41) % current.entries.len();
+            let file = current.entries[slot].as_ref();
+            let replacement = if index % 3 == 0 {
+                None
+            } else {
+                let mut replacement = file.clone();
+                replacement.name = format!("报告{}-{}.txt", index % 9, step);
+                replacement.path = format!("/changed/{}/{}", replacement.id, replacement.name);
+                replacement.size += 11;
+                Some(replacement)
+            };
+            changes.push((file.id, replacement));
+        }
+        let mut added = current.entries[0].as_ref().clone();
+        added.id = 10_000 + step as i64;
+        added.name = format!("added{step}.txt");
+        added.path = format!("/new/{}", added.name);
+        changes.push((added.id, Some(added)));
+        let updated =
+            SearchSnapshot::from_changes(changes, current.generation + 1, &current).unwrap();
+        for (order, old_order) in orders.iter().zip(old_orders) {
+            let mut expected: Vec<_> = updated.live.iter().collect();
+            expected.sort_unstable_by(|a, b| {
+                order.compare(&updated.entries[*a as usize], &updated.entries[*b as usize])
+            });
+            assert_eq!(
+                updated.result_order(order, &cancelled).unwrap().as_ref(),
+                &expected
+            );
+            assert_eq!(
+                current.result_order(order, &cancelled).unwrap().as_ref(),
+                old_order.as_ref()
+            );
+        }
+        current = Arc::new(updated);
+    }
+}
+
+#[test]
+fn imported_and_incremental_records_share_metadata_labels() {
+    let (_temporary, engine, _) = fixture(3);
+    let old = engine.snapshot.load_full();
+    let first = &old.entries[0];
+    assert!(Arc::ptr_eq(&first.volume_id, &old.entries[1].volume_id));
+    assert!(Arc::ptr_eq(&first.extension, &first.folded_extension));
+    let mut added = first.as_ref().clone();
+    added.id = 1000;
+    added.path = "/shared-labels/new.txt".into();
+    added.name = "new.txt".into();
+    added.extension = Arc::from(first.extension.as_ref());
+    added.volume_id = Arc::from(first.volume_id.as_ref());
+    let updated =
+        SearchSnapshot::from_changes(vec![(added.id, Some(added))], old.generation + 1, &old)
+            .unwrap();
+    let new = updated.entries.last().unwrap();
+    assert!(Arc::ptr_eq(&first.extension, &new.extension));
+    assert!(Arc::ptr_eq(&first.volume_id, &new.volume_id));
+    let serialized = serde_json::to_value(new.as_ref()).unwrap();
+    assert_eq!(serialized["extension"], first.extension.as_ref());
+    assert_eq!(serialized["volume_id"], first.volume_id.as_ref());
 }

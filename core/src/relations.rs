@@ -6,7 +6,7 @@ use crate::{
     query::{Query, Term},
 };
 use roaring::RoaringTreemap;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     path::Path,

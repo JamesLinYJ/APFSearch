@@ -23,15 +23,15 @@ APFSearch 通过 AppKit 界面和共享服务的命令行客户端，提供文�
 
 ## 下载
 
-**[v0.1.0 预发布](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.0)** · macOS 14 及以上
+**[v0.1.1 预发布](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.1)** · macOS 14 及以上
 
 | 你的 Mac | 下载 |
 | :--- | :--- |
-| 通用版（两种芯片） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-Universal.zip) |
-| Apple Silicon（M 系列） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-AppleSilicon.zip) |
-| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/APFSearch-0.1.0-Intel.zip) |
+| 通用版（两种芯片） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.1/APFSearch-0.1.1-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.1/APFSearch-0.1.1-Universal.zip) |
+| Apple Silicon（M 系列） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.1/APFSearch-0.1.1-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.1/APFSearch-0.1.1-AppleSilicon.zip) |
+| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.1/APFSearch-0.1.1-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.1/APFSearch-0.1.1-Intel.zip) |
 
-不确定芯片类型时选通用版。打开 DMG 后，将 APFSearch 拖入 Applications 文件夹；ZIP 适合手动部署。各包内的应用均使用 Developer ID 签名并附有 Apple 公证票据，DMG 容器未单独公证。[SHA-256 校验值](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.0/SHA256SUMS.txt)。
+不确定芯片类型时选通用版。打开 DMG 后，将 APFSearch 拖入 Applications 文件夹；ZIP 适合手动部署。各包内的应用均使用 Developer ID 签名并附有 Apple 公证票据，DMG 容器未单独公证。[SHA-256 校验值](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.1/SHA256SUMS.txt)。
 
 这是开发预览版。Intel 代码已通过 Rosetta 运行检查；真实 Intel 硬件及 macOS 14 仍需实机验证。
 

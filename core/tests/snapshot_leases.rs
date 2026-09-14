@@ -1,5 +1,5 @@
 use apfsearch_core::SearchEngine;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{fs, os::unix::fs::MetadataExt, path::Path, sync::Arc};
 
 fn expect_success(engine: &Arc<SearchEngine>, request: Value) -> Value {
@@ -71,8 +71,7 @@ fn leased_pages_keep_rows_and_query_preferences_after_history_is_evicted() {
     }
     assert!(generations.windows(2).all(|pair| pair[0] < pair[1]));
     assert_eq!(
-        engine.call(json!({"op":"query","text":"docs:","generation":original["generation"]}))
-            ["success"],
+        engine.call(json!({"op":"query","text":"docs:","generation":original["generation"]}))["success"],
         false,
         "Fixture must really evict the unleased generation"
     );
@@ -91,8 +90,11 @@ fn leased_pages_keep_rows_and_query_preferences_after_history_is_evicted() {
         assert_eq!(page["total"], 9);
         all_rows.extend(page["rows"].as_array().unwrap().iter().cloned());
     }
-    assert_eq!(all_rows, *original["rows"].as_array().unwrap(),
-        "Rows, paths, sizes, exclusions, macro expansion, and sort must remain exactly from the lease");
+    assert_eq!(
+        all_rows,
+        *original["rows"].as_array().unwrap(),
+        "Rows, paths, sizes, exclusions, macro expansion, and sort must remain exactly from the lease"
+    );
 
     let mismatch = engine.call(json!({"op":"query","text":"docs:","snapshot_lease":token,
         "generation":current["generation"]}));
@@ -244,10 +246,12 @@ fn extracted_content_requires_current_file_identity_and_content_leases_reject_ch
         old_content["success"], false,
         "Never silently combine old metadata with newly extracted content"
     );
-    assert!(old_content["error"]
-        .as_str()
-        .unwrap()
-        .contains("Content revision"));
+    assert!(
+        old_content["error"]
+            .as_str()
+            .unwrap()
+            .contains("Content revision")
+    );
     let old_metadata = expect_success(
         &engine,
         json!({"op":"query","text":"file:","snapshot_lease":lease["snapshot_lease"]}),
