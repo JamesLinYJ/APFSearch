@@ -258,7 +258,8 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     var pendingSelectedPaths = Set<String>()
     var bookmarkQueries: [String] = []
     var previewURLs: [NSURL] = []
-    var iconCache = NSCache<NSString, NSImage>()
+    let iconLoader = ResultIconLoader()
+    var visibleIconUpdate: DispatchWorkItem?
     let pageSize = 200
     let dates: DateFormatter = { let date = DateFormatter(); date.locale = .autoupdatingCurrent; date.dateStyle = .medium; date.timeStyle = .short; return date }()
     let sizes = ByteCountFormatter()
@@ -309,7 +310,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         ])
         window.nextResponder = self
         window.delegate = self
-        iconCache.countLimit = 512
+        iconLoader.imageAvailable = { [weak self] in self?.scheduleVisibleIconUpdate() }
         buildInterface()
         // Restore once after installing the complete content hierarchy. Later
         // status/search updates must never choose or restore a window frame.
@@ -774,6 +775,8 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     }
     func observeLiveScrolling() {
         guard let scroll = table.enclosingScrollView else { return }
+        scroll.contentView.postsBoundsChangedNotifications = true
+        liveScrollObservers.append(NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in self?.scheduleVisibleIconUpdate() })
         liveScrollObservers.append(NotificationCenter.default.addObserver(forName: NSScrollView.willStartLiveScrollNotification, object: scroll, queue: .main) { [weak self] _ in self?.liveScrollInProgress = true })
         liveScrollObservers.append(NotificationCenter.default.addObserver(forName: NSScrollView.didEndLiveScrollNotification, object: scroll, queue: .main) { [weak self] _ in self?.liveScrollInProgress = false; self?.refreshVisibleResults() })
     }
@@ -894,20 +897,13 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         switch identifier.rawValue {
         case "name":
             cell.textField?.stringValue = displayName(record, path: path)
-            let cacheKey = path as NSString
             if offlineListID != nil {
                 cell.imageView?.image = NSImage(systemSymbolName: boolValue(record["is_dir"]) ? "folder" : "doc", accessibilityDescription: L("offline.file_record"))
-            } else if let image = iconCache.object(forKey: cacheKey) { cell.imageView?.image = image }
+            } else if let image = iconLoader.cachedImage(for: path) { cell.imageView?.image = image }
             else {
                 cell.imageView?.image = NSImage(systemSymbolName: boolValue(record["is_dir"]) ? "folder" : "doc", accessibilityDescription: nil)
-                DispatchQueue.global(qos: .utility).async { [weak self, weak cell] in
-                    let image = NSWorkspace.shared.icon(forFile: path)
-                    DispatchQueue.main.async {
-                        self?.iconCache.setObject(image, forKey: cacheKey)
-                        if cell?.toolTip == path { cell?.imageView?.image = image }
-                    }
-                }
             }
+            scheduleVisibleIconUpdate()
         case "path": cell.textField?.stringValue = displayParent(path); cell.textField?.textColor = .secondaryLabelColor
         case "size":
             cell.textField?.alignment = .right
@@ -917,6 +913,35 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         default: break
         }
         return cell
+    }
+    func scheduleVisibleIconUpdate() {
+        guard offlineListID == nil, visibleIconUpdate == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.visibleIconUpdate = nil
+            self.updateVisibleIcons()
+        }
+        visibleIconUpdate = work
+        DispatchQueue.main.async(execute: work)
+    }
+    func updateVisibleIcons() {
+        let visible = table.rows(in: table.visibleRect)
+        let column = table.column(withIdentifier: NSUserInterfaceItemIdentifier("name"))
+        guard window?.isVisible == true, visible.location != NSNotFound, column >= 0 else {
+            iconLoader.updateDemand([]); return
+        }
+        var paths = Set<String>()
+        let end = min(total, visible.location + visible.length)
+        for row in visible.location..<max(visible.location, end) {
+            guard let path = cachedRows[row]?["path"] as? String,
+                  let cell = table.view(atColumn: column, row: row, makeIfNecessary: false) as? NSTableCellView,
+                  cell.toolTip == path else { continue }
+            paths.insert(path)
+            if let image = iconLoader.cachedImage(for: path), cell.imageView?.image !== image {
+                cell.imageView?.image = image
+            }
+        }
+        iconLoader.updateDemand(paths)
     }
     func isWindowsListPath(_ path: String) -> Bool {
         offlineListID != nil && (path.hasPrefix("\\\\") || path.range(of: #"^[A-Za-z]:\\"#, options: .regularExpression) != nil)
@@ -1085,9 +1110,11 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         let count = (currentStatus["count"] as? NSNumber)?.intValue ?? 0
         let scanning = boolValue(currentStatus["scanning"])
         requestProgress(scanning || queryPending || backgroundTaskName != nil, immediate: scanning || backgroundTaskName != nil)
-        let uncovered = stringList(currentStatus["uncovered"])
-        if coverageButton.isHidden != uncovered.isEmpty { coverageButton.isHidden = uncovered.isEmpty }
-        let coverageTitle = L("status.uncovered_count", (uncovered.count).formatted())
+        // The status bar needs a count, not a conversion and concatenation of
+        // every path on each index event. Full details live in the coverage view.
+        let uncoveredCount = (currentStatus["uncovered"] as? NSArray)?.count ?? 0
+        if coverageButton.isHidden != (uncoveredCount == 0) { coverageButton.isHidden = uncoveredCount == 0 }
+        let coverageTitle = L("status.uncovered_count", uncoveredCount.formatted())
         if coverageButton.title != coverageTitle { coverageButton.title = coverageTitle }
         var text = L("status.search_summary", String(describing: total.formatted()), String(describing: count.formatted()), localizedDecimal(elapsed))
         if queryPending { text += " · " + L("status.searching") }
@@ -1099,7 +1126,8 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
 
         if let first = queryWarnings.first { text += " · " + first }
         setStatusText(text)
-        statusLabel.toolTip = (queryWarnings + uncovered).joined(separator: "\n")
+        let tooltip = queryWarnings.first
+        if statusLabel.toolTip != tooltip { statusLabel.toolTip = tooltip }
         if window?.subtitle != "" { window?.subtitle = "" }
     }
     @objc func refreshShortcuts() {
@@ -1525,6 +1553,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     }
     func windowWillClose(_ notification: Notification) {
         progressDelay?.invalidate(); pendingQuery?.cancel(); pendingQuery = nil; historyTimer?.invalidate()
+        visibleIconUpdate?.cancel(); visibleIconUpdate = nil; iconLoader.updateDemand([])
         operationReviewPending = false
         stopStatusObservation(); cancelQueries(); cancelBackground(nil)
         let closing = duplicateWindows; duplicateWindows.removeAll()
@@ -1629,113 +1658,60 @@ private enum SearchMetrics {
     }
 }
 
-/// Permission education only: macOS owns authorization, and no protected file
-/// probes or private TCC APIs are used to infer a grant.
-final class InitialSetupController: NSWindowController, NSPathControlDelegate {
+/// The introduction and the nonactivating drag accessory have separate lifetimes.
+/// Opening Settings never leaves the introduction above another application.
+final class InitialSetupController: NSWindowController, NSWindowDelegate {
     var completion: ((NSApplication.ModalResponse) -> Void)?
-    private let demonstration = PermissionDragDemonstration()
+    private(set) var dragPanel: NSPanel?
+    private var activationObserver: NSObjectProtocol?
+    var settingsOpener: () -> Bool = {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
+    }
     init() {
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 530),
-                            styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
-        panel.titleVisibility = .hidden
-        panel.titlebarAppearsTransparent = true
-        panel.isMovable = true
-        panel.hidesOnDeactivate = false
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 300),
+                            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        panel.title = L("index.full_disk_access")
         super.init(window: panel)
+        panel.delegate = self
+        let stack = makeContent(in: panel, width: 440)
+        let icon = NSImageView(image: NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath))
+        icon.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 56).isActive = true
+        stack.addArrangedSubview(icon)
+        stack.addArrangedSubview(label("setup.title", size: 22, weight: .semibold))
+        stack.addArrangedSubview(label("setup.description", size: 13))
+        stack.addArrangedSubview(label("setup.optional", size: 12, secondary: true))
+        let buttons = NSStackView(); buttons.spacing = 12
+        let later = NSButton(title: L("action.later"), target: self, action: #selector(skip))
+        later.bezelStyle = .rounded; later.keyEquivalent = "\u{1b}"
+        let open = NSButton(title: L("settings.open_full_disk_access_settings"), target: self, action: #selector(openPermissions))
+        open.bezelStyle = .rounded; open.keyEquivalent = "\r"
+        buttons.addArrangedSubview(later); buttons.addArrangedSubview(NSView()); buttons.addArrangedSubview(open)
+        stack.addArrangedSubview(buttons)
+        fit(panel, stack: stack, width: 440)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    deinit { if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) } }
+    private func makeContent(in panel: NSPanel, width: CGFloat) -> NSStackView {
         let content = NSVisualEffectView()
         content.material = .windowBackground; content.blendingMode = .withinWindow
         panel.contentView = content
-        let stack = NSStackView()
-        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 18
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(stack)
+        let stack = NSStackView(); stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 16
+        stack.translatesAutoresizingMaskIntoConstraints = false; content.addSubview(stack)
         NSLayoutConstraint.activate([
-            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 32),
-            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -32),
-            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 32),
-            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -28),
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 24),
+            stack.widthAnchor.constraint(equalToConstant: width - 48),
         ])
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
-        icon.symbolConfiguration = .init(pointSize: 40, weight: .regular)
-        icon.contentTintColor = .controlAccentColor
-        icon.widthAnchor.constraint(equalToConstant: 48).isActive = true
-        icon.heightAnchor.constraint(equalToConstant: 48).isActive = true
-        icon.setAccessibilityElement(false)
-        stack.addArrangedSubview(icon)
-        stack.addArrangedSubview(label("setup.title", size: 24, weight: .semibold))
-        stack.addArrangedSubview(label("setup.description", size: 13, secondary: true))
-
-        let steps = NSStackView()
-        steps.orientation = .vertical; steps.alignment = .leading; steps.spacing = 14
-        steps.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
-        steps.wantsLayer = true
-        steps.layer?.cornerRadius = 12
-        // A native visual-effect material follows the active system appearance.
-        let material = NSVisualEffectView()
-        material.material = .contentBackground; material.blendingMode = .withinWindow
-        material.wantsLayer = true; material.layer?.cornerRadius = 12; material.layer?.masksToBounds = true
-        material.translatesAutoresizingMaskIntoConstraints = false
-        steps.addSubview(material, positioned: .below, relativeTo: nil)
-        NSLayoutConstraint.activate([
-            material.leadingAnchor.constraint(equalTo: steps.leadingAnchor),
-            material.trailingAnchor.constraint(equalTo: steps.trailingAnchor),
-            material.topAnchor.constraint(equalTo: steps.topAnchor),
-            material.bottomAnchor.constraint(equalTo: steps.bottomAnchor),
-        ])
-        for (number, key) in ["setup.step_one", "setup.step_two", "setup.step_three"].enumerated() {
-            let row = NSStackView(); row.orientation = .horizontal; row.alignment = .top; row.spacing = 12
-            let badge = NSTextField(labelWithString: (number + 1).formatted())
-            badge.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
-            badge.textColor = .secondaryLabelColor
-            badge.widthAnchor.constraint(equalToConstant: 16).isActive = true
-            row.addArrangedSubview(badge)
-            row.addArrangedSubview(label(key, size: 13))
-            steps.addArrangedSubview(row)
-            row.widthAnchor.constraint(equalTo: steps.widthAnchor, constant: -36).isActive = true
-        }
-        let application = NSPathControl()
-        application.pathStyle = .popUp
-        application.isEditable = false
-        application.delegate = self
-        application.setDraggingSourceOperationMask(.copy, forLocal: false)
-        application.setDraggingSourceOperationMask([], forLocal: true)
-        application.url = Bundle.main.bundleURL
-        application.controlSize = .large
-        application.font = .systemFont(ofSize: 14, weight: .medium)
-        application.heightAnchor.constraint(equalToConstant: 44).isActive = true
-        application.widthAnchor.constraint(equalToConstant: 250).isActive = true
-        application.toolTip = L("setup.step_two")
-        application.setAccessibilityLabel("APFSearch.app")
-        steps.addArrangedSubview(application)
-        steps.addArrangedSubview(label("setup.drag_demonstration", size: 12, secondary: true))
-        steps.addArrangedSubview(demonstration)
-        demonstration.widthAnchor.constraint(equalTo: steps.widthAnchor, constant: -36).isActive = true
-        demonstration.heightAnchor.constraint(equalToConstant: 70).isActive = true
-        let settings = NSButton(title: L("settings.open_full_disk_access_settings"), target: self, action: #selector(openPermissions))
-        settings.bezelStyle = .rounded
-        steps.addArrangedSubview(settings)
-        stack.addArrangedSubview(steps)
-        steps.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        stack.addArrangedSubview(label("setup.optional", size: 12, secondary: true))
-        let buttons = NSStackView(); buttons.orientation = .horizontal; buttons.spacing = 12
-        let later = NSButton(title: L("action.later"), target: self, action: #selector(skip))
-        later.bezelStyle = .rounded; later.keyEquivalent = "\u{1b}"
-        let spacer = NSView()
-        let next = NSButton(title: L("setup.continue"), target: self, action: #selector(proceed))
-        next.bezelStyle = .rounded; next.keyEquivalent = "\r"
-        buttons.addArrangedSubview(later); buttons.addArrangedSubview(spacer); buttons.addArrangedSubview(next)
-        stack.addArrangedSubview(buttons)
-        buttons.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-        for view in stack.arrangedSubviews {
-            if let text = view as? NSTextField {
-                text.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
-            }
-        }
-        content.layoutSubtreeIfNeeded()
-        panel.setContentSize(NSSize(width: 560, height: stack.fittingSize.height + 60))
+        return stack
     }
-    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    private func fit(_ panel: NSPanel, stack: NSStackView, width: CGFloat) {
+        for view in stack.arrangedSubviews where !(view is NSImageView) {
+            view.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        }
+        panel.contentView?.layoutSubtreeIfNeeded()
+        panel.setContentSize(NSSize(width: width, height: stack.fittingSize.height + 48))
+    }
     private func label(_ key: String, size: CGFloat, weight: NSFont.Weight = .regular, secondary: Bool = false) -> NSTextField {
         let field = NSTextField(wrappingLabelWithString: L(key))
         field.font = .systemFont(ofSize: size, weight: weight)
@@ -1743,87 +1719,71 @@ final class InitialSetupController: NSWindowController, NSPathControlDelegate {
         field.setContentCompressionResistancePriority(.required, for: .vertical)
         return field
     }
-    func pathControl(_ pathControl: NSPathControl, shouldDrag pathItem: NSPathControlItem, with pasteboard: NSPasteboard) -> Bool {
-        // NSPathControl supplies the native file URL and filename pasteboard
-        // representations. Only the running application can be dragged here.
-        pathItem.url?.standardizedFileURL.path == Bundle.main.bundleURL.standardizedFileURL.path
-    }
-    @objc private func openPermissions() {
-        guard let window else { return }
-        window.level = .floating
-        if let screen = window.screen {
-            let frame = screen.visibleFrame
-            window.setFrameOrigin(NSPoint(x: frame.maxX - window.frame.width - 16,
-                                          y: max(frame.minY, frame.midY - window.frame.height / 2)))
+    @objc func openPermissions() {
+        guard dragPanel == nil, settingsOpener() else { return }
+        window?.orderOut(nil)
+        let accessory = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 280, height: 200),
+                                styleMask: [.titled, .closable, .nonactivatingPanel], backing: .buffered, defer: false)
+        accessory.title = "APFSearch"
+        accessory.level = .floating; accessory.hidesOnDeactivate = false; accessory.delegate = self
+        let stack = makeContent(in: accessory, width: 280)
+        stack.addArrangedSubview(label("setup.drag_instruction", size: 13))
+        let application = ApplicationDragIcon()
+        application.completed = { [weak self] in self?.finish() }
+        application.widthAnchor.constraint(equalToConstant: 64).isActive = true
+        application.heightAnchor.constraint(equalToConstant: 64).isActive = true
+        stack.addArrangedSubview(application)
+        let reveal = NSButton(title: L("action.reveal_in_finder"), target: self, action: #selector(revealApplication))
+        reveal.bezelStyle = .rounded
+        stack.addArrangedSubview(reveal)
+        fit(accessory, stack: stack, width: 280)
+        if let frame = window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame {
+            accessory.setFrameOrigin(NSPoint(x: frame.minX + 16, y: frame.midY - accessory.frame.height / 2))
         }
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
-        demonstration.play()
+        dragPanel = accessory
+        accessory.orderFrontRegardless()
+        // Nonactivating drag gestures do not trigger this notification. Returning
+        // to the application dismisses the accessory instead of reopening setup.
+        activationObserver = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+            object: NSApp, queue: .main) { [weak self] _ in self?.finish() }
     }
-    @objc private func skip() { finish(.cancel) }
-    @objc private func proceed() { finish(.OK) }
-    private func finish(_ response: NSApplication.ModalResponse) {
-        guard let window else { return }
-        window.close()
-        let finished = completion
-        completion = nil
-        finished?(response)
+    @objc private func revealApplication() {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+        finish()
+    }
+    @objc private func skip() { finish() }
+    func windowWillClose(_ notification: Notification) { finish() }
+    private func finish() {
+        if let activationObserver { NotificationCenter.default.removeObserver(activationObserver) }
+        activationObserver = nil
+        window?.orderOut(nil); dragPanel?.orderOut(nil); dragPanel = nil
+        let finished = completion; completion = nil
+        finished?(.cancel)
     }
 }
 
-/// A noninteractive illustration, never a representation of granted access.
-/// Core Animation runs the bounded demonstration without polling or disk I/O.
-final class PermissionDragDemonstration: NSView {
-    private let applicationIcon = CALayer()
-    private let destination = CALayer()
-    private let toggle = CALayer()
-    private let knob = CALayer()
+/// A real file drag source, using AppKit's drag session and file-URL writer.
+/// There is no second decorative icon or simulated permission switch.
+final class ApplicationDragIcon: NSImageView, NSDraggingSource {
+    let applicationURL = Bundle.main.bundleURL
+    var completed: (() -> Void)?
     override init(frame: NSRect) {
         super.init(frame: frame)
-        wantsLayer = true
-        layer?.addSublayer(destination)
-        layer?.addSublayer(toggle)
-        toggle.addSublayer(knob)
-        layer?.addSublayer(applicationIcon)
-        let icon = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
-        applicationIcon.contents = icon.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        applicationIcon.contentsGravity = .resizeAspect
-        destination.cornerRadius = 8; destination.borderWidth = 1
-        toggle.cornerRadius = 10; knob.cornerRadius = 8
-        setAccessibilityElement(true)
-        setAccessibilityLabel(L("setup.drag_demonstration"))
+        image = NSWorkspace.shared.icon(forFile: applicationURL.path)
+        imageScaling = .scaleProportionallyUpOrDown
+        toolTip = L("setup.drag_instruction")
+        setAccessibilityLabel("APFSearch.app")
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
-    override func layout() {
-        super.layout()
-        CATransaction.begin(); CATransaction.setDisableActions(true)
-        applicationIcon.frame = CGRect(x: 12, y: 16, width: 36, height: 36)
-        destination.frame = CGRect(x: max(80, bounds.width - 160), y: 8, width: 156, height: 52)
-        toggle.frame = CGRect(x: bounds.width - 48, y: 24, width: 32, height: 20)
-        knob.frame = CGRect(x: 2, y: 2, width: 16, height: 16)
-        destination.borderColor = NSColor.separatorColor.cgColor
-        toggle.backgroundColor = NSColor.tertiaryLabelColor.cgColor
-        knob.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        CATransaction.commit()
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseDragged(with event: NSEvent) {
+        let item = NSDraggingItem(pasteboardWriter: applicationURL as NSURL)
+        item.setDraggingFrame(bounds, contents: image)
+        beginDraggingSession(with: [item], event: event, source: self)
     }
-    func play() {
-        applicationIcon.removeAllAnimations(); toggle.removeAllAnimations(); knob.removeAllAnimations()
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
-        layoutSubtreeIfNeeded()
-        let drag = CAKeyframeAnimation(keyPath: "position")
-        let start = applicationIcon.position
-        let end = CGPoint(x: destination.frame.minX + 28, y: start.y)
-        drag.values = [NSValue(point: start), NSValue(point: start), NSValue(point: end), NSValue(point: end)]
-        drag.keyTimes = [0, 0.15, 0.6, 1]
-        drag.timingFunctions = [.init(name: .easeInEaseOut), .init(name: .easeInEaseOut), .init(name: .linear)]
-        drag.duration = 3; drag.repeatCount = 3
-        applicationIcon.add(drag, forKey: "dragDemonstration")
-        let enabled = CAKeyframeAnimation(keyPath: "backgroundColor")
-        enabled.values = [NSColor.tertiaryLabelColor.cgColor, NSColor.tertiaryLabelColor.cgColor, NSColor.controlAccentColor.cgColor, NSColor.controlAccentColor.cgColor]
-        enabled.keyTimes = [0, 0.7, 0.8, 1]; enabled.duration = 3; enabled.repeatCount = 3
-        toggle.add(enabled, forKey: "switchDemonstration")
-        let slide = CAKeyframeAnimation(keyPath: "position.x")
-        slide.values = [10, 10, 22, 22]; slide.keyTimes = [0, 0.7, 0.8, 1]
-        slide.duration = 3; slide.repeatCount = 3
-        knob.add(slide, forKey: "switchDemonstration")
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation { .copy }
+    func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        if !operation.isEmpty { completed?() }
     }
 }

@@ -305,7 +305,48 @@ enum SearchWindowTests {
         Timer.scheduledTimer(withTimeInterval: 0.001, repeats: false) { _ in Task { @MainActor in await runTests() } }
         app.run()
     }
+    static func iconDemandRegression() async {
+        let gate = DispatchSemaphore(value: 0)
+        let lock = NSLock()
+        var loaded = [String](), mainThreadLoads = 0
+        let loader = ResultIconLoader { path in
+            lock.lock(); loaded.append(path); if Thread.isMainThread { mainThreadLoads += 1 }; lock.unlock()
+            _ = gate.wait(timeout: .now() + 3)
+            return NSImage(size: NSSize(width: 16, height: 16))
+        }
+        let initial = Set((0..<100).map { "/IconFixture/\($0)" })
+        loader.updateDemand(initial)
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        func started() -> [String] { lock.lock(); defer { lock.unlock() }; return loaded }
+        while started().count < 2 && ProcessInfo.processInfo.systemUptime < deadline { await pump(0.005) }
+        check("icon_lookup_is_bounded_off_main", started().count == 2 && mainThreadLoads == 0)
+        let retained = started().first!
+        let demand: Set<String> = [retained, "/IconFixture/current"]
+        for _ in 0..<20 { loader.updateDemand(demand) }
+        for _ in 0..<4 { gate.signal() }
+        let finishDeadline = ProcessInfo.processInfo.systemUptime + 2
+        while loader.cachedImage(for: "/IconFixture/current") == nil && ProcessInfo.processInfo.systemUptime < finishDeadline { await pump(0.005) }
+        let calls = started()
+        check("offscreen_icon_queue_is_cancelled", calls.count == 3 && calls.contains("/IconFixture/current"), ["lookups": calls.count, "original_demand": initial.count])
+        check("duplicate_visible_icon_demand_is_coalesced", calls.filter { $0 == retained }.count == 1 && loader.cachedImage(for: retained) != nil)
+        let cancelled = calls.first { $0 != retained && $0 != "/IconFixture/current" }!
+        check("cancelled_icon_cannot_populate_cache", loader.cachedImage(for: cancelled) == nil)
+        loader.updateDemand([])
+    }
+
     static func runTests() async {
+        await iconDemandRegression()
+        let statusController = SearchWindowController()
+        let uncovered = (0..<10_000).map { "/CoverageFixture/未覆盖文件夹/\($0)" } as NSArray
+        statusController.currentStatus = ["success": true, "uncovered": uncovered, "count": 1_000_000]
+        let started = ProcessInfo.processInfo.systemUptime
+        for _ in 0..<50 { statusController.updateStatus() }
+        check("status_updates_preserve_coverage_without_building_path_tooltips",
+            statusController.coverageButton.title == L("status.uncovered_count", 10_000.formatted())
+            && statusController.statusLabel.toolTip == nil
+            && (statusController.currentStatus["uncovered"] as? NSArray)?.count == 10_000,
+            ["fifty_updates_ms": (ProcessInfo.processInfo.systemUptime - started) * 1000])
+        statusController.window?.orderOut(nil)
         let base = (0..<20).map { row($0) }
         if CommandLine.arguments.contains("--sidebar-only") {
             let only = await controller(base)
@@ -589,25 +630,32 @@ enum SearchWindowTests {
             setupContent.bounds.insetBy(dx: -1, dy: -1).contains($0.convert($0.bounds, to: setupContent))
         })
         check("onboarding_explains_optional_permission", labels.contains { $0.stringValue == L("setup.optional") })
-        func pathControls(_ view: NSView) -> [NSPathControl] {
-            (view as? NSPathControl).map { [$0] } ?? view.subviews.flatMap(pathControls)
-        }
-        let applicationPath = pathControls(setupContent).first!
-        let applicationItem = applicationPath.pathItems.last!
-        let otherPath = NSPathControl(); otherPath.url = URL(fileURLWithPath: "/tmp/unrelated.app")
-        let unrelated = otherPath.pathItems.last!
-        let dragBoard = NSPasteboard.withUniqueName()
-        check("onboarding_drags_actual_application_only", applicationItem.url?.standardizedFileURL.path == Bundle.main.bundleURL.standardizedFileURL.path &&
-              setup.pathControl(applicationPath, shouldDrag: applicationItem, with: dragBoard) &&
-              !setup.pathControl(applicationPath, shouldDrag: unrelated, with: dragBoard))
-        dragBoard.releaseGlobally()
-
         if let capture = ProcessInfo.processInfo.environment["APFSEARCH_SETUP_CAPTURE"],
            let bitmap = setupContent.bitmapImageRepForCachingDisplay(in: setupContent.bounds) {
             setupContent.cacheDisplay(in: setupContent.bounds, to: bitmap)
             try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: capture))
         }
+        setup.settingsOpener = { false }
+        setup.openPermissions()
+        check("failed_settings_open_keeps_introduction", setup.window!.isVisible && setup.dragPanel == nil)
+        var setupCompletions = 0
+        setup.completion = { _ in setupCompletions += 1 }
+        setup.settingsOpener = { true }
+        setup.openPermissions()
+        check("settings_handoff_hides_introduction", !setup.window!.isVisible && setup.dragPanel!.isVisible)
+        check("drag_accessory_is_compact_nonactivating", setup.dragPanel!.frame.width == 280 && setup.dragPanel!.styleMask.contains(.nonactivatingPanel))
+        let firstAccessory = setup.dragPanel
+        setup.openPermissions()
+        check("repeated_handoff_keeps_single_accessory", setup.dragPanel === firstAccessory)
+        let source = ApplicationDragIcon()
+        let dragBoard = NSPasteboard.withUniqueName()
+        dragBoard.writeObjects([source.applicationURL as NSURL])
+        check("drag_source_exports_application_file_url", dragBoard.string(forType: .fileURL).flatMap(URL.init(string:))?.path == Bundle.main.bundleURL.path)
+        dragBoard.releaseGlobally()
+        NotificationCenter.default.post(name: NSApplication.didBecomeActiveNotification, object: NSApp)
+        check("returning_to_app_dismisses_accessory_once", setup.dragPanel == nil && !setup.window!.isVisible && setupCompletions == 1)
         setup.close()
+
 
         // AppKit owns reversal/interruption. The test-only build omits the
         // preference write, while invoking the production action unchanged.

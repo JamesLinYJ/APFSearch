@@ -1,5 +1,18 @@
 import Foundation
 
+enum DecoderProbe {
+  private static let lock = NSLock()
+  private static var threads = [Bool]()
+  static func record() {
+    lock.lock(); defer { lock.unlock() }
+    threads.append(Thread.isMainThread)
+  }
+  static var allOffMain: Bool {
+    lock.lock(); defer { lock.unlock() }
+    return !threads.isEmpty && threads.allSatisfy { !$0 }
+  }
+}
+
 // Replace only the OS boundary in a temporary compilation of SearchClient.
 // Production recovery and request scheduling run unchanged; no real agent or
 // index is touched by these tests.
@@ -49,7 +62,10 @@ final class NSXPCConnection {
     let client = SearchClient()
     client.registerService()
     var replies = 0
-    client.call(["op": "status"]) { _ in replies += 1 }
+    client.call(["op": "status"]) { _ in
+      require(Thread.isMainThread, "decoded replies reach the UI on the main thread")
+      replies += 1
+    }
     client.call(["op": "query"]) { _ in replies += 1 }
     let old = NSXPCConnection.requests
     NSXPCConnection.requests.removeAll()
@@ -103,5 +119,6 @@ final class NSXPCConnection {
     agent.completion?(NSError(domain: "Fixture", code: 2))
     drain()
     require(agent.unregisterCount == 2 && agent.registerCount == 1 && replies == 6, "manual retry is bounded and failed removal never registers over live service")
+    require(DecoderProbe.allOffMain, "all production response decoding runs outside the main thread")
   }
 }

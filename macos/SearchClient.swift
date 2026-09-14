@@ -11,6 +11,7 @@ final class SearchClient {
   private var replacementAttempted = false
   private var replacingService = false
   private var waitingRequests: [() -> Void] = []
+  private let responseQueue = DispatchQueue(label: "APFSearch.ServiceResponses", qos: .userInitiated)
   init() {}
 
   var requiresApproval: Bool {
@@ -117,13 +118,17 @@ final class SearchClient {
         }
       } as? SearchServiceProtocol
     proxy?.request(jsonData(body)) { data in
-      DispatchQueue.main.async { [self] in
-        let response = Self.decodeResponse(data)
-        if managesService, response["error_key"] as? String == "error.unsupported_protocol",
-           replacingService || !replacementAttempted {
-          replaceService { [self] in call(request, completion: completion) }
-        } else {
-          completion(response)
+      // Decode and localize before entering the UI queue. Large operation or
+      // coverage replies must not block keyboard, scrolling, or animation events.
+      self.responseQueue.async { [self] in
+        let response = autoreleasepool { Self.decodeResponse(data) }
+        DispatchQueue.main.async { [self] in
+          if managesService, response["error_key"] as? String == "error.unsupported_protocol",
+             replacingService || !replacementAttempted {
+            replaceService { [self] in call(request, completion: completion) }
+          } else {
+            completion(response)
+          }
         }
       }
     }

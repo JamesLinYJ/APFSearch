@@ -164,16 +164,18 @@ struct SearchSettingsView: View {
             }
             Text(L("index.current_scope")).font(.subheadline).bold()
             ScrollView {
-                VStack(alignment: .leading, spacing: 7) {
+                LazyVStack(alignment: .leading, spacing: 7) {
                     if model.roots.isEmpty { Text(L("index.no_scope")).foregroundStyle(.secondary) }
                     ForEach(model.roots, id: \.self) { Text($0).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
                 }.padding(10)
             }.frame(height: 105).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
             Text(L("index.uncovered_locations")).font(.subheadline).bold()
             ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
+                LazyVStack(alignment: .leading, spacing: 8) {
                     if model.uncovered.isEmpty { Text(L("index.no_uncovered_yet_notice")).foregroundStyle(.secondary) }
-                    ForEach(Array(model.uncovered.enumerated()), id: \.offset) { _, text in Text(text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                    ForEach(model.uncovered.indices, id: \.self) { index in
+                        Text(model.uncovered[index]).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }.padding(10)
             }.frame(maxHeight: .infinity).background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
             Text(L("index.coverage_limitations")).font(.caption).foregroundStyle(.secondary)

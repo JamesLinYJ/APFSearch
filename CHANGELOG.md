@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.3 Preview
+
+### 中文
+
+- 修复索引设置页迟钝：覆盖路径按可见区域延迟创建视图，保留完整列表及文本选择。
+- 服务回复在后台解码，覆盖范围使用固定长度摘要标识；状态更新不再反复拼接全部未覆盖路径。
+- 文件图标使用共享、最多两个任务的后台队列及有界缓存；取消离开可见区域的排队请求，丢弃过期结果，不刷新整个表格。
+- 简化完整磁盘访问引导：跳转设置后关闭介绍窗口，显示可拖入真实应用的小型辅助面板，返回应用后关闭。解释系统及文件权限仍可能限制覆盖范围。
+- 保留八种语言，构建号、协议和数据格式保持 1，不重建或迁移已有索引。
+
+### English
+
+- Lazily create visible coverage rows to keep index settings responsive while retaining the full selectable list.
+- Decode service replies off the main thread, identify coverage with a fixed-size digest, and avoid rebuilding full coverage tooltips during status updates.
+- Load visible file icons through a shared two-worker queue and bounded cache; cancel obsolete queued work and discard stale results without reloading the table.
+- Simplify Full Disk Access guidance: dismiss the introduction when opening Settings, provide a small panel for dragging the actual app, and close it when returning. Explain that system and file permissions can still restrict coverage.
+- Preserve all eight languages and build/protocol/data version 1, without rebuilding or migrating existing indexes.
+
+**Validation / 验证：** 284 Rust tests and 84 AppKit checks passed, with service-recovery and localization checks. In a controlled 888-path settings fixture, tab selection through layout/display submission fell from 242–257 ms to 13–14 ms median across reversed-order runs. This is not a whole-app or final-compositor latency measurement. Real Intel hardware and full-volume acceptance remain unverified.
+
 ## 0.1.2 Preview
 
 ### 中文

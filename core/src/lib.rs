@@ -375,7 +375,7 @@ impl SearchEngine {
         status["scanning"] = json!(self.scanning.load(Ordering::Relaxed));
         status["updating"] = json!(status["state"] == "updating");
         status["status_revision"] = json!(revision);
-        status["scope_token"] = json!(self.relation_coverage(snapshot.generation).to_string());
+        status["scope_token"] = json!(coverage_token(&self.relation_coverage(snapshot.generation)));
         status
     }
     fn wait_status(&self, request: &Value) -> Result<Value, String> {
@@ -677,7 +677,7 @@ impl SearchEngine {
         let mut preferences = self.preferences.read().unwrap().clone();
         preferences["_snapshot_query_time_millis"] = json!(chrono::Local::now().timestamp_millis());
         preferences["_snapshot_coverage"] = self.relation_coverage(snapshot.generation);
-        let scope_token = preferences["_snapshot_coverage"].to_string();
+        let scope_token = coverage_token(&preferences["_snapshot_coverage"]);
         let token = match request["snapshot_owner"].as_str() {
             Some("window") => self.leases.retain_window(snapshot, preferences),
             None | Some("operation") => self.leases.retain(snapshot, preferences),
@@ -1911,6 +1911,15 @@ impl SearchEngine {
         duplicates::find(&snapshot, mode, &cancelled)
     }
 }
+/// An opaque coverage identity, independent of metadata generation. Keep the
+/// full coverage proof in the lease, but never send it as a UI comparison token.
+fn coverage_token(coverage: &Value) -> String {
+    let mut digest = blake3::Hasher::new();
+    serde_json::to_writer(&mut digest, coverage)
+        .expect("JSON values serialize infallibly into a BLAKE3 hasher");
+    digest.finalize().to_hex().to_string()
+}
+
 fn validate_content_identity(path: &str, expected: &Value) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|error| format!("Content source unavailable: {error}"))?;
@@ -2177,6 +2186,49 @@ pub unsafe extern "C" fn apfsearch_engine_close(handle: *mut c_void) {
 // Publish approximately logarithmically during a growing initial index.
 fn progressive_publish_threshold(indexed_count: usize) -> usize {
     (indexed_count / 2).max(10_000)
+}
+
+#[cfg(test)]
+mod coverage_identity_tests {
+    use super::*;
+
+    #[test]
+    fn token_is_bounded_and_tracks_each_coverage_input() {
+        let coverage = json!({"roots":["/fixture"], "complete":false,
+            "uncovered":(0..10_000).map(|n| format!("/fixture/未覆盖/{n}")).collect::<Vec<_>>()});
+        let token = coverage_token(&coverage);
+        assert_eq!(token.len(), 64);
+        assert_eq!(token, coverage_token(&coverage.clone()));
+        for (field, value) in [
+            ("roots", json!(["/other"])),
+            ("complete", json!(true)),
+            ("uncovered", json!(["/fixture/denied"])),
+        ] {
+            let mut changed = coverage.clone();
+            changed[field] = value;
+            assert_ne!(token, coverage_token(&changed), "{field}");
+        }
+    }
+
+    #[test]
+    fn status_and_retained_query_share_coverage_identity() {
+        let temporary = tempfile::tempdir().unwrap();
+        let engine = SearchEngine::open(&temporary.path().join("index.sqlite")).unwrap();
+        let status = engine.status_reply();
+        let result = engine.call(json!({"op":"query", "text":"", "limit":1,
+            "retain_snapshot":true, "snapshot_owner":"window"}));
+        assert_eq!(result["success"], true, "{result}");
+        assert_eq!(result["scope_token"], status["scope_token"]);
+        let lease = engine
+            .leases
+            .get(result["snapshot_lease"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            coverage_token(&lease.preferences["_snapshot_coverage"]),
+            result["scope_token"].as_str().unwrap()
+        );
+        engine.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

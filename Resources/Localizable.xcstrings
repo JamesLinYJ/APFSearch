@@ -9116,49 +9116,49 @@
         "zh-Hans": {
           "stringUnit": {
             "state": "translated",
-            "value": "\n\n请在系统设置中手动授予完整磁盘访问权限。APFSearch 只读取已挂载、已解锁且有权限访问的文件，不会自动下载云端文件。"
+            "value": "\n\n完整磁盘访问不会绕过系统及文件权限。未覆盖记录也可能来自此前的扫描失败，不能仅凭此列表判断尚未授权。"
           }
         },
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "\n\nGrant Full Disk Access manually in System Settings. APFSearch reads only mounted, unlocked, accessible files and does not automatically download cloud files."
+            "value": "\n\nFull Disk Access does not override system or file permissions. Uncovered locations may also reflect earlier scan failures; this list alone does not mean permission is missing."
           }
         },
         "zh-Hant": {
           "stringUnit": {
             "state": "translated",
-            "value": "\n\n請在系統設定中手動授予完整磁碟存取權限。APFSearch 只讀取已掛載、已解鎖且有權限存取的檔案，不會自動下載雲端檔案。"
+            "value": "\n\n完整磁碟存取權不會略過系統及檔案權限。未涵蓋記錄也可能來自先前的掃描失敗，不能僅憑此清單判斷尚未授權。"
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "\n\nシステム設定でフルディスクアクセスを手動で許可してください。APFSearchはマウント済みでロック解除され、アクセス可能なファイルのみを読み取ります。クラウドファイルは自動でダウンロードしません。"
+            "value": "\n\nフルディスクアクセスでもシステムやファイルの権限は適用されます。未対応の場所には過去のスキャン失敗も含まれるため、このリストだけで権限不足とは判断できません。"
           }
         },
         "ko": {
           "stringUnit": {
             "state": "translated",
-            "value": "\n\n시스템 설정에서 전체 디스크 접근 권한을 직접 허용하십시오. APFSearch는 마운트되고 잠금 해제된 접근 가능한 파일만 읽으며 클라우드 파일을 자동으로 다운로드하지 않습니다."
+            "value": "\n\n전체 디스크 접근 권한도 시스템 및 파일 권한을 무시하지 않습니다. 목록에는 이전 스캔 실패가 남아 있을 수 있으므로 권한이 없다고 단정할 수 없습니다."
           }
         },
         "ru": {
           "stringUnit": {
             "state": "translated",
-            "value": "\n\nВручную разрешите полный доступ к диску в Системных настройках. APFSearch читает только доступные файлы на подключённых и разблокированных томах и не загружает облачные файлы автоматически."
+            "value": "\n\nПолный доступ к диску не отменяет системные и файловые права. В списке могут оставаться прошлые ошибки сканирования; он сам по себе не означает отсутствие разрешения."
           }
         },
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "\n\nConcede acceso total al disco manualmente en Ajustes del Sistema. APFSearch solo lee archivos accesibles en volúmenes montados y desbloqueados, y no descarga archivos de la nube automáticamente."
+            "value": "\n\nEl acceso total al disco no anula los permisos del sistema ni de los archivos. La lista puede incluir fallos anteriores y no demuestra por sí sola que falte autorización."
           }
         },
         "pt": {
           "stringUnit": {
             "state": "translated",
-            "value": "\n\nConceda acesso total ao disco manualmente nas Definições do Sistema. O APFSearch lê apenas ficheiros acessíveis em volumes montados e desbloqueados e não descarrega ficheiros da nuvem automaticamente."
+            "value": "\n\nO acesso total ao disco não ignora as permissões do sistema ou dos arquivos. A lista pode incluir falhas anteriores e, por si só, não indica falta de autorização."
           }
         }
       }
@@ -15933,6 +15933,58 @@
           "stringUnit": {
             "state": "translated",
             "value": "Exemplo: arrastar e ativar o acesso"
+          }
+        }
+      }
+    },
+    "setup.drag_instruction": {
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Drag the app icon into the Full Disk Access list, then enable its switch."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "将应用图标拖入“完全磁盘访问权限”列表，再开启开关。"
+          }
+        },
+        "zh-Hant": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "將應用程式圖示拖入「完整磁碟存取權」清單，再開啟開關。"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アプリのアイコンを「フルディスクアクセス」のリストにドラッグし、スイッチをオンにします。"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "앱 아이콘을 전체 디스크 접근 권한 목록으로 드래그한 다음 스위치를 켜세요."
+          }
+        },
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Перетащите значок приложения в список полного доступа к диску и включите переключатель."
+          }
+        },
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arrastra el icono de la app a la lista de acceso total al disco y activa su interruptor."
+          }
+        },
+        "pt": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Arraste o ícone do app para a lista de acesso total ao disco e ative a opção."
           }
         }
       }

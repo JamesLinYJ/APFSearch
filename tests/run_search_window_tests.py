@@ -58,7 +58,7 @@ if source.count(table_class) != 1:
 source = source.replace(table_class, table_class + instrumentation, 1)
 (work / "ApplicationUnderTest.swift").write_text(source)
 command = ["swiftc", "-module-cache-path", str(work / "ModuleCache"), "-swift-version", "5", "-O", "-target", swift_target()]
-command += [str(project / "macos" / name) for name in ["ApplicationIdentity.swift", "SearchProtocol.swift", "Localization.swift", "SettingsWindow.swift", "SelectionResolver.swift", "FileOperationReview.swift", "DuplicateResultsWindow.swift", "UpdateManager.swift", "UpdateUI.swift"]]
+command += [str(project / "macos" / name) for name in ["ApplicationIdentity.swift", "SearchProtocol.swift", "Localization.swift", "SettingsWindow.swift", "SelectionResolver.swift", "FileOperationReview.swift", "DuplicateResultsWindow.swift", "UpdateManager.swift", "UpdateUI.swift", "ResultIconLoader.swift"]]
 command += [str(work / "ApplicationUnderTest.swift"), str(project / "tests/SearchWindowTests.swift"), str(project / "tests/SearchFeatureWindowTests.swift")]
 for framework in ["AppKit", "SwiftUI", "ServiceManagement", "Quartz", "Carbon", "CryptoKit"]:
     command += ["-framework", framework]

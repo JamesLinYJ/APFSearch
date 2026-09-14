@@ -23,15 +23,15 @@ APFSearch brings filename, path, and metadata search to an AppKit interface with
 
 ## Download
 
-**[v0.1.2 pre-release](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.2)** · macOS 14 or later
+**[v0.1.3 pre-release](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.3)** · macOS 14 or later
 
 | Your Mac | Download |
 | :--- | :--- |
-| Universal (both architectures) | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.2/APFSearch-0.1.2-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.2/APFSearch-0.1.2-Universal.zip) |
-| Apple Silicon (M series) | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.2/APFSearch-0.1.2-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.2/APFSearch-0.1.2-AppleSilicon.zip) |
-| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.2/APFSearch-0.1.2-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.2/APFSearch-0.1.2-Intel.zip) |
+| Universal (both architectures) | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-Universal.zip) |
+| Apple Silicon (M series) | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-AppleSilicon.zip) |
+| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-Intel.zip) |
 
-Choose Universal if you are unsure. Open the DMG and drag APFSearch into Applications, or use the ZIP for manual deployment. Every contained app is Developer ID signed and carries an Apple notarization ticket; the DMG containers are not separately notarized. [SHA-256 checksums](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.2/SHA256SUMS.txt).
+Choose Universal if you are unsure. Open the DMG and drag APFSearch into Applications, or use the ZIP for manual deployment. Every contained app is Developer ID signed and carries an Apple notarization ticket; the DMG containers are not separately notarized. [SHA-256 checksums](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/SHA256SUMS.txt).
 
 This is a development preview. Intel code has been exercised under Rosetta; physical Intel hardware and macOS 14 still need validation.
 

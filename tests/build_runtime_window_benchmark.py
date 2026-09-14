@@ -67,7 +67,7 @@ for old, new, description in patches:
     source = source.replace(old, new, 1)
 application = work / 'ApplicationUnderTest.swift'
 application.write_text(source)
-sources = [project / 'macos' / name for name in ['ApplicationIdentity.swift', 'SearchProtocol.swift', 'Localization.swift', 'SettingsWindow.swift', 'SelectionResolver.swift', 'FileOperationReview.swift', 'DuplicateResultsWindow.swift', 'UpdateManager.swift', 'UpdateUI.swift', 'SearchClient.swift']]
+sources = [project / 'macos' / name for name in ['ApplicationIdentity.swift', 'SearchProtocol.swift', 'Localization.swift', 'SettingsWindow.swift', 'SelectionResolver.swift', 'FileOperationReview.swift', 'DuplicateResultsWindow.swift', 'UpdateManager.swift', 'UpdateUI.swift', 'ResultIconLoader.swift', 'SearchClient.swift']]
 sources += [application, project / 'tests/RuntimeWindowBenchmark.swift']
 executable = work / 'RuntimeWindowBenchmark'
 command = ['swiftc', '-module-cache-path', str(work / 'ModuleCache'), '-swift-version', '5', '-O', '-target', swift_target()] + list(map(str, sources))
