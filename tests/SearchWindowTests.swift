@@ -9,6 +9,8 @@ final class SearchClient {
         let completion: ([String: Any]) -> Void
     }
     var pending = [Pending]()
+    var requiresApproval = false
+    func retryConnection() {}
     func registerService() {}
     func call(_ request: [String: Any], completion: @escaping ([String: Any]) -> Void) {
         pending.append(Pending(request: request, completion: completion))
@@ -565,6 +567,47 @@ enum SearchWindowTests {
         layout.queryPending = true; layout.updateEmptyState()
         check("pending_query_retains_existing_empty_state", layout.emptyStateVisible && !layout.emptyState.isHidden)
         layout.queryPending = false
+
+        layout.currentStatus = ["success": false, "error": "Fixture service failure"]
+        SearchClient.shared.requiresApproval = false
+        layout.updateEmptyState()
+        check("service_failure_offers_reconnect", layout.emptyAction == 3 && layout.emptyButton.title == L("service.retry_connection"))
+        SearchClient.shared.requiresApproval = true
+        layout.updateEmptyState()
+        check("only_approval_failure_opens_system_settings", layout.emptyAction == 2)
+        SearchClient.shared.requiresApproval = false
+
+        let setup = InitialSetupController()
+        setup.showWindow(nil)
+        await pump(0.2)
+        let setupContent = setup.window!.contentView!
+        func setupLabels(_ view: NSView) -> [NSTextField] {
+            (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(setupLabels)
+        }
+        let labels = setupLabels(setupContent)
+        checkDisplay("onboarding_text_stays_inside_window", labels.allSatisfy {
+            setupContent.bounds.insetBy(dx: -1, dy: -1).contains($0.convert($0.bounds, to: setupContent))
+        })
+        check("onboarding_explains_optional_permission", labels.contains { $0.stringValue == L("setup.optional") })
+        func pathControls(_ view: NSView) -> [NSPathControl] {
+            (view as? NSPathControl).map { [$0] } ?? view.subviews.flatMap(pathControls)
+        }
+        let applicationPath = pathControls(setupContent).first!
+        let applicationItem = applicationPath.pathItems.last!
+        let otherPath = NSPathControl(); otherPath.url = URL(fileURLWithPath: "/tmp/unrelated.app")
+        let unrelated = otherPath.pathItems.last!
+        let dragBoard = NSPasteboard.withUniqueName()
+        check("onboarding_drags_actual_application_only", applicationItem.url?.standardizedFileURL.path == Bundle.main.bundleURL.standardizedFileURL.path &&
+              setup.pathControl(applicationPath, shouldDrag: applicationItem, with: dragBoard) &&
+              !setup.pathControl(applicationPath, shouldDrag: unrelated, with: dragBoard))
+        dragBoard.releaseGlobally()
+
+        if let capture = ProcessInfo.processInfo.environment["APFSEARCH_SETUP_CAPTURE"],
+           let bitmap = setupContent.bitmapImageRepForCachingDisplay(in: setupContent.bounds) {
+            setupContent.cacheDisplay(in: setupContent.bounds, to: bitmap)
+            try? bitmap.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: capture))
+        }
+        setup.close()
 
         // AppKit owns reversal/interruption. The test-only build omits the
         // preference write, while invoking the production action unchanged.

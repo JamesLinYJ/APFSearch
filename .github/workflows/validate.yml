@@ -50,6 +50,7 @@ jobs:
           python3 tests/check_localization.py
           python3 tests/check_localization_protocol.py
           python3 tests/check_application_identity.py
+          python3 tests/run_service_recovery_tests.py
       - name: Build app, XPC service, and CLI without signing or installation
         if: ${{ !cancelled() }}
         run: ./build.sh

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.2 Preview
+
+### 中文
+
+- 首次启动新增原生权限引导：解释完整磁盘访问的用途，跳转系统设置后保留可拖放应用的引导窗口，并演示拖入及开启开关。支持减少动态效果，也允许稍后设置。由用户选择索引范围后才开始扫描。
+- 自动恢复应用与旧后台服务的协议不匹配：等待旧服务退出后重新注册，合并并发恢复请求，限制重试次数。
+- 普通连接失败提供重新连接；仅在后台服务确实需要批准时引导系统设置。不自动重发连接中断的文件操作。
+- 引导支持全部八种应用语言。保留独立的格式 1 数据目录，不迁移或删除旧开发数据。
+
+### English
+
+- Add native first-launch guidance for Full Disk Access, with a floating native drag-and-drop companion, a bounded drag/switch demonstration that respects Reduce Motion, an optional skip path, and explicit index-scope selection before scanning.
+- Recover protocol mismatches by asynchronously unregistering the stale service, waiting for its exit, and registering the bundled service. Coalesce concurrent recovery requests and bound automatic retries.
+- Offer reconnect for connection failures and system settings only when service approval is required. Never replay file operations after transport failures.
+- Localize onboarding in all eight application languages. Keep the independent format-1 data directory without migrating or deleting older development data.
+
 ## 0.1.1 Preview
 
 ### 中文

@@ -127,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         search.addItem(item(L("index.index_contents_of_selected_files"), #selector(SearchWindowController.indexContent)))
         search.addItem(item(L("action.stop_current_content_task"), #selector(SearchWindowController.cancelBackground)))
         let index = submenu(L("settings.indexing"))
+        index.addItem(item(L("index.full_disk_access"), #selector(SearchWindowController.showPermissionGuide)))
         index.addItem(item(L("action.show_coverage"), #selector(SearchWindowController.showCoverage)))
         index.addItem(item(L("index.choose_index_folders"), #selector(SearchWindowController.chooseFolders)))
         index.addItem(item(L("action.choose_local_apfs_volumes"), #selector(SearchWindowController.chooseVolumes)))
@@ -539,7 +540,11 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         var action = 1
         if currentStatus["success"] as? Bool == false && offlineListID == nil {
             title = L("index.index_service_not_connected"); detail = errorText(currentStatus)
-            buttonTitle = L("settings.open_background_service_settings"); action = 2
+            if SearchClient.shared.requiresApproval {
+                buttonTitle = L("settings.open_background_service_settings"); action = 2
+            } else {
+                buttonTitle = L("service.retry_connection"); action = 3
+            }
         } else if boolValue(currentStatus["scanning"]) && offlineListID == nil {
             title = L("status.building_index"); detail = L("index.progressive_results_hint"); buttonHidden = true
         } else if !queryWarnings.isEmpty {
@@ -584,6 +589,10 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     }
     @objc func emptyButtonPressed(_ sender: Any?) {
         if emptyAction == 2 { SMAppService.openSystemSettingsLoginItems() }
+        else if emptyAction == 3 {
+            SearchClient.shared.retryConnection()
+            pollStatus()
+        }
         else if emptyAction == 0 { chooseVolumes(nil) }
         else { search.stringValue = ""; sidebarController.selectAll(); focusSearch(nil) }
     }
@@ -1029,7 +1038,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
             if self.initialStatus {
                 self.initialStatus = false
                 if self.roots.isEmpty && (reply["count"] as? NSNumber)?.intValue ?? 0 == 0 && !UserDefaults.standard.bool(forKey: ApplicationIdentity.preferencePrefix + "ScopeChosen") {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in self?.chooseVolumes(nil) }
+                    DispatchQueue.main.async { [weak self] in self?.showInitialSetup() }
                 }
             }
             // Old transports without revision support do not create a hot loop.
@@ -1147,6 +1156,27 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         guard panel.runModal() == .OK else { return }
         startScan(panel.urls.map(\.path))
     }
+    private var setupController: InitialSetupController?
+    @objc func showPermissionGuide(_ sender: Any?) { showInitialSetup(force: true) }
+    func showInitialSetup(force: Bool = false) {
+        let key = ApplicationIdentity.preferencePrefix + "SetupPresented"
+        guard offlineListID == nil, let window, window.attachedSheet == nil,
+              (force || !UserDefaults.standard.bool(forKey: key)) else { return }
+        if let setupController { setupController.window?.makeKeyAndOrderFront(nil); return }
+        UserDefaults.standard.set(true, forKey: key)
+        let controller = InitialSetupController()
+        setupController = controller
+        controller.completion = { [weak self] response in
+            self?.setupController = nil
+            if response == .OK {
+                DispatchQueue.main.async { [weak self] in self?.chooseVolumes(nil) }
+            }
+        }
+        controller.window?.center()
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+    }
+
     @objc func chooseVolumes(_ sender: Any?) {
         guard offlineListID == nil else { return }
         SearchClient.shared.call(["op": "volumes"]) { [weak self] reply in
@@ -1596,5 +1626,204 @@ private enum SearchMetrics {
                 try handle.seekToEnd(); try handle.write(contentsOf: line)
             } catch { NSLog("APFSearch metrics write failed: %@", error.localizedDescription) }
         }
+    }
+}
+
+/// Permission education only: macOS owns authorization, and no protected file
+/// probes or private TCC APIs are used to infer a grant.
+final class InitialSetupController: NSWindowController, NSPathControlDelegate {
+    var completion: ((NSApplication.ModalResponse) -> Void)?
+    private let demonstration = PermissionDragDemonstration()
+    init() {
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 560, height: 530),
+                            styleMask: [.titled, .fullSizeContentView], backing: .buffered, defer: false)
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
+        panel.isMovable = true
+        panel.hidesOnDeactivate = false
+        super.init(window: panel)
+        let content = NSVisualEffectView()
+        content.material = .windowBackground; content.blendingMode = .withinWindow
+        panel.contentView = content
+        let stack = NSStackView()
+        stack.orientation = .vertical; stack.alignment = .leading; stack.spacing = 18
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 32),
+            stack.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -32),
+            stack.topAnchor.constraint(equalTo: content.topAnchor, constant: 32),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -28),
+        ])
+        let icon = NSImageView()
+        icon.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
+        icon.symbolConfiguration = .init(pointSize: 40, weight: .regular)
+        icon.contentTintColor = .controlAccentColor
+        icon.widthAnchor.constraint(equalToConstant: 48).isActive = true
+        icon.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        icon.setAccessibilityElement(false)
+        stack.addArrangedSubview(icon)
+        stack.addArrangedSubview(label("setup.title", size: 24, weight: .semibold))
+        stack.addArrangedSubview(label("setup.description", size: 13, secondary: true))
+
+        let steps = NSStackView()
+        steps.orientation = .vertical; steps.alignment = .leading; steps.spacing = 14
+        steps.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+        steps.wantsLayer = true
+        steps.layer?.cornerRadius = 12
+        // A native visual-effect material follows the active system appearance.
+        let material = NSVisualEffectView()
+        material.material = .contentBackground; material.blendingMode = .withinWindow
+        material.wantsLayer = true; material.layer?.cornerRadius = 12; material.layer?.masksToBounds = true
+        material.translatesAutoresizingMaskIntoConstraints = false
+        steps.addSubview(material, positioned: .below, relativeTo: nil)
+        NSLayoutConstraint.activate([
+            material.leadingAnchor.constraint(equalTo: steps.leadingAnchor),
+            material.trailingAnchor.constraint(equalTo: steps.trailingAnchor),
+            material.topAnchor.constraint(equalTo: steps.topAnchor),
+            material.bottomAnchor.constraint(equalTo: steps.bottomAnchor),
+        ])
+        for (number, key) in ["setup.step_one", "setup.step_two", "setup.step_three"].enumerated() {
+            let row = NSStackView(); row.orientation = .horizontal; row.alignment = .top; row.spacing = 12
+            let badge = NSTextField(labelWithString: (number + 1).formatted())
+            badge.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+            badge.textColor = .secondaryLabelColor
+            badge.widthAnchor.constraint(equalToConstant: 16).isActive = true
+            row.addArrangedSubview(badge)
+            row.addArrangedSubview(label(key, size: 13))
+            steps.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: steps.widthAnchor, constant: -36).isActive = true
+        }
+        let application = NSPathControl()
+        application.pathStyle = .popUp
+        application.isEditable = false
+        application.delegate = self
+        application.setDraggingSourceOperationMask(.copy, forLocal: false)
+        application.setDraggingSourceOperationMask([], forLocal: true)
+        application.url = Bundle.main.bundleURL
+        application.controlSize = .large
+        application.font = .systemFont(ofSize: 14, weight: .medium)
+        application.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        application.widthAnchor.constraint(equalToConstant: 250).isActive = true
+        application.toolTip = L("setup.step_two")
+        application.setAccessibilityLabel("APFSearch.app")
+        steps.addArrangedSubview(application)
+        steps.addArrangedSubview(label("setup.drag_demonstration", size: 12, secondary: true))
+        steps.addArrangedSubview(demonstration)
+        demonstration.widthAnchor.constraint(equalTo: steps.widthAnchor, constant: -36).isActive = true
+        demonstration.heightAnchor.constraint(equalToConstant: 70).isActive = true
+        let settings = NSButton(title: L("settings.open_full_disk_access_settings"), target: self, action: #selector(openPermissions))
+        settings.bezelStyle = .rounded
+        steps.addArrangedSubview(settings)
+        stack.addArrangedSubview(steps)
+        steps.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        stack.addArrangedSubview(label("setup.optional", size: 12, secondary: true))
+        let buttons = NSStackView(); buttons.orientation = .horizontal; buttons.spacing = 12
+        let later = NSButton(title: L("action.later"), target: self, action: #selector(skip))
+        later.bezelStyle = .rounded; later.keyEquivalent = "\u{1b}"
+        let spacer = NSView()
+        let next = NSButton(title: L("setup.continue"), target: self, action: #selector(proceed))
+        next.bezelStyle = .rounded; next.keyEquivalent = "\r"
+        buttons.addArrangedSubview(later); buttons.addArrangedSubview(spacer); buttons.addArrangedSubview(next)
+        stack.addArrangedSubview(buttons)
+        buttons.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+        for view in stack.arrangedSubviews {
+            if let text = view as? NSTextField {
+                text.widthAnchor.constraint(equalTo: stack.widthAnchor).isActive = true
+            }
+        }
+        content.layoutSubtreeIfNeeded()
+        panel.setContentSize(NSSize(width: 560, height: stack.fittingSize.height + 60))
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    private func label(_ key: String, size: CGFloat, weight: NSFont.Weight = .regular, secondary: Bool = false) -> NSTextField {
+        let field = NSTextField(wrappingLabelWithString: L(key))
+        field.font = .systemFont(ofSize: size, weight: weight)
+        field.textColor = secondary ? .secondaryLabelColor : .labelColor
+        field.setContentCompressionResistancePriority(.required, for: .vertical)
+        return field
+    }
+    func pathControl(_ pathControl: NSPathControl, shouldDrag pathItem: NSPathControlItem, with pasteboard: NSPasteboard) -> Bool {
+        // NSPathControl supplies the native file URL and filename pasteboard
+        // representations. Only the running application can be dragged here.
+        pathItem.url?.standardizedFileURL.path == Bundle.main.bundleURL.standardizedFileURL.path
+    }
+    @objc private func openPermissions() {
+        guard let window else { return }
+        window.level = .floating
+        if let screen = window.screen {
+            let frame = screen.visibleFrame
+            window.setFrameOrigin(NSPoint(x: frame.maxX - window.frame.width - 16,
+                                          y: max(frame.minY, frame.midY - window.frame.height / 2)))
+        }
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
+        demonstration.play()
+    }
+    @objc private func skip() { finish(.cancel) }
+    @objc private func proceed() { finish(.OK) }
+    private func finish(_ response: NSApplication.ModalResponse) {
+        guard let window else { return }
+        window.close()
+        let finished = completion
+        completion = nil
+        finished?(response)
+    }
+}
+
+/// A noninteractive illustration, never a representation of granted access.
+/// Core Animation runs the bounded demonstration without polling or disk I/O.
+final class PermissionDragDemonstration: NSView {
+    private let applicationIcon = CALayer()
+    private let destination = CALayer()
+    private let toggle = CALayer()
+    private let knob = CALayer()
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.addSublayer(destination)
+        layer?.addSublayer(toggle)
+        toggle.addSublayer(knob)
+        layer?.addSublayer(applicationIcon)
+        let icon = NSWorkspace.shared.icon(forFile: Bundle.main.bundlePath)
+        applicationIcon.contents = icon.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        applicationIcon.contentsGravity = .resizeAspect
+        destination.cornerRadius = 8; destination.borderWidth = 1
+        toggle.cornerRadius = 10; knob.cornerRadius = 8
+        setAccessibilityElement(true)
+        setAccessibilityLabel(L("setup.drag_demonstration"))
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    override func layout() {
+        super.layout()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        applicationIcon.frame = CGRect(x: 12, y: 16, width: 36, height: 36)
+        destination.frame = CGRect(x: max(80, bounds.width - 160), y: 8, width: 156, height: 52)
+        toggle.frame = CGRect(x: bounds.width - 48, y: 24, width: 32, height: 20)
+        knob.frame = CGRect(x: 2, y: 2, width: 16, height: 16)
+        destination.borderColor = NSColor.separatorColor.cgColor
+        toggle.backgroundColor = NSColor.tertiaryLabelColor.cgColor
+        knob.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        CATransaction.commit()
+    }
+    func play() {
+        applicationIcon.removeAllAnimations(); toggle.removeAllAnimations(); knob.removeAllAnimations()
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        layoutSubtreeIfNeeded()
+        let drag = CAKeyframeAnimation(keyPath: "position")
+        let start = applicationIcon.position
+        let end = CGPoint(x: destination.frame.minX + 28, y: start.y)
+        drag.values = [NSValue(point: start), NSValue(point: start), NSValue(point: end), NSValue(point: end)]
+        drag.keyTimes = [0, 0.15, 0.6, 1]
+        drag.timingFunctions = [.init(name: .easeInEaseOut), .init(name: .easeInEaseOut), .init(name: .linear)]
+        drag.duration = 3; drag.repeatCount = 3
+        applicationIcon.add(drag, forKey: "dragDemonstration")
+        let enabled = CAKeyframeAnimation(keyPath: "backgroundColor")
+        enabled.values = [NSColor.tertiaryLabelColor.cgColor, NSColor.tertiaryLabelColor.cgColor, NSColor.controlAccentColor.cgColor, NSColor.controlAccentColor.cgColor]
+        enabled.keyTimes = [0, 0.7, 0.8, 1]; enabled.duration = 3; enabled.repeatCount = 3
+        toggle.add(enabled, forKey: "switchDemonstration")
+        let slide = CAKeyframeAnimation(keyPath: "position.x")
+        slide.values = [10, 10, 22, 22]; slide.keyTimes = [0, 0.7, 0.8, 1]
+        slide.duration = 3; slide.repeatCount = 3
+        knob.add(slide, forKey: "switchDemonstration")
     }
 }
