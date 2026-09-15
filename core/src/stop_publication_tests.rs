@@ -1,4 +1,5 @@
 use super::*;
+use crate::entry_table::FileEntry;
 
 struct CancelAtCommit {
     engine: Arc<SearchEngine>,
@@ -54,12 +55,13 @@ fn stop_after_committed_batch_defers_publication_but_preserves_recoverable_chang
         let before = engine.snapshot.load_full();
         let old_root = before
             .visible_entries()
-            .find(|file| file.path == root)
+            .find(|file| file.path() == root)
             .unwrap();
-        let old_modified_ns = old_root.modified_ns;
+        let old_modified_ns = old_root.modified_ns();
         // The root row is the scanner's first batch. A deterministic timestamp
         // change guarantees that the traced COMMIT contains a real file update.
-        let new_time = std::time::UNIX_EPOCH + Duration::from_secs(old_root.modified as u64 + 100);
+        let new_time =
+            std::time::UNIX_EPOCH + Duration::from_secs(old_root.modified() as u64 + 100);
         std::fs::File::open(&root)
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(new_time))
@@ -178,17 +180,17 @@ fn stop_after_committed_batch_defers_publication_but_preserves_recoverable_chang
         assert_eq!(
             after
                 .visible_entries()
-                .find(|file| file.path == root)
+                .find(|file| file.path() == root)
                 .unwrap()
-                .modified_ns,
+                .modified_ns(),
             expected.modified_ns
         );
         assert_eq!(
             before
                 .visible_entries()
-                .find(|file| file.path == root)
+                .find(|file| file.path() == root)
                 .unwrap()
-                .modified_ns,
+                .modified_ns(),
             old_modified_ns
         );
         assert_eq!(

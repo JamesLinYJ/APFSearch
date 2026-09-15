@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,7 @@ from test_bundle import create_test_bundle
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--work', type=pathlib.Path)
+parser.add_argument('--service-name', help='Isolated fixture Mach endpoint; client authentication is unchanged')
 parser.add_argument('--phase-timing', action='store_true', help='Add timing-only hooks to the disposable controller copy for separate diagnostics')
 parser.add_argument('--identity', default=os.environ.get('APFSEARCH_SIGN_IDENTITY'), required=not os.environ.get('APFSEARCH_SIGN_IDENTITY'))
 args = parser.parse_args()
@@ -68,9 +70,20 @@ for old, new, description in patches:
 application = work / 'ApplicationUnderTest.swift'
 application.write_text(source)
 sources = [project / 'macos' / name for name in ['ApplicationIdentity.swift', 'SearchProtocol.swift', 'Localization.swift', 'SettingsWindow.swift', 'SelectionResolver.swift', 'FileOperationReview.swift', 'DuplicateResultsWindow.swift', 'UpdateManager.swift', 'UpdateUI.swift', 'ResultIconLoader.swift', 'SearchClient.swift']]
+if args.service_name:
+    if not re.fullmatch(r'org\.apfsearch\.fixture\.[a-z0-9.-]+', args.service_name):
+        raise SystemExit('Expected an isolated fixture endpoint')
+    protocol = (project / 'macos/SearchProtocol.swift').read_text()
+    original = 'let serviceName = ApplicationIdentity.serviceIdentifier'
+    if protocol.count(original) != 1:
+        raise SystemExit('Protocol endpoint declaration changed')
+    isolated_protocol = work / 'SearchProtocolUnderTest.swift'
+    isolated_protocol.write_text(protocol.replace(original, 'let serviceName = ' + json.dumps(args.service_name)))
+    sources[sources.index(project / 'macos/SearchProtocol.swift')] = isolated_protocol
 sources += [application, project / 'tests/RuntimeWindowBenchmark.swift']
 executable = work / 'RuntimeWindowBenchmark'
-command = ['swiftc', '-module-cache-path', str(work / 'ModuleCache'), '-swift-version', '5', '-O', '-target', swift_target()] + list(map(str, sources))
+sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True).strip()
+command = ['xcrun', '--sdk', 'macosx', 'swiftc', '-sdk', sdk, '-module-cache-path', str(work / 'ModuleCache'), '-swift-version', '5', '-O', '-target', swift_target()] + list(map(str, sources))
 if args.phase_timing:
     command += ['-D', 'BENCHMARK_PHASE_TIMING']
 for framework in ['AppKit', 'SwiftUI', 'ServiceManagement', 'Quartz', 'Carbon', 'CryptoKit']:
@@ -87,6 +100,7 @@ receipt = {
     'production_sources_sha256': {str(path.relative_to(project)): hashlib.sha256(path.read_bytes()).hexdigest() for path in sources if path.is_relative_to(project)},
     'test_only_transformations': [description for _, _, description in patches],
     'transport': 'Unmodified macos/SearchClient.swift, real authenticated Mach XPC',
+    'isolated_service_name': args.service_name,
     'phase_timing_enabled': args.phase_timing,
     'defaults': f'Unique test bundle identifier; signature identifier is {signature_identifier} for service authentication',
     'compiler_command': command,

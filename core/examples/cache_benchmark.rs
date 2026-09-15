@@ -1,4 +1,5 @@
 //! Isolated synthetic-cache comparison. Does not scan files or start a watcher.
+use apfsearch_core::entry_table::FileEntry;
 use apfsearch_core::{
     SearchEngine,
     index_store::{IndexStore, IndexedFile, SearchSnapshot},
@@ -85,7 +86,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         binary_reads.push(began.elapsed().as_secs_f64() * 1000.);
         if got_generation != generation
             || snapshot.len() != count
-            || signature(&snapshot.visible_entries().cloned().collect::<Vec<_>>()) != digest
+            || signature(
+                &snapshot
+                    .visible_entries()
+                    .map(|entry| entry.to_owned_file())
+                    .collect::<Vec<_>>(),
+            ) != digest
         {
             return Err("Binary metadata mismatch".into());
         }

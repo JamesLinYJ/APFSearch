@@ -25,7 +25,7 @@ fn partitioned_matching_preserves_sparse_boundaries_and_cancellation() {
     let column = NameColumn {
         names: (0..8195)
             .map(|slot| {
-                crate::shared_text::SharedText::from(if slot % 3 == 0 {
+                name_record(if slot % 3 == 0 {
                     "报告 report"
                 } else {
                     "analysis"
@@ -65,7 +65,7 @@ fn parallel_name_matching_latency() {
     let column = NameColumn {
         names: (0..count)
             .map(|slot| {
-                crate::shared_text::SharedText::from(format!(
+                name_record(format!(
                     "report-document-{slot:07}-{}.txt",
                     if slot % 97 == 0 { "报告" } else { "analysis" }
                 ))
@@ -141,7 +141,7 @@ fn parallel_dispatch_preserves_exclusions_unicode_and_boolean_matching() {
     let column = NameColumn {
         names: (0..100_003)
             .map(|slot| {
-                crate::shared_text::SharedText::from(if slot % 3 == 0 {
+                name_record(if slot % 3 == 0 {
                     "报告 report"
                 } else {
                     "analysis"
@@ -181,5 +181,119 @@ fn parallel_dispatch_preserves_exclusions_unicode_and_boolean_matching() {
                 expected
             );
         }
+    }
+}
+
+fn name_record(name: impl AsRef<str>) -> crate::index_store::IndexedFile {
+    let mut file:crate::index_store::IndexedFile=serde_json::from_value(json!({"id":0,"path":name.as_ref(),"name":name.as_ref(),"extension":"","size":0,"modified":0,"created":0,"changed":0,"is_dir":false,"is_symlink":false,"file_id":0,"parent_id":0,"volume_id":"fixture","flags":0})).unwrap();
+    file.prepare();
+    file
+}
+
+#[test]
+fn shared_prefix_matching_equals_full_bytes_for_sparse_special_paths() {
+    let paths = [
+        "/",
+        "",
+        "relative",
+        "relative/leaf",
+        "/目录/Café/报告.txt",
+        "/a/boundary/file",
+        "/a//boundary/file/",
+        "//a/b",
+        "/a/./../b",
+        "/Straße/strasse",
+        "/a/2/name10",
+    ];
+    let rows: Vec<_> = (0..8201)
+        .map(|index| {
+            let mut row = name_record("different-from-the-path");
+            row.id = index as i64;
+            row.path = paths[index % paths.len()].into();
+            row.prepare();
+            row
+        })
+        .collect();
+    let entries = EntryTable::from_rows(rows.iter().cloned().map(Ok)).unwrap();
+    let live: RoaringBitmap = (0..rows.len() as u32)
+        .filter(|slot| slot % 7 != 0)
+        .collect();
+    for text in [
+        "",
+        "/",
+        "//",
+        "目录/cafe/报告",
+        "boundary/f",
+        "a/b",
+        "../b",
+        "/name",
+        "strasse",
+        "/a/2/name10",
+        "relative/l",
+        "absent",
+    ] {
+        let text = crate::query::fold_search(text);
+        let finder = Finder::new(text.as_bytes());
+        let expected: RoaringBitmap = live
+            .iter()
+            .filter(|&slot| rows[slot as usize].search_path.contains(&text))
+            .collect();
+        let actual = match_paths(
+            &entries,
+            &finder,
+            crate::query::PathTextMode::Search,
+            &live,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(actual, expected, "Path boundary case {text}");
+    }
+}
+
+#[test]
+fn sensitive_path_columns_preserve_diacritics_and_korean_normalization() {
+    let paths = [
+        "/Café/报告",
+        "/Cafe\u{301}/보고서",
+        "/CAFE/报告",
+        "/Straße/가",
+        "/relative/末段",
+    ];
+    let rows: Vec<_> = paths
+        .iter()
+        .enumerate()
+        .map(|(id, path)| {
+            let mut row = name_record("unrelated");
+            row.id = id as i64;
+            row.path = (*path).into();
+            row.prepare();
+            row
+        })
+        .collect();
+    let entries = EntryTable::from_rows(rows.iter().cloned().map(Ok)).unwrap();
+    let live = (0..rows.len() as u32).collect();
+    for text in [
+        "case:path:Cafe/",
+        "case:diacritics:path:Café",
+        "case:path:보고서",
+        "case:diacritics:path:보고서",
+        "diacritics:path:Café",
+        "path:CAFÉ",
+        "case:path:가",
+        "case:path:relative/末",
+    ] {
+        let query = crate::query::parse(text, &Default::default()).unwrap();
+        let (finder, mode) = query.path_substring().unwrap();
+        let expected: RoaringBitmap = rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| query.matches(row, None).unwrap())
+            .map(|(slot, _)| slot as u32)
+            .collect();
+        assert_eq!(
+            match_paths(&entries, finder, mode, &live, &AtomicBool::new(false)).unwrap(),
+            expected,
+            "{text}"
+        );
     }
 }

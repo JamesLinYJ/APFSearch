@@ -1,3 +1,4 @@
+use apfsearch_core::entry_table::FileEntry;
 use apfsearch_core::{
     index_store::{IndexStore, SearchSnapshot},
     scanner::ScannedFile,
@@ -457,9 +458,9 @@ fn metadata_commit_during_cache_write_retains_the_new_delta() {
             .unwrap()
             .0
             .visible_entries()
-            .find(|entry| entry.name == "file1.txt")
+            .find(|entry| entry.name() == "file1.txt")
             .unwrap()
-            .size,
+            .size(),
         999_999
     );
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::entry_table::FileEntry;
 use std::os::unix::fs::MetadataExt;
 
 #[test]
@@ -53,7 +54,7 @@ fn numeric_first_queries_on_existing_prepared_fixture() {
             .iter()
             .filter(|slot| {
                 query
-                    .matches_available(&snapshot.entries[*slot as usize], None)
+                    .matches_available(&snapshot.entries.at(*slot as usize), None)
                     .unwrap()
             })
             .collect();
@@ -71,7 +72,7 @@ fn numeric_first_queries_on_existing_prepared_fixture() {
             .iter()
             .filter(|slot| expected.contains(**slot))
             .take(200)
-            .map(|slot| snapshot.entries[*slot as usize].id)
+            .map(|slot| snapshot.entries.at(*slot as usize).id())
             .collect();
         let actual_rows: Vec<i64> = response["rows"]
             .as_array()
@@ -84,7 +85,7 @@ fn numeric_first_queries_on_existing_prepared_fixture() {
         results.push(json!({"text":text,"core_ms":response["elapsed_ms"],"total":response["total"],"raw_response":response,"all_matching_ids_and_first_page_verified":true}));
     }
     let previous = engine.snapshot.load_full();
-    let mut file = previous.entries[5678].as_ref().clone();
+    let mut file = previous.entries.at(5678).to_owned_file();
     file.size = 17 * 1024 * 1024;
     file.modified += 30;
     file.created += 30;
@@ -109,7 +110,7 @@ fn numeric_first_queries_on_existing_prepared_fixture() {
             .iter()
             .filter(|slot| {
                 query
-                    .matches_available(&snapshot.entries[*slot as usize], None)
+                    .matches_available(&snapshot.entries.at(*slot as usize), None)
                     .unwrap()
             })
             .collect();
@@ -122,7 +123,7 @@ fn numeric_first_queries_on_existing_prepared_fixture() {
         after_update.push(json!({"text":text,"core_ms":response["elapsed_ms"],"total":response["total"],"raw_response":response,"all_matching_ids_verified":true}));
         eprintln!("numeric after update {text}: {} ms", response["elapsed_ms"]);
     }
-    assert_eq!(previous.entries[5678].id, changed_id);
+    assert_eq!(previous.entries.at(5678).id(), changed_id);
     let after = std::fs::metadata(&store.cache_path).unwrap();
     assert_eq!(
         (

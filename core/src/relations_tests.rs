@@ -1,4 +1,5 @@
 use super::*;
+use crate::entry_table::FileEntry;
 use crate::{index_store::IndexStore, scanner::ScannedFile};
 use std::sync::Arc;
 
@@ -57,13 +58,13 @@ fn evaluate(snapshot: &SearchSnapshot, text: &str, coverage: &Value) -> Vec<Stri
     resolve(
         &mut query,
         snapshot,
-        tree,
+        &tree,
         coverage,
         &cancelled,
         &mut |_| Ok(None),
     )
     .unwrap();
-    let evaluator = query.evaluator();
+    let mut evaluator = query.evaluator();
     let mut result: Vec<_> = snapshot
         .visible_entries()
         .filter(|file| {
@@ -71,7 +72,7 @@ fn evaluate(snapshot: &SearchSnapshot, text: &str, coverage: &Value) -> Vec<Stri
             assert_eq!(matched, query.matches_available(file, None).unwrap());
             matched
         })
-        .map(|file| file.path.clone())
+        .map(|file| file.path().to_string())
         .collect();
     result.sort();
     result
@@ -180,15 +181,15 @@ fn cached_topology_is_shared_only_within_its_immutable_generation() {
     let snapshot = fixture();
     let cancelled = AtomicBool::new(false);
     let first = snapshot.directory_hierarchy(&cancelled).unwrap();
-    assert!(std::ptr::eq(
-        first,
-        snapshot.directory_hierarchy(&cancelled).unwrap()
+    assert!(Arc::ptr_eq(
+        &first,
+        &snapshot.directory_hierarchy(&cancelled).unwrap()
     ));
     let mut changed = snapshot
         .visible_entries()
-        .find(|file| file.name == "中文.txt")
+        .find(|file| file.name() == "中文.txt")
         .unwrap()
-        .clone();
+        .to_owned_file();
     changed.size = 30;
     let updated =
         SearchSnapshot::from_changes(vec![(changed.id, Some(changed))], 2, &snapshot).unwrap();
@@ -200,7 +201,10 @@ fn cached_topology_is_shared_only_within_its_immutable_generation() {
         evaluate(&snapshot, "foldersize:=40", &coverage()),
         ["/fixture/alpha"]
     );
-    assert!(Arc::ptr_eq(&snapshot.entries[0], &updated.entries[0]));
+    assert!(crate::entry_table::same_record(
+        &snapshot.entries.at(0),
+        &updated.entries.at(0)
+    ));
 }
 #[test]
 fn cancellation_and_unknown_content_never_become_successful_empty_results() {
@@ -210,7 +214,7 @@ fn cancellation_and_unknown_content_never_become_successful_empty_results() {
             .directory_hierarchy(&AtomicBool::new(true))
             .is_err()
     );
-    assert!(snapshot.hierarchy.get().is_none());
+    assert!(snapshot.hierarchy.lock().unwrap().upgrade().is_none());
     assert_eq!(
         evaluate(
             &snapshot,
@@ -227,7 +231,7 @@ fn cancellation_and_unknown_content_never_become_successful_empty_results() {
         resolve(
             &mut query,
             &snapshot,
-            tree,
+            &tree,
             &coverage(),
             &AtomicBool::new(true),
             &mut |_| panic!("cancelled query read content")
@@ -238,7 +242,10 @@ fn cancellation_and_unknown_content_never_become_successful_empty_results() {
 #[test]
 fn overflowing_logical_size_remains_unknown_without_wrapping() {
     let snapshot = fixture();
-    let mut files: Vec<_> = snapshot.visible_entries().cloned().collect();
+    let mut files: Vec<_> = snapshot
+        .visible_entries()
+        .map(|entry| entry.to_owned_file())
+        .collect();
     for file in &mut files {
         if !file.is_dir {
             file.size = u64::MAX;

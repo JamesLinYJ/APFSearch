@@ -1,4 +1,5 @@
 //! Process-death tests touch only one synthetic metadata row in a temporary DB.
+use apfsearch_core::entry_table::FileEntry;
 use apfsearch_core::{
     index_store::{IndexStore, SearchSnapshot},
     scanner::ScannedFile,
@@ -105,7 +106,7 @@ fn killed_writer_preserves_atomic_metadata_and_recoverable_cache_history() {
         let (snapshot, _) = store
             .cache_read()
             .expect("journal and metadata must recover together");
-        assert_eq!(snapshot.visible_entries().next().unwrap().size, expected);
+        assert_eq!(snapshot.visible_entries().next().unwrap().size(), expected);
         let count: i64 = store
             .connection
             .query_row("SELECT pending_count FROM cache_journal_state", [], |row| {

@@ -1,5 +1,37 @@
 use super::*;
 #[test]
+fn unchanged_mount_tables_share_materialized_context_without_sharing_mutations() {
+    let filesystems = mounted_filesystems().unwrap();
+    let first = MountScope::from_current_filesystems(&filesystems).unwrap();
+    let second = MountScope::from_current_filesystems(&filesystems).unwrap();
+    assert_eq!(first.identity(), second.identity());
+    let second = first.clone();
+    assert!(Arc::ptr_eq(&first.mounts, &second.mounts));
+    let original = first.mounts.clone();
+    let mapped = first.with_aliases(std::iter::once((
+        PathBuf::from("/"),
+        PathBuf::from("/test-alias"),
+    )));
+    assert!(Arc::ptr_eq(&original, &second.mounts));
+    assert!(!Arc::ptr_eq(&mapped.mounts, &second.mounts));
+    assert!(second.aliases.is_empty());
+}
+
+#[test]
+fn changed_mount_identity_invalidates_materialized_policy() {
+    let mut filesystems = mounted_filesystems().unwrap();
+    let before = MountScope::from_current_filesystems(&filesystems).unwrap();
+    let mount = c_array_string(&filesystems[0].f_mntonname)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    filesystems[0].f_flags &= !(libc::MNT_LOCAL as u32);
+    let after = MountScope::from_current_filesystems(&filesystems).unwrap();
+    assert_ne!(before.identity(), after.identity());
+    assert!(!after.allows(Path::new(&mount)));
+}
+#[test]
 fn excluded_mounts_are_rejected_before_any_path_io() {
     let scope = MountScope::from_mounts(vec![
         (PathBuf::from("/"), true),

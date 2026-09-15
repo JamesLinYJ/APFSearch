@@ -1,5 +1,6 @@
 //! Explicit performance harness: synthetic metadata, no volume scan or file tree.
 use super::*;
+use crate::entry_table::FileEntry;
 
 fn synthetic_snapshot(count: usize) -> SearchSnapshot {
     let template: IndexedFile = serde_json::from_value(json!({
@@ -26,20 +27,29 @@ fn synthetic_snapshot(count: usize) -> SearchSnapshot {
 #[test]
 fn name_column_preserves_matching_across_rename_append_delete_and_restore() {
     let packed = synthetic_snapshot(4100);
-    let allocation = |slot: usize| packed.entries[slot].search_name.allocation_identity().0;
+    let allocation = |slot: usize| packed.entries.text_block_identity(slot);
     assert_eq!(allocation(0), allocation(4095));
     assert_ne!(allocation(4095), allocation(4096));
-    let path_allocation = |slot: usize| packed.entries[slot].search_path.allocation_identity().0;
+    let path_allocation = |slot: usize| packed.entries.text_block_identity(slot);
     assert_eq!(path_allocation(0), path_allocation(4095));
     assert_ne!(path_allocation(4095), path_allocation(4096));
-    assert_ne!(allocation(0), path_allocation(0));
-    let mut entries: Vec<_> = packed.visible_entries().cloned().collect();
+    // Names occupy the first region of the block; paths share its ownership,
+    // while retaining distinct byte ranges for direct path matching.
+    assert_eq!(allocation(0), path_allocation(0));
+    assert_eq!(
+        packed.entries.at(0).search_name().as_ptr(),
+        packed.entries.at(0).search_path().suffix.as_ptr()
+    );
+    let mut entries: Vec<_> = packed
+        .visible_entries()
+        .map(|entry| entry.to_owned_file())
+        .collect();
     for (slot, name) in [(0, "Straße café.txt"), (4096, "报告 café.txt")] {
         entries[slot].name = name.into();
         entries[slot].path = format!("/synthetic/{name}");
     }
     let original = SearchSnapshot::new(entries, 1);
-    let mut renamed = original.entries[4096].as_ref().clone();
+    let mut renamed = original.entries.at(4096).to_owned_file();
     renamed.name = "changed-报告.txt".into();
     renamed.path = format!("/synthetic/{}", renamed.name);
     let mut appended = renamed.clone();
@@ -85,7 +95,7 @@ fn name_column_preserves_matching_across_rename_append_delete_and_restore() {
                     .live
                     .iter()
                     .filter(|slot| {
-                        let file = &snapshot.entries[*slot as usize];
+                        let file = &snapshot.entries.at(*slot as usize);
                         query.matches_available(file, None).unwrap()
                             && !exclusion.matches_available(file, None).unwrap()
                     })
@@ -102,8 +112,35 @@ fn name_column_preserves_matching_across_rename_append_delete_and_restore() {
             }
         }
         for text in [
-            "case:report",
             "path:report",
+            "path:synthetic/",
+            "path:0/report",
+            "path:报告",
+            "path:notpresent",
+        ] {
+            let query = query::parse(text, &HashMap::new()).unwrap();
+            let expected: roaring::RoaringBitmap = snapshot
+                .live
+                .iter()
+                .filter(|&slot| {
+                    query
+                        .matches_available(
+                            &snapshot.entries.at(slot as usize).to_owned_file(),
+                            None,
+                        )
+                        .unwrap()
+                })
+                .collect();
+            assert_eq!(
+                snapshot
+                    .match_name_columns(&query, &[], &AtomicBool::new(false))
+                    .unwrap()
+                    .unwrap(),
+                expected
+            );
+        }
+        for text in [
+            "case:report",
             "regex:report",
             "content:report",
             "report size:>1",
@@ -134,7 +171,7 @@ fn row_evaluation_masks_historical_postings_with_current_visibility() {
         .entries
         .iter()
         .step_by(2)
-        .map(|file| (file.id, None))
+        .map(|file| (file.id(), None))
         .collect();
     let deleted: Vec<_> = changes.iter().map(|(id, _)| *id).collect();
     let mut updated = SearchSnapshot::from_changes(changes, 2, &original).unwrap();
@@ -193,7 +230,7 @@ fn uncached_first_page_latency() {
             .iter()
             .filter(|slot| {
                 query
-                    .matches_available(&original.entries[*slot as usize], None)
+                    .matches_available(&original.entries.at(*slot as usize), None)
                     .unwrap()
             })
             .collect();
@@ -202,13 +239,13 @@ fn uncached_first_page_latency() {
             .iter()
             .filter(|slot| expected.contains(**slot))
             .take(200)
-            .map(|slot| original.entries[*slot as usize].id)
+            .map(|slot| original.entries.at(*slot as usize).id())
             .collect();
         let mut samples = Vec::new();
         for _ in 0..30 {
             // Each sample gets a fresh generation and empty query caches through
             // the normal incremental publication path, not a unique cache key.
-            let mut replacement = original.entries[count / 2].as_ref().clone();
+            let mut replacement = original.entries.at(count / 2).to_owned_file();
             replacement.size += 1;
             generation += 1;
             let updated = SearchSnapshot::from_changes(
@@ -270,7 +307,7 @@ fn name_query_phase_latency() {
             .iter()
             .filter(|slot| {
                 query
-                    .matches_available(&snapshot.entries[*slot as usize], None)
+                    .matches_available(&snapshot.entries.at(*slot as usize), None)
                     .unwrap()
             })
             .collect();
@@ -313,12 +350,12 @@ fn name_layout_scan_latency() {
     let names: Vec<&str> = snapshot
         .entries
         .iter()
-        .map(|file| file.search_name.as_ref())
+        .map(|file| file.search_name())
         .collect();
     let shared_names: crate::chunked_vec::ChunkedVec<_> = snapshot
         .entries
         .iter()
-        .map(|file| file.search_name.clone())
+        .map(|file| file.search_name())
         .collect();
     let mut pool = String::new();
     let mut offsets = Vec::with_capacity(names.len() + 1);
@@ -343,7 +380,7 @@ fn name_layout_scan_latency() {
                 let matches: Vec<_> = (0..names.len())
                     .filter(|&slot| {
                         let bytes = match method {
-                            0 => snapshot.entries[slot].search_name.as_bytes(),
+                            0 => snapshot.entries.at(slot).search_name().as_bytes(),
                             1 => names[slot].as_bytes(),
                             2 => &pool.as_bytes()[offsets[slot]..offsets[slot + 1]],
                             3 => shared_names[slot].as_bytes(),
@@ -391,55 +428,8 @@ fn snapshot_memory_profile() {
         .trim()
         .parse()
         .unwrap();
-    let mut fields = serde_json::Map::new();
-    for (label, field) in [
-        (
-            "path",
-            (|file: &IndexedFile| &file.path) as fn(&IndexedFile) -> &String,
-        ),
-        ("name", |file| &file.name),
-    ] {
-        let capacity: usize = snapshot
-            .entries
-            .iter()
-            .map(|file| field(file).capacity())
-            .sum();
-        let unique: HashSet<&str> = snapshot
-            .entries
-            .iter()
-            .map(|file| field(file).as_str())
-            .collect();
-        fields.insert(label.into(), json!({"capacity_bytes":capacity,"unique_values":unique.len(),"unique_value_bytes":unique.iter().map(|text| text.len()).sum::<usize>()}));
-    }
-    for (label, field) in [
-        (
-            "extension",
-            (|file: &IndexedFile| file.extension.as_ref()) as fn(&IndexedFile) -> &str,
-        ),
-        ("folded_extension", |file| file.folded_extension.as_ref()),
-        ("volume_id", |file| file.volume_id.as_ref()),
-    ] {
-        let unique: HashSet<&str> = snapshot.entries.iter().map(|file| field(file)).collect();
-        fields.insert(label.into(), json!({"shared":true,"referenced_bytes":snapshot.entries.iter().map(|file| field(file).len()).sum::<usize>(),"unique_values":unique.len(),"unique_value_bytes":unique.iter().map(|text| text.len()).sum::<usize>()}));
-    }
-    let mut shared = HashSet::new();
-    let mut shared_bytes = 0usize;
-    for file in snapshot.entries.iter() {
-        for text in [
-            &file.folded_name,
-            &file.folded_path,
-            &file.search_name,
-            &file.search_path,
-            &file.parent,
-        ] {
-            let (owner, bytes) = text.allocation_identity();
-            if shared.insert(owner) {
-                shared_bytes += bytes;
-            }
-        }
-    }
     println!(
         "{}",
-        json!({"scope":"In-memory synthetic snapshot; RSS read before accounting; allocation capacities exclude allocator overhead and are not an exhaustive heap measurement", "entries":snapshot.len(),"build_ms":build_ms,"resident_kib":resident_kib,"record_size_bytes":std::mem::size_of::<IndexedFile>(),"record_payload_bytes":snapshot.entries.len()*std::mem::size_of::<IndexedFile>(),"owned_string_fields":fields,"unique_shared_text_allocations":shared.len(),"unique_shared_text_bytes":shared_bytes})
+        json!({"scope":"Synthetic compact storage payload inventory, not allocator accounting", "build_ms":build_ms,"resident_kib":resident_kib,"storage":snapshot.entries.storage_metrics()})
     );
 }

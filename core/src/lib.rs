@@ -1,17 +1,21 @@
 //! Thread-safe C ABI. All JSON operations share the same engine used by the GUI and CLI.
 //! Callers must not close an engine handle while another thread is entering apfsearch_engine_call.
+pub mod entry_table;
+use entry_table::{EntryView, FileEntry};
 mod bitmap_builder;
 mod chunked_vec;
 mod clone_identity;
 #[cfg(all(test, target_os = "macos"))]
 mod content_read_tests;
 mod cpu_executor;
+mod derived_cache;
 mod duplicates;
 mod file_events;
 mod file_identity;
 mod file_list_import;
 mod filesystem;
 pub mod index_store;
+mod integer_column;
 mod label_pool;
 mod metadata_postings;
 mod name_column;
@@ -29,7 +33,12 @@ pub mod query;
 mod query_cache_tests;
 #[cfg(test)]
 mod query_latency_tests;
+mod query_scratch;
+mod reconciliation_batch;
 mod relations;
+mod resource_metrics;
+#[cfg(all(test, target_os = "macos"))]
+mod resource_workload_tests;
 mod result_order;
 mod scan_resume;
 pub mod scanner;
@@ -37,8 +46,11 @@ pub mod shared_text;
 mod snapshot_cache;
 mod snapshot_leases;
 mod status_signal;
+pub mod text_view;
 use arc_swap::ArcSwap;
-use index_store::{IndexStore, IndexedFile, SearchSnapshot};
+#[cfg(test)]
+use index_store::IndexedFile;
+use index_store::{IndexStore, SearchSnapshot};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -52,6 +64,12 @@ use std::{
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;
+
+/// Release disposable query products on system memory pressure. No database I/O.
+#[unsafe(no_mangle)]
+pub extern "C" fn apfsearch_release_query_caches() {
+    let _ = std::panic::catch_unwind(derived_cache::clear);
+}
 
 // Bare generation lookup is a short convenience window. Explicit leases and
 // active queries own their own Arc; structural rebuilds must not retain another
@@ -375,6 +393,7 @@ impl SearchEngine {
         status["scanning"] = json!(self.scanning.load(Ordering::Relaxed));
         status["updating"] = json!(status["state"] == "updating");
         status["status_revision"] = json!(revision);
+        status["resources"] = resource_metrics::snapshot();
         status["scope_token"] = json!(coverage_token(&self.relation_coverage(snapshot.generation)));
         status
     }
@@ -507,6 +526,7 @@ impl SearchEngine {
                     token.store(true, Ordering::Relaxed);
                 }
                 self.state.wake_cancelled();
+                cpu_executor::wake_cancelled();
                 self.cancel_file_list_import(id);
                 Ok(json!({"cancelled":id}))
             }
@@ -653,13 +673,15 @@ impl SearchEngine {
                 .unwrap()
                 .insert(id.clone(), cancelled.clone())
         {
-            previous.store(true, Ordering::Relaxed);
+            previous.store(true, Ordering::Release);
+            cpu_executor::wake_cancelled();
         }
         let _request = RequestGuard {
             requests: &self.requests,
             id,
             token: cancelled.clone(),
         };
+        let _cpu = cpu_executor::enter_query(&cancelled)?;
         snapshot
             .directory_hierarchy(&cancelled)?
             .info(&snapshot, &coverage, &paths, &cancelled)
@@ -698,6 +720,21 @@ impl SearchEngine {
         }
     }
     fn query_inner(&self, request: &Value) -> Result<Value, String> {
+        let request_id = request["request_id"].as_str().map(str::to_string);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        if let Some(id) = &request_id {
+            let mut requests = self.requests.lock().unwrap();
+            if let Some(old) = requests.insert(id.clone(), cancelled.clone()) {
+                old.store(true, Ordering::Release);
+                cpu_executor::wake_cancelled();
+            }
+        }
+        let guard = RequestGuard {
+            requests: &self.requests,
+            id: request_id,
+            token: cancelled.clone(),
+        };
+        let _cpu = cpu_executor::enter_query(&cancelled)?;
         let started = Instant::now();
         let text = request["text"].as_str().unwrap_or("");
         if text.len() > 16384 {
@@ -757,19 +794,6 @@ impl SearchEngine {
         let mut offset = request["offset"].as_u64().unwrap_or(0) as usize;
         let limit = request["limit"].as_u64().unwrap_or(200).min(10000) as usize;
         let result_order = result_order::ResultOrder::parse(&request["sort"])?;
-        let request_id = request["request_id"].as_str().map(str::to_string);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        if let Some(id) = &request_id {
-            let mut requests = self.requests.lock().unwrap();
-            if let Some(old) = requests.insert(id.clone(), cancelled.clone()) {
-                old.store(true, Ordering::Relaxed)
-            }
-        }
-        let guard = RequestGuard {
-            requests: &self.requests,
-            id: request_id,
-            token: cancelled.clone(),
-        };
         let mut warnings = HashSet::new();
         let metadata_only = request["metadata_only"].as_bool().unwrap_or(false);
         if relational {
@@ -828,26 +852,28 @@ impl SearchEngine {
             if cancelled.load(Ordering::Relaxed) {
                 return Err("Query cancelled".into());
             }
-            let rows: Vec<&IndexedFile> = page
+            let rows: Vec<Value> = page
                 .slots
                 .iter()
-                .map(|slot| snapshot.entries[*slot as usize].as_ref())
+                .map(|slot| snapshot.entries.at(*slot as usize).to_json())
                 .collect();
-            return Ok(
-                json!({"rows":rows,"offline":offline,"total":page.total,"generation":snapshot.generation,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"warnings":warnings.iter().cloned().collect::<Vec<_>>(),"offset":page.offset,"limit":limit,"anchor_index":page.anchor_index,"anchor_found":page.anchor_index.is_some()}),
-            );
+            let mut response = json!({"offline":offline,"total":page.total,"generation":snapshot.generation,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"warnings":warnings.iter().cloned().collect::<Vec<_>>(),"offset":page.offset,"limit":limit,"anchor_index":page.anchor_index,"anchor_found":page.anchor_index.is_some()});
+            response["rows"] = Value::Array(rows);
+            return Ok(response);
         }
         let mut matching = cache_key
             .as_deref()
             .and_then(|key| snapshot.cached_matches(key));
         if !all_files && matching.is_none() && relational && !metadata_only {
             let tree = snapshot.directory_hierarchy(&cancelled)?;
-            let mut content =
-                |file: &IndexedFile| self.index_store.lock().unwrap().content_for(&file.path);
+            let mut content = |file: &EntryView<'_>| {
+                file.path()
+                    .with_str(|path| self.index_store.lock().unwrap().content_for(path))
+            };
             relations::resolve(
                 &mut parsed_query,
                 &snapshot,
-                tree,
+                &tree,
                 &coverage,
                 &cancelled,
                 &mut content,
@@ -856,7 +882,7 @@ impl SearchEngine {
                 relations::resolve(
                     exclusion,
                     &snapshot,
-                    tree,
+                    &tree,
                     &coverage,
                     &cancelled,
                     &mut content,
@@ -898,8 +924,8 @@ impl SearchEngine {
             matching = Some(matched);
         }
         if !all_files && matching.is_none() {
-            let evaluator = parsed_query.evaluator();
-            let exclusion_evaluators: Vec<_> =
+            let mut evaluator = parsed_query.evaluator();
+            let mut exclusion_evaluators: Vec<_> =
                 excludes.iter().map(query::Query::evaluator).collect();
             let row_needs_content = !metadata_only
                 && (parsed_query.requires_content()
@@ -919,12 +945,13 @@ impl SearchEngine {
                 if cancelled.load(Ordering::Relaxed) {
                     return Err("Query cancelled".into());
                 }
-                let file = &snapshot.entries[slot as usize];
+                let file = &snapshot.entries.at(slot as usize);
                 if row_needs_content && !parsed_query.may_match_without_content(file)? {
                     continue;
                 }
                 let stored = if row_needs_content {
-                    self.index_store.lock().unwrap().content_for(&file.path)?
+                    file.path()
+                        .with_str(|path| self.index_store.lock().unwrap().content_for(path))?
                 } else {
                     None
                 };
@@ -938,7 +965,7 @@ impl SearchEngine {
                     None
                 };
                 let mut excluded = false;
-                for exclusion in &exclusion_evaluators {
+                for exclusion in &mut exclusion_evaluators {
                     if !metadata_only && exclusion.matches_available(file, body)? {
                         excluded = true;
                         break;
@@ -985,9 +1012,9 @@ impl SearchEngine {
                     // ordered matching stream, without another full path scan.
                     let expected = (offset as i128 + anchor_delta as i128).max(0) as usize;
                     if all_files
-                        && order
-                            .get(expected)
-                            .is_some_and(|slot| snapshot.entries[*slot as usize].path == anchor)
+                        && order.get(expected).is_some_and(|slot| {
+                            snapshot.entries.at(*slot as usize).path() == anchor
+                        })
                     {
                         anchor_index = Some(expected);
                     } else if all_files {
@@ -999,14 +1026,14 @@ impl SearchEngine {
                             .and_then(|id| snapshot.slot_for_id(id))
                             .filter(|slot| {
                                 snapshot.live.contains(*slot as u32)
-                                    && snapshot.entries[*slot].path == anchor
+                                    && snapshot.entries.at(*slot).path() == anchor
                             });
                         if let Some(slot) = indexed_anchor {
                             anchor_index = order
                                 .binary_search_by(|candidate| {
                                     result_order.compare(
-                                        &snapshot.entries[*candidate as usize],
-                                        &snapshot.entries[slot],
+                                        &snapshot.entries.at(*candidate as usize),
+                                        &snapshot.entries.at(slot),
                                     )
                                 })
                                 .ok();
@@ -1015,7 +1042,7 @@ impl SearchEngine {
                                 if rank % 1024 == 0 && cancelled.load(Ordering::Relaxed) {
                                     return Err("Query cancelled".into());
                                 }
-                                if snapshot.entries[slot as usize].path == anchor {
+                                if snapshot.entries.at(slot as usize).path() == anchor {
                                     anchor_index = Some(rank);
                                     break;
                                 }
@@ -1028,7 +1055,7 @@ impl SearchEngine {
                                 return Err("Query cancelled".into());
                             }
                             if matching.as_ref().is_none_or(|set| set.contains(slot)) {
-                                if snapshot.entries[slot as usize].path == anchor {
+                                if snapshot.entries.at(slot as usize).path() == anchor {
                                     anchor_index = Some(rank);
                                     break;
                                 }
@@ -1073,8 +1100,10 @@ impl SearchEngine {
                     |set| set.iter().collect(),
                 );
                 let compare = |a, b| {
-                    result_order
-                        .compare(&snapshot.entries[a as usize], &snapshot.entries[b as usize])
+                    result_order.compare(
+                        &snapshot.entries.at(a as usize),
+                        &snapshot.entries.at(b as usize),
+                    )
                 };
                 if let Some(anchor) = anchor_requested {
                     let indexed_anchor = request["anchor_id"]
@@ -1082,14 +1111,14 @@ impl SearchEngine {
                         .and_then(|id| snapshot.slot_for_id(id))
                         .filter(|slot| {
                             snapshot.live.contains(*slot as u32)
-                                && snapshot.entries[*slot].path == anchor
+                                && snapshot.entries.at(*slot).path() == anchor
                         })
                         .map(|slot| slot as u32)
                         .or_else(|| {
                             matches
                                 .iter()
                                 .copied()
-                                .find(|slot| snapshot.entries[*slot as usize].path == anchor)
+                                .find(|slot| snapshot.entries.at(*slot as usize).path() == anchor)
                         });
                     if let Some(anchor) = indexed_anchor
                         .filter(|slot| matching.as_ref().is_none_or(|set| set.contains(*slot)))
@@ -1150,14 +1179,14 @@ impl SearchEngine {
                 }),
             );
         }
-        let rows: Vec<&IndexedFile> = matches
+        let rows: Vec<Value> = matches
             .iter()
-            .map(|i| snapshot.entries[*i as usize].as_ref())
+            .map(|i| snapshot.entries.at(*i as usize).to_json())
             .collect();
         drop(guard);
-        Ok(
-            json!({"rows":rows,"offline":offline,"total":total,"generation":snapshot.generation,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"warnings":warnings.into_iter().collect::<Vec<_>>(),"offset":offset,"limit":limit,"anchor_index":anchor_index,"anchor_found":anchor_index.is_some()}),
-        )
+        let mut response = json!({"offline":offline,"total":total,"generation":snapshot.generation,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"warnings":warnings.into_iter().collect::<Vec<_>>(),"offset":offset,"limit":limit,"anchor_index":anchor_index,"anchor_found":anchor_index.is_some()});
+        response["rows"] = Value::Array(rows);
+        Ok(response)
     }
     fn validate_content_revision(&self, expected: u64) -> Result<(), String> {
         if self
@@ -1266,12 +1295,27 @@ impl SearchEngine {
             let mut check_links =
                 |paths: Vec<String>| -> Result<index_store::LinkVerification, String> {
                     let mut verified = index_store::LinkVerification::default();
-                    for path in paths {
+                    if self.scan_cancel.load(Ordering::Relaxed) {
+                        links_cancelled = true;
+                        return Err("Hard-link reconciliation cancelled".into());
+                    }
+                    let scanner::MetadataBatch { entries } =
+                        match scanner::stat_entries(paths, &self.scan_cancel) {
+                            Ok(result) => result,
+                            Err(scanner::MetadataBatchError::Cancelled) => {
+                                links_cancelled = true;
+                                return Err("Hard-link reconciliation cancelled".into());
+                            }
+                            Err(scanner::MetadataBatchError::Filesystem(error)) => {
+                                return Err(error);
+                            }
+                        };
+                    for (path, entry) in entries {
                         if self.scan_cancel.load(Ordering::Relaxed) {
                             links_cancelled = true;
                             return Err("Hard-link reconciliation cancelled".into());
                         }
-                        match scanner::stat_entry(&path) {
+                        match entry {
                             Ok(entry) => verified.entries.push(entry),
                             Err(error) => {
                                 let removed =
@@ -1334,10 +1378,10 @@ impl SearchEngine {
                     linked_count += verified.entries.len();
                     Ok(verified)
                 };
-            // Old/new inode associations and verified peers share one SQLite
-            // transaction. The callback only stats paths, never locks the store.
+            // Filesystem observations are prepared without the database mutex.
+            // The short commit replays only verified, version-bound metadata.
             let reused_before = verified_objects.reused_objects();
-            match self.index_store.lock().unwrap().observe_batch(
+            match self.observe_prepared_batch(
                 &batch,
                 recursive.then_some(&mut observed),
                 if initial {
@@ -1954,15 +1998,15 @@ fn anchored_offset(
         })
         .unwrap_or_else(|| offset.min(total.saturating_sub(limit.max(1))))
 }
-fn read_text(indexed_file: &IndexedFile, warnings: &mut HashSet<String>) -> Option<String> {
-    if indexed_file.is_dir || indexed_file.is_symlink {
+fn read_text(indexed_file: &impl FileEntry, warnings: &mut HashSet<String>) -> Option<String> {
+    if indexed_file.is_dir() || indexed_file.is_symlink() {
         return None;
     }
-    if indexed_file.flags & 0x40000000 != 0 {
+    if indexed_file.flags() & 0x40000000 != 0 {
         warnings.insert("Cloud placeholders were skipped without downloading".into());
         return None;
     }
-    if indexed_file.size > 16 * 1024 * 1024 {
+    if indexed_file.size() > 16 * 1024 * 1024 {
         warnings.insert("Uncached content larger than 16 MiB was skipped".into());
         return None;
     }
@@ -1971,32 +2015,36 @@ fn read_text(indexed_file: &IndexedFile, warnings: &mut HashSet<String>) -> Opti
         "toml", "yaml", "yml", "xml", "html", "css", "csv", "log", "sh", "sql", "ini", "cfg",
         "plist", "tex",
     ]
-    .contains(&indexed_file.extension.as_ref())
+    .contains(&indexed_file.extension())
     {
         warnings.insert("Some files need the macOS content extractor or have unsupported formats; content results are partial".into());
         return None;
     }
     let result = (|| -> Result<String, String> {
-        let fresh = scanner::stat_entry(&indexed_file.path)?;
+        let fresh = indexed_file.path().with_str(scanner::stat_entry)?;
         if fresh.is_symlink || fresh.is_dataless() || fresh.is_dir {
             return Err("File became a symlink, directory or cloud placeholder".into());
         }
-        if fresh.volume_id != indexed_file.volume_id.as_ref()
-            || fresh.file_id != indexed_file.file_id
-            || fresh.size != indexed_file.size
-            || fresh.modified_ns != indexed_file.modified_ns
-            || fresh.changed_ns != indexed_file.changed_ns
+        if fresh.volume_id != indexed_file.volume_id()
+            || fresh.file_id != indexed_file.file_id()
+            || fresh.size != indexed_file.size()
+            || fresh.modified_ns != indexed_file.modified_ns()
+            || fresh.changed_ns != indexed_file.changed_ns()
         {
             return Err("File changed since this query snapshot; refresh the index".into());
         }
-        let metadata =
-            std::fs::symlink_metadata(&indexed_file.path).map_err(|error| error.to_string())?;
+        let metadata = indexed_file
+            .path()
+            .with_str(|path| std::fs::symlink_metadata(path))
+            .map_err(|error| error.to_string())?;
         let expected = file_identity::FileIdentity::from_metadata(&metadata);
         if !metadata.file_type().is_file() || !expected.matches_entry(indexed_file) {
             return Err("File identity changed before reading content".into());
         }
-        let mut file = open_regular(&indexed_file.path)?;
-        read_verified_text(&mut file, &indexed_file.path, &expected)
+        let mut file = indexed_file.path().with_str(open_regular)?;
+        indexed_file
+            .path()
+            .with_str(|path| read_verified_text(&mut file, path, &expected))
     })();
     match result {
         Ok(text) => Some(text),
@@ -2703,9 +2751,9 @@ mod reconciliation_tests {
             let elapsed = started.elapsed().as_secs_f64() * 1000.;
             let real = scanner::stat_entry(&path).unwrap();
             let snapshot = engine.snapshot.load();
-            let entry = snapshot.entries.iter().find(|e| e.path == path).unwrap();
-            assert_eq!(entry.modified_ns, real.modified_ns);
-            assert_eq!(entry.changed_ns, real.changed_ns);
+            let entry = snapshot.entries.iter().find(|e| e.path() == path).unwrap();
+            assert_eq!(entry.modified_ns(), real.modified_ns);
+            assert_eq!(entry.changed_ns(), real.changed_ns);
             samples.push(elapsed);
             eprintln!("Million-row real-file update {}: {:.2} ms", i + 1, elapsed);
             drop(snapshot);
@@ -2766,15 +2814,20 @@ mod reconciliation_tests {
         }
         let current = engine.snapshot.load();
         let reference = engine.index_store.lock().unwrap().entries().unwrap();
-        let fingerprint = |entries: Vec<&IndexedFile>| {
+        let fingerprint = |entries: Vec<IndexedFile>| {
             let mut hash = blake3::Hasher::new();
             for entry in entries {
-                hash.update(&serde_json::to_vec(entry).unwrap());
+                hash.update(&serde_json::to_vec(&entry).unwrap());
             }
             hash.finalize().to_hex().to_string()
         };
-        let observed_hash = fingerprint(current.visible_entries().collect());
-        let reference_hash = fingerprint(reference.iter().collect());
+        let observed_hash = fingerprint(
+            current
+                .visible_entries()
+                .map(|entry| entry.to_owned_file())
+                .collect(),
+        );
+        let reference_hash = fingerprint(reference);
         assert_eq!(
             observed_hash, reference_hash,
             "All searchable metadata must match an independent full SQLite reload"
@@ -2815,3 +2868,9 @@ mod snapshot_remap_tests;
 
 #[cfg(test)]
 mod snapshot_history_tests;
+
+#[cfg(test)]
+mod storage_growth_tests;
+
+#[cfg(test)]
+mod compact_acceptance_tests;

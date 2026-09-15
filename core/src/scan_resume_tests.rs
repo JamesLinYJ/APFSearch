@@ -180,7 +180,7 @@ fn historical_replay_restores_offline_changes_and_unchanged_startup_does_not_rew
         if let Some((snapshot, _)) = engine.index_store.lock().unwrap().cache_read() {
             let cached: BTreeSet<_> = snapshot
                 .visible_entries()
-                .map(|file| file.path.clone())
+                .map(|file| file.path().to_string())
                 .collect();
             if cached == expected {
                 break;

@@ -1,5 +1,6 @@
 //! Small, real publication-path tests for snapshot ownership. Weak references
 //! observe destruction without keeping a snapshot alive themselves.
+use crate::entry_table::FileEntry;
 use crate::{SearchEngine, index_store::SearchSnapshot, scanner::ScannedFile};
 use roaring::RoaringTreemap;
 use serde_json::{Value, json};
@@ -78,7 +79,10 @@ fn pad_inactive_slots(engine: &Arc<SearchEngine>) {
     // Simulate an aged snapshot without creating 10,000 files or SQLite rows.
     // The authoritative database still contains only the original three rows.
     let current = engine.snapshot.load_full();
-    let mut entries: Vec<_> = current.visible_entries().cloned().collect();
+    let mut entries: Vec<_> = current
+        .visible_entries()
+        .map(|entry| entry.to_owned_file())
+        .collect();
     let first_unused_id = entries.iter().map(|file| file.id).max().unwrap() + 1;
     let template = entries[0].clone();
     for offset in 0..10_000 {
@@ -140,7 +144,7 @@ fn delete_middle_incrementally(engine: &Arc<SearchEngine>, files: &[ScannedFile]
     assert!(
         snapshot
             .visible_entries()
-            .all(|entry| entry.path != files[1].path)
+            .all(|entry| entry.path() != files[1].path)
     );
     assert_only_live_rows(engine, 2);
 }
@@ -159,12 +163,12 @@ fn assert_only_live_rows(engine: &Arc<SearchEngine>, count: usize) {
         for (field, ascending) in [("name", true), ("path", true), ("size", false)] {
             let mut expected = visible.clone();
             expected.sort_by(|left, right| match field {
-                "name" => left.name.cmp(&right.name),
-                "path" => left.path.cmp(&right.path),
-                "size" => right.size.cmp(&left.size),
+                "name" => left.name().cmp(right.name()),
+                "path" => left.path().cmp(&right.path()),
+                "size" => right.size().cmp(&left.size()),
                 _ => unreachable!(),
             });
-            let paths: Vec<_> = expected.iter().map(|file| file.path.as_str()).collect();
+            let paths: Vec<_> = expected.iter().map(|file| file.path()).collect();
             let result = success(
                 engine,
                 json!({"op":"query","text":text,
@@ -211,7 +215,7 @@ fn publish_boundary(engine: &Arc<SearchEngine>, files: &mut [ScannedFile], bound
                     .entries
                     .iter()
                     .zip(snapshot.entries.iter().skip(1))
-                    .all(|(first, second)| first.id < second.id)
+                    .all(|(first, second)| first.id() < second.id())
             );
             assert_only_live_rows(engine, 2);
         }
@@ -220,7 +224,7 @@ fn publish_boundary(engine: &Arc<SearchEngine>, files: &mut [ScannedFile], bound
 fn snapshot_rows(snapshot: &SearchSnapshot) -> Vec<(String, u64)> {
     snapshot
         .visible_entries()
-        .map(|file| (file.path.clone(), file.size))
+        .map(|file| (file.path().to_string(), file.size()))
         .collect()
 }
 

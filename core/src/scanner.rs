@@ -101,6 +101,64 @@ pub fn stat_entry(path: &str) -> Result<ScannedFile, String> {
         .map(|entry| from_metadata(path.into(), &entry))
         .map_err(|error| format!("{path}: {error}"))
 }
+/// Reuse a pinned parent for adjacent siblings and validate namespace authority
+/// before returning any observations. No partial batch survives a mount change.
+#[derive(Debug)]
+pub(crate) enum MetadataBatchError {
+    Cancelled,
+    Filesystem(String),
+}
+impl From<String> for MetadataBatchError {
+    fn from(message: String) -> Self {
+        Self::Filesystem(message)
+    }
+}
+pub(crate) struct MetadataBatch {
+    pub entries: Vec<(String, Result<ScannedFile, String>)>,
+}
+pub(crate) fn stat_entries(
+    mut paths: Vec<String>,
+    cancelled: &AtomicBool,
+) -> Result<MetadataBatch, MetadataBatchError> {
+    paths.sort_unstable_by(|a, b| {
+        Path::new(a)
+            .parent()
+            .cmp(&Path::new(b).parent())
+            .then(a.cmp(b))
+    });
+    let scope = mount_scope().map_err(|error| error.to_string())?;
+    let mut reader = filesystem::MetadataReader::new(&scope);
+    let mut parent = None::<std::path::PathBuf>;
+    let mut result = Vec::with_capacity(paths.len());
+    for path in paths {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err(MetadataBatchError::Cancelled);
+        }
+        let next = Path::new(&path).parent().map(Path::to_owned);
+        if next != parent {
+            reader
+                .validate_parent()
+                .map_err(|error| error.to_string())?;
+            reader = filesystem::MetadataReader::new(&scope);
+            parent = next;
+        }
+        let entry = reader
+            .stat_in_batch(Path::new(&path))
+            .map(|metadata| from_metadata(path.clone(), &metadata))
+            .map_err(|error| format!("{path}: {error}"));
+        result.push((path, entry));
+    }
+    reader
+        .validate_parent()
+        .map_err(|error| error.to_string())?;
+    if !scope.still_current().map_err(|error| error.to_string())? {
+        return Err(MetadataBatchError::Filesystem(
+            "Mount identity changed during metadata verification".into(),
+        ));
+    }
+    Ok(MetadataBatch { entries: result })
+}
+
 pub(crate) fn directory_accessible(path: &str) -> bool {
     mount_scope()
         .is_ok_and(|scope| filesystem::check_directory_access(Path::new(path), &scope).is_ok())
@@ -204,12 +262,23 @@ fn firmlinks() -> &'static [Firmlink] {
     })
 }
 pub(crate) fn mount_scope() -> std::io::Result<filesystem::MountScope> {
-    Ok(filesystem::MountScope::load()?.with_aliases(
+    static MAPPED: Mutex<Option<filesystem::MountScope>> = Mutex::new(None);
+    let scope = filesystem::MountScope::load()?;
+    let mut cached = MAPPED.lock().unwrap();
+    if let Some(previous) = cached
+        .as_ref()
+        .filter(|previous| previous.identity() == scope.identity())
+    {
+        return Ok(previous.clone());
+    }
+    let scope = scope.with_aliases(
         firmlinks()
             .iter()
             .map(|link| (PathBuf::from(&link.physical), PathBuf::from(&link.logical)))
             .chain(filesystem::system_aliases().iter().cloned()),
-    ))
+    );
+    *cached = Some(scope.clone());
+    Ok(scope)
 }
 
 /// A missing entry may be retired only when a real, accessible ancestor inside
@@ -685,7 +754,7 @@ fn scan_excluding_with_scope(
     let worker_count = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(2)
-        .clamp(1, 4);
+        .clamp(1, 2);
     let (tx, rx) = sync_channel::<Message>(16);
     std::thread::scope(|scope| {
         for _ in 0..worker_count {
@@ -744,11 +813,43 @@ fn scan_excluding_with_scope(
         }
         drop(tx);
         let mut done = 0;
-        for message in rx {
+        // Directory boundaries are not transaction boundaries. Tiny directories
+        // otherwise multiply mount preparation, alias planning and commits.
+        // Drain only records already available; an empty queue flushes promptly
+        // without waiting for a timer or an unrelated directory to finish.
+        const COMMIT_ROWS: usize = 512;
+        let mut pending = Vec::with_capacity(COMMIT_ROWS);
+        loop {
+            let next = if pending.is_empty() {
+                rx.recv().ok()
+            } else {
+                match rx.try_recv() {
+                    Ok(message) => Some(message),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        on_batch(std::mem::replace(
+                            &mut pending,
+                            Vec::with_capacity(COMMIT_ROWS),
+                        ));
+                        continue;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+                }
+            };
+            let Some(message) = next else {
+                break;
+            };
             match message {
                 Message::Batch(entries) => {
                     report.entries += entries.len() as u64;
-                    on_batch(entries);
+                    for entry in entries {
+                        pending.push(entry);
+                        if pending.len() == COMMIT_ROWS {
+                            on_batch(std::mem::replace(
+                                &mut pending,
+                                Vec::with_capacity(COMMIT_ROWS),
+                            ));
+                        }
+                    }
                 }
                 Message::Issue(path, code) => {
                     report.uncovered.push(path.clone());
@@ -765,6 +866,9 @@ fn scan_excluding_with_scope(
                     }
                 }
             }
+        }
+        if !pending.is_empty() {
+            on_batch(pending);
         }
     });
     report.cancelled = cancelled.load(Ordering::Relaxed);

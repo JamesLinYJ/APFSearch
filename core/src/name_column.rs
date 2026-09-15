@@ -1,7 +1,6 @@
 //! A hot name-reference column; string bytes remain shared with file records.
 use crate::{
     bitmap_builder::RunBitmapBuilder,
-    chunked_vec::ChunkedVec,
     index_store::EntryTable,
     query::{Field, Query, Term},
 };
@@ -70,24 +69,12 @@ impl<'a> NameExpression<'a> {
 
 #[derive(Clone, Default)]
 pub(crate) struct NameColumn {
-    names: ChunkedVec<crate::shared_text::SharedText>,
+    names: EntryTable,
 }
-
 impl NameColumn {
     pub(crate) fn build(entries: &EntryTable) -> Self {
         Self {
-            names: entries
-                .iter()
-                .map(|entry| entry.search_name.clone())
-                .collect(),
-        }
-    }
-
-    pub(crate) fn set(&mut self, slot: usize, name: &crate::shared_text::SharedText) {
-        if slot == self.names.len() {
-            self.names.push(name.clone());
-        } else if self.names[slot].as_ref() != name.as_ref() {
-            self.names[slot] = name.clone();
+            names: entries.clone(),
         }
     }
 
@@ -158,17 +145,95 @@ impl NameColumn {
         cancelled: &AtomicBool,
     ) -> Result<RoaringBitmap, String> {
         let mut matched = RunBitmapBuilder::default();
-        for slot in candidates {
-            if cancelled.load(Ordering::Relaxed) {
-                return Err("Query cancelled".into());
-            }
-            let name = self.names[slot as usize].as_bytes();
-            if query.matches(name) && !exclusions.iter().any(|exclusion| exclusion.matches(name)) {
-                matched.insert(slot);
+        let mut candidates = candidates.peekable();
+        while let Some(&first) = candidates.peek() {
+            let block_index = first as usize / crate::entry_table::CHUNK_LENGTH;
+            let block = &self.names.chunks[block_index];
+            let references = block.search_name.values();
+            let text = block.text.text().as_bytes();
+            let end = (block_index + 1) * crate::entry_table::CHUNK_LENGTH;
+            while candidates.peek().is_some_and(|&slot| (slot as usize) < end) {
+                let slot = candidates.next().unwrap();
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err("Query cancelled".into());
+                }
+                let reference = references[slot as usize % crate::entry_table::CHUNK_LENGTH];
+                let name = &text
+                    [reference.offset as usize..(reference.offset + reference.length) as usize];
+                if query.matches(name)
+                    && !exclusions.iter().any(|exclusion| exclusion.matches(name))
+                {
+                    matched.insert(slot);
+                }
             }
         }
         Ok(matched.finish())
     }
+}
+
+pub(crate) fn match_paths(
+    entries: &EntryTable,
+    finder: &Finder<'_>,
+    mode: crate::query::PathTextMode,
+    live: &RoaringBitmap,
+    cancelled: &AtomicBool,
+) -> Result<RoaringBitmap, String> {
+    let mut result = RunBitmapBuilder::default();
+    let mut parents = std::collections::HashMap::new();
+    let boundary = finder
+        .needle()
+        .iter()
+        .rposition(|&byte| byte == b'/')
+        .map(|index| index + 1);
+    for (index, block) in entries.chunks.iter().enumerate() {
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("Query cancelled".into());
+        }
+        parents.clear();
+        let references = match mode {
+            crate::query::PathTextMode::Search => block.search_path.values(),
+            crate::query::PathTextMode::Folded => block.folded_path.values(),
+            crate::query::PathTextMode::Sensitive { .. } => block.path.values(),
+        };
+        let start = index * crate::entry_table::CHUNK_LENGTH;
+        let mut previous = None;
+        for slot in live.range(start as u32..(start + block.len()) as u32) {
+            let reference = references[slot as usize - start];
+            let parent_state = match previous {
+                Some((prefix, state)) if prefix == reference.prefix => state,
+                _ => {
+                    let state = *parents.entry(reference.prefix).or_insert_with(|| {
+                        let text = block.text_at(reference.prefix);
+                        let normalized = mode.normalize(text);
+                        let prefix = normalized.as_bytes();
+                        if finder.find(prefix).is_some() {
+                            2u8
+                        } else if boundary
+                            .is_none_or(|split| prefix.ends_with(&finder.needle()[..split]))
+                        {
+                            1
+                        } else {
+                            0
+                        }
+                    });
+                    previous = Some((reference.prefix, state));
+                    state
+                }
+            };
+            let suffix_matches = || {
+                let suffix = block.text_at(reference.suffix);
+                let normalized = mode.normalize(suffix);
+                match boundary {
+                    Some(split) => normalized.as_bytes().starts_with(&finder.needle()[split..]),
+                    None => finder.find(normalized.as_bytes()).is_some(),
+                }
+            };
+            if parent_state == 2 || (parent_state == 1 && suffix_matches()) {
+                result.insert(slot);
+            }
+        }
+    }
+    Ok(result.finish())
 }
 
 #[cfg(test)]

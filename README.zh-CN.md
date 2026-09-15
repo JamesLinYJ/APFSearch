@@ -23,17 +23,19 @@ APFSearch 通过 AppKit 界面和共享服务的命令行客户端，提供文�
 
 ## 下载
 
-**[v0.1.3 预发布](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.3)** · macOS 14 及以上
+**[v0.1.4 预发布](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.4)** · macOS 14 及以上
 
 | 你的 Mac | 下载 |
 | :--- | :--- |
-| 通用版（两种芯片） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-Universal.zip) |
-| Apple Silicon（M 系列） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-AppleSilicon.zip) |
-| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/APFSearch-0.1.3-Intel.zip) |
+| 通用版（两种芯片） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.4/APFSearch-0.1.4-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.4/APFSearch-0.1.4-Universal.zip) |
+| Apple Silicon（M 系列） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.4/APFSearch-0.1.4-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.4/APFSearch-0.1.4-AppleSilicon.zip) |
+| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.4/APFSearch-0.1.4-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.4/APFSearch-0.1.4-Intel.zip) |
 
-不确定芯片类型时选通用版。打开 DMG 后，将 APFSearch 拖入 Applications 文件夹；ZIP 适合手动部署。各包内的应用均使用 Developer ID 签名并附有 Apple 公证票据，DMG 容器未单独公证。[SHA-256 校验值](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.3/SHA256SUMS.txt)。
+不确定芯片类型时选通用版。打开 DMG 后，将 APFSearch 拖入 Applications 文件夹；ZIP 适合手动部署。各包内的应用均使用 Developer ID 签名并附有 Apple 公证票据，DMG 容器未单独公证。[SHA-256 校验值](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.4/SHA256SUMS.txt)。
 
 这是开发预览版。Intel 代码已通过 Rosetta 运行检查；真实 Intel 硬件及 macOS 14 仍需实机验证。
+
+0.1.4 Preview 通过共享路径前缀和紧凑整数列降低索引占用。同一份约 569 万条索引的五轮对照中，驻留内存比上一阶段紧凑候选版少 49.5%；这不是与 0.1.3 的对比，也不代表所有机器的表现。详见[实测与限制](docs/SHARED_PATH_LAYOUT.md#acceptance-results)。保留现有 SQLite 数据和设置，首次启动会重新生成派生搜索缓存，无需重新扫描文件。
 
 ## 开始使用
 

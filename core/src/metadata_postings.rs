@@ -1,17 +1,12 @@
 //! Exact postings for common metadata predicates. Unknown predicates fall back
 //! to the full query evaluator; a missing supported key means an empty result.
-use crate::{
-    index_store::IndexedFile,
-    query::{self, Field, Query, Term},
-};
+use crate::entry_table::FileEntry;
+use crate::query::{self, Field, Query, Term};
 use roaring::RoaringBitmap;
-use std::{
-    borrow::Cow,
-    collections::HashMap,
-    hash::Hash,
-    io::{self, Read, Write},
-    sync::Arc,
-};
+use std::{borrow::Cow, collections::HashMap, hash::Hash, sync::Arc};
+
+#[cfg(test)]
+use std::io::{self, Read, Write};
 
 type Postings<Key> = Arc<HashMap<Key, Arc<RoaringBitmap>>>;
 
@@ -24,15 +19,67 @@ pub(crate) struct MetadataPostings {
     symlinks: Arc<RoaringBitmap>,
 }
 impl MetadataPostings {
-    pub(crate) fn build<'a>(files: impl IntoIterator<Item = (u32, &'a IndexedFile)>) -> Self {
+    pub(crate) fn visit_postings<'a>(
+        &'a self,
+        mut visit: impl FnMut(u8, &'a [u8], &'a RoaringBitmap),
+    ) {
+        for (key, bitmap) in self.name_bytes.iter() {
+            visit(1, std::slice::from_ref(key), bitmap);
+        }
+        for (key, bitmap) in self.name_pairs.iter() {
+            visit(2, key, bitmap);
+        }
+        for (key, bitmap) in self.extensions.iter() {
+            visit(3, key.as_bytes(), bitmap);
+        }
+        visit(4, &[], &self.directories);
+        visit(5, &[], &self.symlinks);
+    }
+    pub(crate) fn insert_restored(
+        &mut self,
+        kind: u8,
+        key: &[u8],
+        bitmap: RoaringBitmap,
+    ) -> Option<()> {
+        let bitmap = Arc::new(bitmap);
+        let duplicate = match kind {
+            1 if key.len() == 1 => Arc::make_mut(&mut self.name_bytes)
+                .insert(key[0], bitmap)
+                .is_some(),
+            2 if key.len() == 2 => Arc::make_mut(&mut self.name_pairs)
+                .insert(key.try_into().ok()?, bitmap)
+                .is_some(),
+            3 if key.len() <= MAX_EXTENSION_BYTES => Arc::make_mut(&mut self.extensions)
+                .insert(std::str::from_utf8(key).ok()?.to_owned(), bitmap)
+                .is_some(),
+            4 if key.is_empty() => {
+                self.directories = bitmap;
+                false
+            }
+            5 if key.is_empty() => {
+                self.symlinks = bitmap;
+                false
+            }
+            _ => return None,
+        };
+        (!duplicate).then_some(())
+    }
+    pub(crate) fn shares_storage(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.name_bytes, &other.name_bytes)
+            && Arc::ptr_eq(&self.name_pairs, &other.name_pairs)
+            && Arc::ptr_eq(&self.extensions, &other.extensions)
+            && Arc::ptr_eq(&self.directories, &other.directories)
+            && Arc::ptr_eq(&self.symlinks, &other.symlinks)
+    }
+    pub(crate) fn build<F: FileEntry>(files: impl IntoIterator<Item = (u32, F)>) -> Self {
         let mut postings = Self::default();
         for (slot, file) in files {
-            postings.insert(slot, file);
+            postings.insert(slot, &file);
         }
         postings
     }
-    pub(crate) fn insert(&mut self, slot: u32, file: &IndexedFile) {
-        let bytes = file.search_name.as_bytes();
+    pub(crate) fn insert(&mut self, slot: u32, file: &impl FileEntry) {
+        let bytes = file.search_name().as_bytes();
         let singles = Arc::make_mut(&mut self.name_bytes);
         // Deduplicating bytes is cheap and allocation-free. Repeated bigrams
         // remain harmless: inserting an existing slot in a bitmap is idempotent.
@@ -57,15 +104,15 @@ impl MetadataPostings {
         } else {
             insert(extensions, extension.into_owned(), slot);
         }
-        if file.is_dir {
+        if file.is_dir() {
             Arc::make_mut(&mut self.directories).insert(slot);
         }
-        if file.is_symlink {
+        if file.is_symlink() {
             Arc::make_mut(&mut self.symlinks).insert(slot);
         }
     }
-    pub(crate) fn remove(&mut self, slot: u32, file: &IndexedFile) {
-        let bytes = file.search_name.as_bytes();
+    pub(crate) fn remove(&mut self, slot: u32, file: &impl FileEntry) {
+        let bytes = file.search_name().as_bytes();
         let singles = Arc::make_mut(&mut self.name_bytes);
         for &byte in bytes {
             remove(singles, &byte, slot);
@@ -83,15 +130,16 @@ impl MetadataPostings {
                 extensions.remove(extension.as_ref());
             }
         }
-        if file.is_dir {
+        if file.is_dir() {
             Arc::make_mut(&mut self.directories).remove(slot);
         }
-        if file.is_symlink {
+        if file.is_symlink() {
             Arc::make_mut(&mut self.symlinks).remove(slot);
         }
     }
     /// Cache format owned by this module; callers version and checksum the
     /// complete snapshot. Keys are sorted to make equivalent postings stable.
+    #[cfg(test)]
     pub(crate) fn write_to(&self, writer: &mut impl Write) -> io::Result<()> {
         write_map(&self.name_bytes, writer, |key, writer| {
             writer.write_all(&[*key])
@@ -109,6 +157,7 @@ impl MetadataPostings {
         write_bitmap(writer, &self.directories)?;
         write_bitmap(writer, &self.symlinks)
     }
+    #[cfg(test)]
     pub(crate) fn read_from(reader: &mut impl Read, entry_count: usize) -> io::Result<Self> {
         let name_bytes = read_map(reader, 256, entry_count, |reader| {
             Ok(read_array::<1>(reader)?[0])
@@ -196,30 +245,36 @@ impl MetadataPostings {
         Some(result)
     }
 }
-fn extension_key(file: &IndexedFile) -> Cow<'_, str> {
-    if file.folded_extension.is_ascii() {
-        Cow::Borrowed(&file.folded_extension)
+fn extension_key(file: &impl FileEntry) -> Cow<'_, str> {
+    if file.folded_extension().is_ascii() {
+        Cow::Borrowed(file.folded_extension())
     } else {
-        Cow::Owned(query::fold_search(&file.extension))
+        Cow::Owned(query::fold_search(file.extension()))
     }
 }
 const MAX_EXTENSION_BYTES: usize = 1024;
 // Both Roaring portable encodings can be emitted by serialize_into. Validate
 // their header before handing it to the library to bound container allocations.
+#[cfg(test)]
 const ROARING_ARRAY_BITMAP_COOKIE: u32 = 12_346;
+#[cfg(test)]
 const ROARING_RUN_COOKIE: u32 = 12_347;
+#[cfg(test)]
 fn invalid_cache(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
+#[cfg(test)]
 fn read_array<const N: usize>(reader: &mut (impl Read + ?Sized)) -> io::Result<[u8; N]> {
     let mut bytes = [0; N];
     reader.read_exact(&mut bytes)?;
     Ok(bytes)
 }
+#[cfg(test)]
 fn write_count(writer: &mut (impl Write + ?Sized), count: usize) -> io::Result<()> {
     let count = u32::try_from(count).map_err(|_| invalid_cache("cache count exceeds u32"))?;
     writer.write_all(&count.to_le_bytes())
 }
+#[cfg(test)]
 fn read_count(reader: &mut (impl Read + ?Sized), maximum: usize) -> io::Result<usize> {
     let count = u32::from_le_bytes(read_array(reader)?) as usize;
     if count > maximum {
@@ -227,10 +282,12 @@ fn read_count(reader: &mut (impl Read + ?Sized), maximum: usize) -> io::Result<u
     }
     Ok(count)
 }
+#[cfg(test)]
 fn write_bitmap(writer: &mut impl Write, bitmap: &RoaringBitmap) -> io::Result<()> {
     write_count(writer, bitmap.serialized_size())?;
     bitmap.serialize_into(writer)
 }
+#[cfg(test)]
 fn read_bitmap(reader: &mut impl Read, entry_count: usize) -> io::Result<RoaringBitmap> {
     // Slots below entry_count can occupy only these high-16-bit containers.
     let max_containers = entry_count.div_ceil(65_536).min(65_536);
@@ -269,6 +326,7 @@ fn read_bitmap(reader: &mut impl Read, entry_count: usize) -> io::Result<Roaring
     }
     Ok(bitmap)
 }
+#[cfg(test)]
 fn write_map<Key: Ord>(
     map: &HashMap<Key, Arc<RoaringBitmap>>,
     writer: &mut impl Write,
@@ -283,6 +341,7 @@ fn write_map<Key: Ord>(
     }
     Ok(())
 }
+#[cfg(test)]
 fn read_map<Key: Eq + Hash>(
     reader: &mut impl Read,
     maximum_keys: usize,
@@ -325,6 +384,7 @@ fn lookup<Key: Eq + Hash>(map: &HashMap<Key, Arc<RoaringBitmap>>, key: &Key) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index_store::IndexedFile;
     use serde_json::json;
     fn file(name: &str, extension: &str, is_dir: bool) -> IndexedFile {
         let mut file: IndexedFile = serde_json::from_value(json!({

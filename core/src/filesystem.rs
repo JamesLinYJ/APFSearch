@@ -17,6 +17,7 @@ use std::{
     },
     path::{Path, PathBuf},
     ptr,
+    sync::{Arc, Mutex},
 };
 
 pub(crate) const ATTR_CMN_ERROR: u32 = 0x2000_0000; // sys/attr.h; absent from libc's public constants.
@@ -67,13 +68,43 @@ pub(crate) struct Volume {
 /// Loading uses getfsstat(MNT_NOWAIT), so rejecting SMB/autofs never opens them.
 #[derive(Clone, Debug)]
 pub(crate) struct MountScope {
-    mounts: Vec<(PathBuf, bool)>,
-    aliases: Vec<(PathBuf, PathBuf)>,
+    mounts: Arc<Vec<(PathBuf, bool)>>,
+    aliases: Arc<Vec<(PathBuf, PathBuf)>>,
+    identity: u64,
 }
 impl MountScope {
     pub(crate) fn load() -> io::Result<Self> {
+        crate::resource_metrics::MOUNT_CHECKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        with_mounted_filesystems(Self::from_current_filesystems)
+    }
+    fn from_current_filesystems(filesystems: &[libc::statfs]) -> io::Result<Self> {
+        use std::hash::{Hash, Hasher};
+        static MATERIALIZED: Mutex<Option<MountScope>> = Mutex::new(None);
+        let mut identity = std::collections::hash_map::DefaultHasher::new();
+        for filesystem in filesystems {
+            filesystem.f_flags.hash(&mut identity);
+            filesystem.f_fstypename.hash(&mut identity);
+            filesystem.f_mntonname.hash(&mut identity);
+            filesystem.f_mntfromname.hash(&mut identity);
+            let mut fsid = [0u8; 8];
+            // fsid_t has the Darwin two-int ABI; hash its owned representation.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    std::ptr::addr_of!(filesystem.f_fsid).cast::<u8>(),
+                    fsid.as_mut_ptr(),
+                    fsid.len(),
+                );
+            }
+            fsid.hash(&mut identity);
+        }
+        let identity = identity.finish();
+        let mut cached = MATERIALIZED.lock().unwrap();
+        if let Some(scope) = cached.as_ref().filter(|scope| scope.identity == identity) {
+            return Ok(scope.clone());
+        }
+        crate::resource_metrics::MOUNT_REFRESHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut mounts = Vec::new();
-        for filesystem in mounted_filesystems()? {
+        for filesystem in filesystems {
             let path = PathBuf::from(
                 c_array_string(&filesystem.f_mntonname)?
                     .to_str()
@@ -84,13 +115,17 @@ impl MountScope {
                 && (path == Path::new("/") || filesystem.f_flags & libc::MNT_SNAPSHOT as u32 == 0);
             mounts.push((path, allowed));
         }
-        Ok(Self::from_mounts(mounts))
+        let mut scope = Self::from_mounts(mounts);
+        scope.identity = identity;
+        *cached = Some(scope.clone());
+        Ok(scope)
     }
     pub(crate) fn from_mounts(mut mounts: Vec<(PathBuf, bool)>) -> Self {
         mounts.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
         Self {
-            mounts,
-            aliases: Vec::new(),
+            mounts: Arc::new(mounts),
+            aliases: Arc::new(Vec::new()),
+            identity: 0,
         }
     }
     pub(crate) fn with_aliases(
@@ -100,7 +135,7 @@ impl MountScope {
         let aliases: Vec<_> = aliases.collect();
         let mut mapped = Vec::new();
         for (physical, logical) in &aliases {
-            for (mount, allowed) in &self.mounts {
+            for (mount, allowed) in self.mounts.iter() {
                 if let Ok(suffix) = mount.strip_prefix(physical) {
                     mapped.push((logical.join(suffix), *allowed));
                 }
@@ -109,10 +144,10 @@ impl MountScope {
                 }
             }
         }
-        self.mounts.extend(mapped);
-        self.mounts
+        Arc::make_mut(&mut self.mounts).extend(mapped);
+        Arc::make_mut(&mut self.mounts)
             .sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
-        self.aliases.extend(aliases);
+        Arc::make_mut(&mut self.aliases).extend(aliases);
         self
     }
     pub(crate) fn allows(&self, path: &Path) -> bool {
@@ -132,9 +167,19 @@ impl MountScope {
         self.check(path)?;
         // A mount can change while this pass is walking other directories.
         // Refresh only at actual path IO boundaries, not for every packed record.
-        Self::load()?
+        let current = Self::load()?;
+        if current.identity == self.identity {
+            return Ok(());
+        }
+        current
             .with_aliases(self.aliases.iter().cloned())
             .check(path)
+    }
+    pub(crate) fn identity(&self) -> u64 {
+        self.identity
+    }
+    pub(crate) fn still_current(&self) -> io::Result<bool> {
+        Ok(self.identity == Self::load()?.identity)
     }
     pub(crate) fn excluded_within(&self, roots: &[String]) -> Vec<String> {
         let mut excluded: Vec<_> = self
@@ -219,38 +264,53 @@ fn filesystem_for_fd(fd: &impl AsRawFd) -> io::Result<libc::statfs> {
     Ok(unsafe { result.assume_init() })
 }
 pub(crate) fn mounted_filesystems() -> io::Result<Vec<libc::statfs>> {
-    // getmntinfo uses process-global mutable storage. getfsstat writes only our
-    // private allocation, so volume discovery and watcher startup can overlap.
-    for _ in 0..4 {
-        let count = unsafe { libc::getfsstat(ptr::null_mut(), 0, libc::MNT_NOWAIT) };
-        if count < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let capacity = (count as usize)
-            .checked_add(16)
-            .ok_or_else(|| invalid("Mount count overflow"))?;
-        let bytes = capacity
-            .checked_mul(size_of::<libc::statfs>())
-            .and_then(|n| i32::try_from(n).ok())
-            .ok_or_else(|| invalid("Mount table too large"))?;
-        let mut buffer: Vec<MaybeUninit<libc::statfs>> = Vec::with_capacity(capacity);
-        buffer.resize_with(capacity, MaybeUninit::uninit);
-        let written =
-            unsafe { libc::getfsstat(buffer.as_mut_ptr().cast(), bytes, libc::MNT_NOWAIT) };
-        if written < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if written as usize >= capacity {
-            continue;
-        }
-        // Only the records reported as initialized by getfsstat are read.
-        return Ok(buffer
-            .into_iter()
-            .take(written as usize)
-            .map(|slot| unsafe { slot.assume_init() })
-            .collect());
+    with_mounted_filesystems(|filesystems| Ok(filesystems.to_vec()))
+}
+fn with_mounted_filesystems<T>(
+    observe: impl FnOnce(&[libc::statfs]) -> io::Result<T>,
+) -> io::Result<T> {
+    // A private reusable buffer avoids process-global getmntinfo storage and
+    // repeated allocation. Every call still reads the kernel's current table;
+    // no time-based cache or delayed notification grants namespace authority.
+    thread_local! {
+        static BUFFER: std::cell::RefCell<Vec<MaybeUninit<libc::statfs>>> = const { std::cell::RefCell::new(Vec::new()) };
     }
-    Err(io::Error::from_raw_os_error(libc::EAGAIN))
+    BUFFER.with(|buffer| {
+        let mut buffer = buffer.borrow_mut();
+        if buffer.is_empty() {
+            buffer.resize_with(32, MaybeUninit::uninit);
+        }
+        for _ in 0..4 {
+            let bytes = buffer
+                .len()
+                .checked_mul(size_of::<libc::statfs>())
+                .and_then(|n| i32::try_from(n).ok())
+                .ok_or_else(|| invalid("Mount table too large"))?;
+            let written =
+                unsafe { libc::getfsstat(buffer.as_mut_ptr().cast(), bytes, libc::MNT_NOWAIT) };
+            if written < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if written as usize >= buffer.len() {
+                let count = unsafe { libc::getfsstat(ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+                if count < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let capacity = (count as usize)
+                    .checked_add(16)
+                    .ok_or_else(|| invalid("Mount count overflow"))?;
+                buffer.resize_with(capacity, MaybeUninit::uninit);
+                continue;
+            }
+            // getfsstat initialized exactly these records. The RefCell borrow keeps
+            // their aligned backing alive and exclusive throughout the callback.
+            let filesystems = unsafe {
+                std::slice::from_raw_parts(buffer.as_ptr().cast::<libc::statfs>(), written as usize)
+            };
+            return observe(filesystems);
+        }
+        Err(io::Error::from_raw_os_error(libc::EAGAIN))
+    })
 }
 fn volume_id(fs: &libc::statfs) -> io::Result<String> {
     let mount = c_array_string(&fs.f_mntonname)?;
@@ -338,6 +398,7 @@ fn entry_parts(path: &Path) -> io::Result<(&Path, &std::ffi::OsStr)> {
     }
 }
 fn open_metadata_parent(path: &Path) -> io::Result<std::fs::File> {
+    crate::resource_metrics::PARENT_OPENS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // No content read or cloud hydration; every intermediate component and the
     // parent itself must be real directories rather than mutable user aliases.
     OpenOptions::new()
@@ -346,6 +407,7 @@ fn open_metadata_parent(path: &Path) -> io::Result<std::fs::File> {
         .open(path)
 }
 fn metadata_at(parent: &std::fs::File, name: &std::ffi::OsStr) -> io::Result<libc::stat> {
+    crate::resource_metrics::METADATA_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let name = path_string(Path::new(name))?;
     let mut metadata = MaybeUninit::uninit();
     // entry_parts supplies one component (or root's "."); the held parent
@@ -383,9 +445,31 @@ impl<'a> MetadataReader<'a> {
             parent: None,
         }
     }
+    pub(crate) fn validate_parent(&self) -> io::Result<()> {
+        let Some(parent) = &self.parent else {
+            return Ok(());
+        };
+        let current = open_metadata_parent(&parent.path)?;
+        let metadata = current.metadata()?;
+        let filesystem = filesystem_for_fd(&current)?;
+        validate_metadata_filesystem(&filesystem)?;
+        if metadata.dev() != parent.metadata.dev()
+            || metadata.ino() != parent.metadata.ino()
+            || volume_id(&filesystem)? != parent.volume_id
+        {
+            return Err(io::Error::from_raw_os_error(libc::EAGAIN));
+        }
+        Ok(())
+    }
     pub(crate) fn stat(&mut self, path: &Path) -> io::Result<FileMetadata> {
         let path = system_path(path);
         self.scope.check_current_mount(&path)?;
+        self.stat_in_batch(&path)
+    }
+    /// The caller validates a fresh mount scope before/after the entire batch.
+    pub(crate) fn stat_in_batch(&mut self, path: &Path) -> io::Result<FileMetadata> {
+        let path = system_path(path);
+        self.scope.check(&path)?;
         let (parent_path, name) = entry_parts(&path)?;
         if self
             .parent
@@ -394,9 +478,9 @@ impl<'a> MetadataReader<'a> {
         {
             let file = open_metadata_parent(parent_path)?;
             let metadata = file.metadata()?;
-            let volume_id = filesystem_for_fd(&file)
-                .and_then(|fs| volume_id(&fs))
-                .unwrap_or_default();
+            let filesystem = filesystem_for_fd(&file)?;
+            validate_metadata_filesystem(&filesystem)?;
+            let volume_id = volume_id(&filesystem)?;
             self.parent = Some(MetadataParent {
                 path: parent_path.to_owned(),
                 file,
@@ -433,9 +517,9 @@ impl<'a> MetadataReader<'a> {
             if current.dev() != metadata.st_dev as u64 || current.ino() != metadata.st_ino {
                 return Err(io::Error::from_raw_os_error(libc::EAGAIN));
             }
-            filesystem_for_fd(&file)
-                .and_then(|fs| volume_id(&fs))
-                .unwrap_or_default()
+            let filesystem = filesystem_for_fd(&file)?;
+            validate_metadata_filesystem(&filesystem)?;
+            volume_id(&filesystem)?
         };
         Ok(FileMetadata {
             file_id: metadata.st_ino,
@@ -457,6 +541,18 @@ impl<'a> MetadataReader<'a> {
             volume_id,
         })
     }
+}
+fn validate_metadata_filesystem(filesystem: &libc::statfs) -> io::Result<()> {
+    if c_array_string(&filesystem.f_fstypename)?.to_bytes() != b"apfs"
+        || filesystem.f_flags & libc::MNT_LOCAL as u32 == 0
+        // The booted system volume may itself be a sealed APFS snapshot.
+        // Other mounted snapshots are outside the live namespace.
+        || (filesystem.f_flags & libc::MNT_SNAPSHOT as u32 != 0
+            && c_array_string(&filesystem.f_mntonname)?.to_bytes() != b"/")
+    {
+        return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+    }
+    Ok(())
 }
 pub(crate) fn stat_entry(path: &Path, scope: &MountScope) -> io::Result<FileMetadata> {
     MetadataReader::new(scope).stat(path)

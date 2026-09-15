@@ -9,7 +9,7 @@ use std::{path::PathBuf, time::Instant};
 fn digest(snapshot: &SearchSnapshot) -> String {
     let mut digest = blake3::Hasher::new();
     for entry in snapshot.visible_entries() {
-        digest.update(&serde_json::to_vec(entry).unwrap());
+        digest.update(&serde_json::to_vec(&entry).unwrap());
     }
     digest.finalize().to_hex().to_string()
 }

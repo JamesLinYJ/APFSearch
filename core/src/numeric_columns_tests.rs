@@ -1,5 +1,6 @@
 //! Independent semantic checks for the dense numeric index. Expected matches
 //! come from the full per-file evaluator, never from column/block internals.
+use crate::entry_table::FileEntry;
 use crate::{
     index_store::{IndexedFile, SearchSnapshot},
     query::{self, Query, Term},
@@ -43,7 +44,7 @@ fn reference(snapshot: &SearchSnapshot, query: &Query) -> RoaringBitmap {
         .iter()
         .filter(|slot| {
             query
-                .matches_available(&snapshot.entries[*slot as usize], None)
+                .matches_available(&snapshot.entries.at(*slot as usize), None)
                 .unwrap()
         })
         .collect()
@@ -64,7 +65,7 @@ fn check(snapshot: &SearchSnapshot, query: &Query, label: &str) -> RoaringBitmap
 fn ids(snapshot: &SearchSnapshot, matches: &RoaringBitmap) -> Vec<i64> {
     matches
         .iter()
-        .map(|slot| snapshot.entries[slot as usize].id)
+        .map(|slot| snapshot.entries.at(slot as usize).id())
         .collect()
 }
 fn number(
@@ -423,18 +424,18 @@ fn numeric_incremental_updates_preserve_old_snapshot_and_deleted_slot_visibility
         .collect();
     // Replace extrema and transition known<->unknown at either side of a block
     // boundary; resurrect a deleted slot in a later publication as well.
-    let mut changed = old.entries[4095].as_ref().clone();
+    let mut changed = old.entries.at(4095).to_owned_file();
     changed.is_dir = false;
     changed.size = 1024;
     changed.modified = now().timestamp();
-    let mut unknown = old.entries[4096].as_ref().clone();
+    let mut unknown = old.entries.at(4096).to_owned_file();
     unknown.is_dir = true;
     unknown.size = 1;
     unknown.created = now().timestamp();
-    let mut maximum = old.entries[8192].as_ref().clone();
+    let mut maximum = old.entries.at(8192).to_owned_file();
     maximum.size = u64::MAX;
     maximum.modified = 0;
-    let mut minimum = old.entries[8193].as_ref().clone();
+    let mut minimum = old.entries.at(8193).to_owned_file();
     minimum.size = 1;
     minimum.created = now().timestamp();
     let current = SearchSnapshot::from_changes(

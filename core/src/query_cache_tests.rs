@@ -1,4 +1,5 @@
 use super::*;
+use crate::entry_table::FileEntry;
 use scanner::ScannedFile;
 fn fixture(count: usize) -> (tempfile::TempDir, Arc<SearchEngine>, Vec<ScannedFile>) {
     let temporary = tempfile::tempdir().unwrap();
@@ -127,7 +128,7 @@ fn broad_multicolumn_orders_are_reused_and_incrementally_updated() {
     independently_sorted.sort_by(|a, b| spec.compare(a, b));
     let expected: Vec<_> = independently_sorted[6010..6210]
         .iter()
-        .map(|file| file.path.clone())
+        .map(|file| file.path())
         .collect();
     assert_eq!(rows(&engine.call(request)), expected);
     assert!(Arc::ptr_eq(&order, &old.cached_order(&spec).unwrap()));
@@ -178,21 +179,24 @@ fn string_columns_share_equivalent_folds_and_parent_names() {
     let (_temporary, engine, _) = fixture(20);
     let snapshot = engine.snapshot.load_full();
     for file in snapshot.visible_entries() {
-        assert!(crate::shared_text::SharedText::ptr_eq(
-            &file.folded_path,
-            &file.search_path
+        assert!(crate::entry_table::same_text_storage(
+            file.folded_path(),
+            file.search_path()
         ));
-        assert!(crate::shared_text::SharedText::ptr_eq(
-            &file.folded_name,
-            &file.search_name
+        assert!(crate::entry_table::same_text_storage(
+            file.folded_name(),
+            file.search_name()
         ));
     }
-    let mut entries: Vec<_> = snapshot.visible_entries().cloned().collect();
+    let mut entries: Vec<_> = snapshot
+        .visible_entries()
+        .map(|entry| entry.to_owned_file())
+        .collect();
     entries[1].path = "/query-cache-fixture/Group00000/other.txt".into();
     let prepared = SearchSnapshot::new(entries, 99);
-    assert!(crate::shared_text::SharedText::ptr_eq(
-        &prepared.entries[0].parent,
-        &prepared.entries[1].parent
+    assert!(crate::entry_table::same_text_storage(
+        prepared.entries.at(0).parent(),
+        prepared.entries.at(1).parent()
     ));
 }
 #[test]
@@ -304,8 +308,8 @@ fn assert_path_orders(snapshot: &SearchSnapshot) {
                 let mut reference: Vec<u32> = snapshot.live.iter().collect();
                 reference.sort_by(|a, b| {
                     spec.compare(
-                        &snapshot.entries[*a as usize],
-                        &snapshot.entries[*b as usize],
+                        &snapshot.entries.at(*a as usize),
+                        &snapshot.entries.at(*b as usize),
                     )
                 });
                 assert_eq!(
@@ -324,19 +328,20 @@ fn assert_path_orders(snapshot: &SearchSnapshot) {
         let mut reference: Vec<u32> = snapshot.live.iter().collect();
         reference.sort_by(|a, b| {
             spec.compare(
-                &snapshot.entries[*a as usize],
-                &snapshot.entries[*b as usize],
+                &snapshot.entries.at(*a as usize),
+                &snapshot.entries.at(*b as usize),
             )
         });
         assert_eq!(actual.as_ref(), &reference);
     }
     let mut expected_ties = roaring::RoaringBitmap::new();
     for pair in snapshot.path_order.windows(2) {
-        if query::natural_cmp_folded(
-            &snapshot.entries[pair[0] as usize].folded_path,
-            &snapshot.entries[pair[1] as usize].folded_path,
-        )
-        .is_eq()
+        if snapshot
+            .entries
+            .at(pair[0] as usize)
+            .folded_path()
+            .natural_cmp(snapshot.entries.at(pair[1] as usize).folded_path())
+            .is_eq()
         {
             expected_ties.insert(pair[0]);
             expected_ties.insert(pair[1]);
@@ -348,7 +353,12 @@ fn assert_path_orders(snapshot: &SearchSnapshot) {
 #[test]
 fn path_index_refines_equal_keys_and_preserves_order_across_updates() {
     let (_temporary, engine, _) = fixture(80);
-    let mut entries: Vec<_> = engine.snapshot.load().visible_entries().cloned().collect();
+    let mut entries: Vec<_> = engine
+        .snapshot
+        .load()
+        .visible_entries()
+        .map(|entry| entry.to_owned_file())
+        .collect();
     let paths = [
         "/folder/a2",
         "/FOLDER/A2",
@@ -381,17 +391,20 @@ fn path_index_refines_equal_keys_and_preserves_order_across_updates() {
     .enumerate()
     {
         let slot = step;
-        let file = current.entries[slot].as_ref();
+        let file = current.entries.at(slot);
         let replacement = replacement_path.map(|path| {
-            let mut replacement = file.clone();
+            let mut replacement = file.to_owned_file();
             replacement.path = path.into();
             replacement.name = format!("new{step}");
             replacement.size += 200;
             replacement
         });
-        let updated =
-            SearchSnapshot::from_changes(vec![(file.id, replacement)], 11 + step as u64, &current)
-                .unwrap();
+        let updated = SearchSnapshot::from_changes(
+            vec![(file.id(), replacement)],
+            11 + step as u64,
+            &current,
+        )
+        .unwrap();
         assert_path_orders(&updated);
         assert_path_orders(&current);
         current = updated;
@@ -406,7 +419,7 @@ fn path_index_refines_equal_keys_and_preserves_order_across_updates() {
 #[test]
 fn build_sized_delta_keeps_unchanged_entries_and_postings_shared() {
     let (_temporary, engine, _) = fixture(1);
-    let seed = engine.snapshot.load().entries[0].as_ref().clone();
+    let seed = engine.snapshot.load().entries.at(0).to_owned_file();
     let entries = (0..50_000)
         .map(|index| {
             let mut file = seed.clone();
@@ -421,7 +434,7 @@ fn build_sized_delta_keeps_unchanged_entries_and_postings_shared() {
         .visible_entries()
         .take(6000)
         .map(|file| {
-            let mut file = file.clone();
+            let mut file = file.to_owned_file();
             file.size += 1;
             (file.id, Some(file))
         })
@@ -430,28 +443,28 @@ fn build_sized_delta_keeps_unchanged_entries_and_postings_shared() {
     assert!(Arc::ptr_eq(&metadata.trigrams, &previous.trigrams));
     assert!(Arc::ptr_eq(&metadata.path_order, &previous.path_order));
     assert!(Arc::ptr_eq(&metadata.name_order, &previous.name_order));
-    assert!(Arc::ptr_eq(
-        &metadata.entries[30_000],
-        &previous.entries[30_000]
+    assert!(crate::entry_table::same_record(
+        &metadata.entries.at(30_000),
+        &previous.entries.at(30_000)
     ));
-    assert!(crate::shared_text::SharedText::ptr_eq(
-        &metadata.entries[0].folded_path,
-        &previous.entries[0].folded_path
+    assert!(crate::entry_table::same_text_storage(
+        metadata.entries.at(0).folded_path(),
+        previous.entries.at(0).folded_path()
     ));
     let changes = metadata
         .visible_entries()
         .take(6000)
         .map(|file| {
-            let mut file = file.clone();
+            let mut file = file.to_owned_file();
             file.path = format!("/renamed-parent/{}", file.name);
             (file.id, Some(file))
         })
         .collect();
     let renamed = SearchSnapshot::from_changes(changes, 3, &metadata).unwrap();
     assert!(Arc::ptr_eq(&renamed.trigrams, &metadata.trigrams));
-    assert!(Arc::ptr_eq(
-        &renamed.entries[30_000],
-        &previous.entries[30_000]
+    assert!(crate::entry_table::same_record(
+        &renamed.entries.at(30_000),
+        &previous.entries.at(30_000)
     ));
     for value in [
         json!([{"field":"name"}]),
@@ -463,12 +476,25 @@ fn build_sized_delta_keeps_unchanged_entries_and_postings_shared() {
             .unwrap();
         let mut reference: Vec<u32> = renamed.live.iter().collect();
         reference.sort_by(|a, b| {
-            order.compare(&renamed.entries[*a as usize], &renamed.entries[*b as usize])
+            order.compare(
+                &renamed.entries.at(*a as usize),
+                &renamed.entries.at(*b as usize),
+            )
         });
         assert_eq!(actual.as_ref(), &reference);
     }
-    assert_eq!(previous.entries[0].size + 1, metadata.entries[0].size);
-    assert!(previous.entries[0].path.starts_with("/large-delta/"));
+    assert_eq!(
+        previous.entries.at(0).size() + 1,
+        metadata.entries.at(0).size()
+    );
+    assert!(
+        previous
+            .entries
+            .at(0)
+            .path()
+            .to_string()
+            .starts_with("/large-delta/")
+    );
 }
 
 #[test]
@@ -566,9 +592,9 @@ fn profile_new_queries_and_in_memory_updates_on_existing_index() {
     let previous = engine.snapshot.load_full();
     let original = previous
         .visible_entries()
-        .find(|file| !file.is_dir)
+        .find(|file| !file.is_dir())
         .unwrap();
-    let mut changed = original.clone();
+    let mut changed = original.to_owned_file();
     changed.name = "qqfixture-only-memory-update.txt".into();
     changed.path = format!("{}/{}", changed.parent, changed.name);
     changed.extension = "txt".into();
@@ -608,7 +634,7 @@ fn profile_new_queries_and_in_memory_updates_on_existing_index() {
             .visible_entries()
             .take(6000)
             .map(|file| {
-                let mut file = file.clone();
+                let mut file = file.to_owned_file();
                 file.size += 1;
                 if rename {
                     file.name = format!("bulk-memory-{}", file.id);
@@ -621,7 +647,10 @@ fn profile_new_queries_and_in_memory_updates_on_existing_index() {
         let updated =
             SearchSnapshot::from_changes(changes, before.generation + 1, &before).unwrap();
         let elapsed_ms = start.elapsed().as_secs_f64() * 1000.;
-        assert!(Arc::ptr_eq(&before.entries[6001], &updated.entries[6001]));
+        assert!(crate::entry_table::same_record(
+            &before.entries.at(6001),
+            &updated.entries.at(6001)
+        ));
         engine.snapshot.store(Arc::new(updated));
         let response = engine.call(
             json!({"op":"query","text":"","limit":200,"sort":[{"field":"path"},{"field":"name"}]}),
@@ -771,24 +800,24 @@ fn incremental_orders_match_full_sort_across_sparse_and_dense_changes() {
             // Restore that same identity, which is absent from the old order.
             let slot = (step - 1) * 41;
             assert!(!current.live.contains(slot as u32));
-            let restored = current.entries[slot].as_ref().clone();
+            let restored = current.entries.at(slot).to_owned_file();
             changes.push((restored.id, Some(restored)));
         }
         for index in 0..count {
             let slot = (index * 17 + step * 41) % current.entries.len();
-            let file = current.entries[slot].as_ref();
+            let file = current.entries.at(slot);
             let replacement = if index % 3 == 0 {
                 None
             } else {
-                let mut replacement = file.clone();
+                let mut replacement = file.to_owned_file();
                 replacement.name = format!("报告{}-{}.txt", index % 9, step);
                 replacement.path = format!("/changed/{}/{}", replacement.id, replacement.name);
                 replacement.size += 11;
                 Some(replacement)
             };
-            changes.push((file.id, replacement));
+            changes.push((file.id(), replacement));
         }
-        let mut added = current.entries[0].as_ref().clone();
+        let mut added = current.entries.at(0).to_owned_file();
         added.id = 10_000 + step as i64;
         added.name = format!("added{step}.txt");
         added.path = format!("/new/{}", added.name);
@@ -798,7 +827,10 @@ fn incremental_orders_match_full_sort_across_sparse_and_dense_changes() {
         for (order, old_order) in orders.iter().zip(old_orders) {
             let mut expected: Vec<_> = updated.live.iter().collect();
             expected.sort_unstable_by(|a, b| {
-                order.compare(&updated.entries[*a as usize], &updated.entries[*b as usize])
+                order.compare(
+                    &updated.entries.at(*a as usize),
+                    &updated.entries.at(*b as usize),
+                )
             });
             assert_eq!(
                 updated.result_order(order, &cancelled).unwrap().as_ref(),
@@ -817,22 +849,34 @@ fn incremental_orders_match_full_sort_across_sparse_and_dense_changes() {
 fn imported_and_incremental_records_share_metadata_labels() {
     let (_temporary, engine, _) = fixture(3);
     let old = engine.snapshot.load_full();
-    let first = &old.entries[0];
-    assert!(Arc::ptr_eq(&first.volume_id, &old.entries[1].volume_id));
-    assert!(Arc::ptr_eq(&first.extension, &first.folded_extension));
-    let mut added = first.as_ref().clone();
+    let first = &old.entries.at(0);
+    assert!(crate::entry_table::same_text_storage(
+        first.volume_id(),
+        old.entries.at(1).volume_id()
+    ));
+    assert!(crate::entry_table::same_text_storage(
+        first.extension(),
+        first.folded_extension()
+    ));
+    let mut added = first.to_owned_file();
     added.id = 1000;
     added.path = "/shared-labels/new.txt".into();
     added.name = "new.txt".into();
-    added.extension = Arc::from(first.extension.as_ref());
-    added.volume_id = Arc::from(first.volume_id.as_ref());
+    added.extension = Arc::from(first.extension());
+    added.volume_id = Arc::from(first.volume_id());
     let updated =
         SearchSnapshot::from_changes(vec![(added.id, Some(added))], old.generation + 1, &old)
             .unwrap();
     let new = updated.entries.last().unwrap();
-    assert!(Arc::ptr_eq(&first.extension, &new.extension));
-    assert!(Arc::ptr_eq(&first.volume_id, &new.volume_id));
-    let serialized = serde_json::to_value(new.as_ref()).unwrap();
-    assert_eq!(serialized["extension"], first.extension.as_ref());
-    assert_eq!(serialized["volume_id"], first.volume_id.as_ref());
+    assert!(crate::entry_table::same_text_storage(
+        first.extension(),
+        new.extension()
+    ));
+    assert!(crate::entry_table::same_text_storage(
+        first.volume_id(),
+        new.volume_id()
+    ));
+    let serialized = serde_json::to_value(new).unwrap();
+    assert_eq!(serialized["extension"], first.extension());
+    assert_eq!(serialized["volume_id"], first.volume_id());
 }

@@ -1,4 +1,5 @@
 //! In-memory, uncached candidate and matcher benchmark. No database or filesystem scan.
+use apfsearch_core::entry_table::FileEntry;
 use apfsearch_core::{
     index_store::{IndexedFile, SearchSnapshot},
     query,
@@ -65,13 +66,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "absenttoken size:>10",
     ] {
         let query = query::parse(text, &HashMap::new())?;
-        let evaluator = query.evaluator();
+        let mut evaluator = query.evaluator();
         let expected: Vec<_> = snapshot
             .live
             .iter()
             .filter(|slot| {
                 query
-                    .matches(&snapshot.entries[*slot as usize], None)
+                    .matches(&snapshot.entries.at(*slot as usize), None)
                     .unwrap()
             })
             .collect();
@@ -97,9 +98,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .filter(|slot| {
                         snapshot.live.contains(*slot)
                             && if prepared {
-                                evaluator.matches_available(&snapshot.entries[*slot as usize], None)
+                                evaluator
+                                    .matches_available(&snapshot.entries.at(*slot as usize), None)
                             } else {
-                                query.matches_available(&snapshot.entries[*slot as usize], None)
+                                query.matches_available(&snapshot.entries.at(*slot as usize), None)
                             }
                             .unwrap()
                     })
@@ -120,7 +122,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut update_samples = Vec::new();
     for _ in 0..30 {
-        let mut replacement = snapshot.entries[count / 2].as_ref().clone();
+        let mut replacement = snapshot.entries.at(count / 2).to_owned_file();
         replacement.size += 1;
         let start = Instant::now();
         let updated =
@@ -128,8 +130,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("Incremental update rejected")?;
         update_samples.push(start.elapsed().as_secs_f64() * 1000.);
         assert_eq!(
-            updated.entries[count / 2].size,
-            snapshot.entries[count / 2].size + 1
+            updated.entries.at(count / 2).size(),
+            snapshot.entries.at(count / 2).size() + 1
         );
     }
     update_samples.sort_by(f64::total_cmp);

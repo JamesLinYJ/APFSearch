@@ -1,8 +1,9 @@
 //! Snapshot-local directory topology and aggregate queries. No filesystem I/O.
 //! A dense parent column and a directory-only postorder avoid one subtree scan
 //! per directory. Hard-link directory entries contribute logical size separately.
+use crate::entry_table::{EntryView, FileEntry};
 use crate::{
-    index_store::{IndexedFile, SearchSnapshot},
+    index_store::SearchSnapshot,
     query::{Query, Term},
 };
 use roaring::RoaringTreemap;
@@ -21,8 +22,8 @@ pub struct ResolvedPredicate {
     pub(crate) unknown: RoaringTreemap,
 }
 impl ResolvedPredicate {
-    pub(crate) fn truth(&self, file: &IndexedFile) -> Option<bool> {
-        let id = file.id as u64;
+    pub(crate) fn truth(&self, file: &impl FileEntry) -> Option<bool> {
+        let id = file.id() as u64;
         if self.yes.contains(id) {
             Some(true)
         } else if self.unknown.contains(id) {
@@ -58,6 +59,18 @@ pub(crate) struct Hierarchy {
     sizes: Vec<Option<u64>>,
 }
 impl Hierarchy {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+            + (self.parents.capacity() + self.directory_slots.capacity())
+                * std::mem::size_of::<u32>()
+            + self.postorder.capacity() * std::mem::size_of::<usize>()
+            + (self.own_files.capacity()
+                + self.own_folders.capacity()
+                + self.all_files.capacity()
+                + self.all_folders.capacity())
+                * std::mem::size_of::<u64>()
+            + self.sizes.capacity() * std::mem::size_of::<Option<u64>>()
+    }
     pub(crate) fn build(snapshot: &SearchSnapshot, cancelled: &AtomicBool) -> Result<Self, String> {
         let mut tree = Self {
             parents: vec![NO_PARENT; snapshot.entries.len()],
@@ -65,16 +78,17 @@ impl Hierarchy {
         };
         for slot in &snapshot.live {
             check(cancelled)?;
-            if snapshot.entries[slot as usize].is_dir && !snapshot.entries[slot as usize].is_symlink
+            if snapshot.entries.at(slot as usize).is_dir()
+                && !snapshot.entries.at(slot as usize).is_symlink()
             {
                 tree.directory_slots.push(slot);
             }
         }
-        let directories: HashMap<&str, usize> = tree
+        let directories: HashMap<crate::text_view::TextView<'_>, usize> = tree
             .directory_slots
             .iter()
             .enumerate()
-            .map(|(index, slot)| (snapshot.entries[*slot as usize].path.as_str(), index))
+            .map(|(index, slot)| (snapshot.entries.at(*slot as usize).path(), index))
             .collect();
         let count = directories.len();
         tree.own_files = vec![0; count];
@@ -82,25 +96,27 @@ impl Hierarchy {
         tree.all_files = vec![0; count];
         tree.all_folders = vec![0; count];
         tree.sizes = vec![Some(0); count];
+        let mut path_text = crate::query_scratch::TextScratch::acquire(0);
         for slot in &snapshot.live {
             check(cancelled)?;
-            let file = &snapshot.entries[slot as usize];
-            let mut parent = Path::new(&file.path).parent();
+            let file = &snapshot.entries.at(slot as usize);
+            path_text.assign(file.path());
+            let mut parent = Path::new(&*path_text).parent();
             let direct = parent;
             // Missing intermediate directory rows are possible in imported or
             // incomplete indexes. Ancestors can still receive positive evidence.
             while let Some(path) = parent {
-                if let Some(&index) = path.to_str().and_then(|path| directories.get(path)) {
+                if let Some(&index) = path.to_str().and_then(|path| directories.get(&path.into())) {
                     tree.parents[slot as usize] = index as u32;
                     let is_direct = Some(path) == direct;
-                    if file.is_dir && !file.is_symlink {
+                    if file.is_dir() && !file.is_symlink() {
                         tree.all_folders[index] += 1;
                         tree.own_folders[index] += u64::from(is_direct);
                     } else {
                         tree.all_files[index] += 1;
                         tree.own_files[index] += u64::from(is_direct);
                         tree.sizes[index] =
-                            tree.sizes[index].and_then(|size| size.checked_add(file.size));
+                            tree.sizes[index].and_then(|size| size.checked_add(file.size()));
                     }
                     break;
                 }
@@ -112,8 +128,10 @@ impl Hierarchy {
         // directory indexes by length is a stack-safe topological order.
         tree.postorder.sort_unstable_by_key(|index| {
             std::cmp::Reverse(
-                snapshot.entries[tree.directory_slots[*index] as usize]
-                    .path
+                snapshot
+                    .entries
+                    .at(tree.directory_slots[*index] as usize)
+                    .path()
                     .len(),
             )
         });
@@ -159,14 +177,16 @@ impl Hierarchy {
             }
         }
         let mut uncertain = Vec::with_capacity(self.directory_slots.len());
+        let mut path_text = crate::query_scratch::TextScratch::acquire(0);
         for &slot in &self.directory_slots {
             check(cancelled)?;
-            let path = Path::new(&snapshot.entries[slot as usize].path);
+            path_text.assign(snapshot.entries.at(slot as usize).path());
+            let path = Path::new(&*path_text);
             let covered = path
                 .ancestors()
                 .filter_map(Path::to_str)
                 .any(|path| roots.contains(path));
-            let denied = gap_ancestors.contains(snapshot.entries[slot as usize].path.as_str())
+            let denied = gap_ancestors.contains(&*path_text)
                 || path
                     .ancestors()
                     .filter_map(Path::to_str)
@@ -184,21 +204,22 @@ impl Hierarchy {
         cancelled: &AtomicBool,
     ) -> Result<Value, String> {
         let incomplete = self.incomplete(snapshot, coverage, cancelled)?;
-        let requested: std::collections::HashSet<&str> = paths.iter().map(String::as_str).collect();
+        let requested: std::collections::HashSet<crate::text_view::TextView<'_>> =
+            paths.iter().map(|path| path.as_str().into()).collect();
         let mut found = HashMap::new();
         for (index, &slot) in self.directory_slots.iter().enumerate() {
             check(cancelled)?;
-            let file = &snapshot.entries[slot as usize];
-            if !requested.contains(file.path.as_str()) {
+            let file = &snapshot.entries.at(slot as usize);
+            if !requested.contains(&file.path()) {
                 continue;
             }
             let complete = !incomplete[index] && self.sizes[index].is_some();
-            found.insert(file.path.as_str(), json!({"path":file.path, "complete":complete,
+            found.insert(file.path(), json!({"path":file.path(), "complete":complete,
                 "recursive_size":if complete { self.sizes[index] } else { None },
                 "indexed_logical_size":self.sizes[index], "child_count":self.own_files[index]+self.own_folders[index],
                 "descendant_count":self.all_files[index]+self.all_folders[index]}));
         }
-        let rows: Vec<_> = paths.iter().map(|path| found.get(path.as_str()).cloned().unwrap_or_else(||
+        let rows: Vec<_> = paths.iter().map(|path| found.get(&path.as_str().into()).cloned().unwrap_or_else(||
             json!({"path":path,"complete":false,"recursive_size":null,"reason":"not_an_indexed_directory"}))).collect();
         Ok(
             json!({"rows":rows,"generation":snapshot.generation,"size_semantics":"logical directory-entry sum; not physical or reclaimable bytes"}),
@@ -220,7 +241,7 @@ pub(crate) fn resolve(
     tree: &Hierarchy,
     coverage: &Value,
     cancelled: &AtomicBool,
-    content: &mut impl FnMut(&IndexedFile) -> Result<Option<String>, String>,
+    content: &mut impl FnMut(&EntryView<'_>) -> Result<Option<String>, String>,
 ) -> Result<bool, String> {
     check(cancelled)?;
     match query {
@@ -248,10 +269,13 @@ pub(crate) fn resolve(
                     continue;
                 }
                 let parent = parent as usize;
-                let file = &snapshot.entries[slot as usize];
+                let file = &snapshot.entries.at(slot as usize);
                 if !*recursive
-                    && file.parent.as_ref()
-                        != snapshot.entries[tree.directory_slots[parent] as usize].path
+                    && file.parent()
+                        != snapshot
+                            .entries
+                            .at(tree.directory_slots[parent] as usize)
+                            .path()
                 {
                     continue;
                 }
@@ -277,7 +301,7 @@ pub(crate) fn resolve(
                 unknown: RoaringTreemap::new(),
             };
             for (index, &slot) in tree.directory_slots.iter().enumerate() {
-                let id = snapshot.entries[slot as usize].id as u64;
+                let id = snapshot.entries.at(slot as usize).id() as u64;
                 if positive[index] {
                     result.yes.insert(id);
                 } else if unknown[index] {
@@ -316,7 +340,7 @@ pub(crate) fn resolve(
                 }
                 .filter(|_| !incomplete[index])
                 .map(|value| value as f64);
-                let id = snapshot.entries[slot as usize].id as u64;
+                let id = snapshot.entries.at(slot as usize).id() as u64;
                 if is_unknown || value.is_some() {
                     if term.matches_numeric_value(value) {
                         result.yes.insert(id);

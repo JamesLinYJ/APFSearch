@@ -1,6 +1,6 @@
 //! Query grammar follows Everything default precedence: OR binds tighter than AND.
 //! Matching is NFC-normalized and ICU full-case-folded unless case: is specified.
-use crate::index_store::IndexedFile;
+use crate::entry_table::FileEntry;
 use chrono::{Datelike, Duration as DateDuration, Local, NaiveDate, TimeZone};
 use icu_casemap::CaseMapper;
 use memchr::memmem::Finder;
@@ -33,10 +33,32 @@ pub fn fold_search(s: &str) -> String {
             .collect::<String>(),
     )
 }
-fn nfc(s: &str) -> String {
+pub(crate) fn nfc(s: &str) -> String {
     s.nfc().collect()
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum PathTextMode {
+    Search,
+    Folded,
+    Sensitive { diacritics: bool },
+}
+impl PathTextMode {
+    pub(crate) fn normalize(self, text: &str) -> std::borrow::Cow<'_, str> {
+        match self {
+            Self::Sensitive { diacritics } if !text.is_ascii() => {
+                std::borrow::Cow::Owned(if diacritics {
+                    nfc(text)
+                } else {
+                    text.nfd()
+                        .filter(|character| !is_combining_mark(*character))
+                        .collect()
+                })
+            }
+            _ => std::borrow::Cow::Borrowed(text),
+        }
+    }
+}
 #[derive(Debug)]
 pub enum Query {
     All,
@@ -52,12 +74,13 @@ pub struct QueryEvaluator<'a> {
     query: &'a Query,
     needs_content: bool,
     needs_relations: bool,
+    scratch: crate::query_scratch::TextScratch,
 }
 
 impl QueryEvaluator<'_> {
     pub fn matches_available(
-        &self,
-        file: &IndexedFile,
+        &mut self,
+        file: &impl FileEntry,
         content: Option<&str>,
     ) -> Result<bool, String> {
         if content.is_none() && self.needs_content {
@@ -66,7 +89,8 @@ impl QueryEvaluator<'_> {
         if self.needs_relations {
             return Ok(self.query.indexed_truth(file, content)? == Some(true));
         }
-        self.query.matches_inner(file, content, &OnceCell::new())
+        self.query
+            .matches_inner(file, content, &OnceCell::new(), &mut self.scratch)
     }
 }
 #[derive(Debug)]
@@ -933,24 +957,29 @@ impl TextMatcher {
         }
         Ok(self.matches_normalized(&haystack))
     }
-    fn matches_file(&self, file: &IndexedFile, field: Field) -> Result<bool, String> {
+    fn matches_file(
+        &self,
+        file: &impl FileEntry,
+        field: Field,
+        scratch: &mut crate::query_scratch::TextScratch,
+    ) -> Result<bool, String> {
         if self.regex.is_none() && !self.options.sensitive {
-            if self.options.diacritics {
-                return Ok(self.matches_normalized(match field {
-                    Field::Name => file.folded_name.as_ref(),
-                    Field::Path => file.folded_path.as_ref(),
-                    Field::Parent => normalized_parent(file.folded_path.as_ref()),
-                }));
-            }
-            return Ok(match field {
-                Field::Name => self.matches_normalized(file.search_name.as_ref()),
-                Field::Path => self.matches_normalized(file.search_path.as_ref()),
-                Field::Parent => {
-                    self.matches_normalized(normalized_parent(file.search_path.as_ref()))
-                }
-            });
+            let text = match (field, self.options.diacritics) {
+                (Field::Name, true) => file.folded_name().into(),
+                (Field::Name, false) => file.search_name().into(),
+                (_, true) => file.folded_path(),
+                (_, false) => file.search_path(),
+            };
+            return Ok(text.with_scratch(scratch, |text| {
+                self.matches_normalized(if field == Field::Parent {
+                    normalized_parent(text)
+                } else {
+                    text
+                })
+            }));
         }
-        self.matches(file.text(field))
+        file.text(field)
+            .with_scratch(scratch, |text| self.matches(text))
     }
     fn matches_normalized(&self, haystack: &str) -> bool {
         if self.options.whole {
@@ -1237,11 +1266,51 @@ fn number_term(
 }
 
 impl Query {
+    pub(crate) fn path_substring(&self) -> Option<(&Finder<'static>, PathTextMode)> {
+        match self {
+            Self::Term(Term::Text {
+                field: Field::Path,
+                finder,
+                sensitive,
+                ..
+            }) => Some((
+                finder,
+                if *sensitive {
+                    PathTextMode::Sensitive { diacritics: true }
+                } else {
+                    PathTextMode::Search
+                },
+            )),
+            Self::Term(Term::Matched {
+                target: TextTarget::Field(Field::Path),
+                matcher,
+            }) if matcher.regex.is_none()
+                && !matcher.options.prefix
+                && !matcher.options.suffix
+                && !matcher.options.whole
+                && !matcher.options.start
+                && !matcher.options.end =>
+            {
+                let mode = if matcher.options.sensitive {
+                    PathTextMode::Sensitive {
+                        diacritics: matcher.options.diacritics,
+                    }
+                } else if matcher.options.diacritics {
+                    PathTextMode::Folded
+                } else {
+                    PathTextMode::Search
+                };
+                Some((&matcher.finder, mode))
+            }
+            _ => None,
+        }
+    }
     pub fn evaluator(&self) -> QueryEvaluator<'_> {
         QueryEvaluator {
             query: self,
             needs_content: self.requires_content(),
             needs_relations: self.requires_relations(),
+            scratch: crate::query_scratch::TextScratch::acquire(0),
         }
     }
 
@@ -1262,7 +1331,7 @@ impl Query {
     /// This evaluator only consults already indexed properties/content.
     pub(crate) fn indexed_truth(
         &self,
-        file: &IndexedFile,
+        file: &impl FileEntry,
         content: Option<&str>,
     ) -> Result<Option<bool>, String> {
         match self {
@@ -1289,16 +1358,25 @@ impl Query {
                     target: TextTarget::Property(key),
                     ..
                 },
-            ) if file.properties.get(key).is_none() => Ok(None),
+            ) if file.properties().get(key).is_none() => Ok(None),
             Self::Term(Term::Number { field, .. })
                 if numeric_property(field)
-                    && file.properties.get(field).and_then(Value::as_f64).is_none() =>
+                    && file
+                        .properties()
+                        .get(field)
+                        .and_then(Value::as_f64)
+                        .is_none() =>
             {
                 Ok(None)
             }
             _ if content.is_none() && self.requires_content() => Ok(None),
             _ => self
-                .matches_inner(file, content, &OnceCell::new())
+                .matches_inner(
+                    file,
+                    content,
+                    &OnceCell::new(),
+                    &mut crate::query_scratch::TextScratch::acquire(0),
+                )
                 .map(Some),
         }
     }
@@ -1333,10 +1411,10 @@ impl Query {
             _ => false,
         }
     }
-    pub fn may_match_before_extraction(&self, file: &IndexedFile) -> Result<bool, String> {
+    pub fn may_match_before_extraction(&self, file: &impl FileEntry) -> Result<bool, String> {
         Ok(self.extraction_truth(file)? != Some(false))
     }
-    fn extraction_truth(&self, file: &IndexedFile) -> Result<Option<bool>, String> {
+    fn extraction_truth(&self, file: &impl FileEntry) -> Result<Option<bool>, String> {
         match self {
             Self::Term(Term::Related { .. }) => Ok(None),
             Self::Term(Term::Resolved(result)) => Ok(result.truth(file)),
@@ -1377,10 +1455,10 @@ impl Query {
             _ => Ok(Some(self.matches(file, None)?)),
         }
     }
-    pub fn may_match_without_content(&self, file: &IndexedFile) -> Result<bool, String> {
+    pub fn may_match_without_content(&self, file: &impl FileEntry) -> Result<bool, String> {
         Ok(self.metadata_truth(file)? != Some(false))
     }
-    fn metadata_truth(&self, file: &IndexedFile) -> Result<Option<bool>, String> {
+    fn metadata_truth(&self, file: &impl FileEntry) -> Result<Option<bool>, String> {
         match self {
             Self::Term(Term::Related { .. }) => Ok(None),
             Self::Term(Term::Resolved(result)) => Ok(result.truth(file)),
@@ -1432,7 +1510,7 @@ impl Query {
     }
     pub fn matches_available(
         &self,
-        file: &IndexedFile,
+        file: &impl FileEntry,
         content: Option<&str>,
     ) -> Result<bool, String> {
         if content.is_none() && self.requires_content() {
@@ -1440,23 +1518,29 @@ impl Query {
         }
         self.matches(file, content)
     }
-    pub fn matches(&self, file: &IndexedFile, content: Option<&str>) -> Result<bool, String> {
+    pub fn matches(&self, file: &impl FileEntry, content: Option<&str>) -> Result<bool, String> {
         if self.requires_relations() {
             return Ok(self.indexed_truth(file, content)? == Some(true));
         }
-        self.matches_inner(file, content, &OnceCell::new())
+        self.matches_inner(
+            file,
+            content,
+            &OnceCell::new(),
+            &mut crate::query_scratch::TextScratch::acquire(0),
+        )
     }
     fn matches_inner(
         &self,
-        file: &IndexedFile,
+        file: &impl FileEntry,
         content: Option<&str>,
         folded_content: &OnceCell<String>,
+        scratch: &mut crate::query_scratch::TextScratch,
     ) -> Result<bool, String> {
         match self {
             Self::All => Ok(true),
             Self::And(queries) => {
                 for query in queries {
-                    if !query.matches_inner(file, content, folded_content)? {
+                    if !query.matches_inner(file, content, folded_content, scratch)? {
                         return Ok(false);
                     }
                 }
@@ -1464,13 +1548,13 @@ impl Query {
             }
             Self::Or(queries) => {
                 for query in queries {
-                    if query.matches_inner(file, content, folded_content)? {
+                    if query.matches_inner(file, content, folded_content, scratch)? {
                         return Ok(true);
                     }
                 }
                 Ok(false)
             }
-            Self::Not(query) => Ok(!query.matches_inner(file, content, folded_content)?),
+            Self::Not(query) => Ok(!query.matches_inner(file, content, folded_content, scratch)?),
             Self::Term(Term::Content {
                 needle,
                 sensitive: false,
@@ -1490,7 +1574,7 @@ impl Query {
                     matcher.matches_normalized(folded_content.get_or_init(|| fold_search(body)))
                 }))
             }
-            Self::Term(term) => term.matches(file, content),
+            Self::Term(term) => term.matches_with_scratch(file, content, scratch),
         }
     }
     // Required positive name literals are safe trigram accelerators; disjunction/negation are never narrowed.
@@ -1536,13 +1620,25 @@ impl Term {
             _ => false,
         }
     }
-    fn matches(&self, file: &IndexedFile, content: Option<&str>) -> Result<bool, String> {
+    fn matches(&self, file: &impl FileEntry, content: Option<&str>) -> Result<bool, String> {
+        self.matches_with_scratch(
+            file,
+            content,
+            &mut crate::query_scratch::TextScratch::acquire(0),
+        )
+    }
+    fn matches_with_scratch(
+        &self,
+        file: &impl FileEntry,
+        content: Option<&str>,
+        scratch: &mut crate::query_scratch::TextScratch,
+    ) -> Result<bool, String> {
         Ok(match self {
             Self::Related { .. } => {
                 return Err("Relationship predicates require a search snapshot".into());
             }
             Self::Resolved(result) => result.truth(file) == Some(true),
-            Self::Flags(mask) => file.flags & mask != 0,
+            Self::Flags(mask) => file.flags() & mask != 0,
             Self::Text {
                 field,
                 finder,
@@ -1550,59 +1646,79 @@ impl Term {
                 ..
             } => {
                 if *sensitive {
-                    finder.find(nfc(file.text(*field)).as_bytes()).is_some()
+                    file.text(*field).with_scratch(scratch, |text| {
+                        if text.is_ascii() {
+                            finder.find(text.as_bytes()).is_some()
+                        } else {
+                            finder.find(nfc(text).as_bytes()).is_some()
+                        }
+                    })
                 } else {
                     match field {
-                        Field::Name => finder.find(file.search_name.as_bytes()).is_some(),
-                        Field::Path => finder.find(file.search_path.as_bytes()).is_some(),
-                        Field::Parent => finder
-                            .find(normalized_parent(file.search_path.as_ref()).as_bytes())
-                            .is_some(),
+                        Field::Name => finder.find(file.search_name().as_bytes()).is_some(),
+                        Field::Path => file.search_path().contains(finder),
+                        Field::Parent => file.search_path().with_scratch(scratch, |path| {
+                            finder.find(normalized_parent(path).as_bytes()).is_some()
+                        }),
                     }
                 }
             }
-            Self::Pattern { field, regex } => regex
-                .is_match(nfc(file.text(*field)).as_bytes())
-                .map_err(|error| format!("PCRE2 matching failed: {error}"))?,
+            Self::Pattern { field, regex } => file.text(*field).with_scratch(scratch, |text| {
+                regex
+                    .is_match(
+                        if text.is_ascii() {
+                            std::borrow::Cow::Borrowed(text)
+                        } else {
+                            std::borrow::Cow::Owned(nfc(text))
+                        }
+                        .as_bytes(),
+                    )
+                    .map_err(|error| format!("PCRE2 matching failed: {error}"))
+            })?,
             Self::Matched { target, matcher } => match target {
-                TextTarget::Field(field) => matcher.matches_file(file, *field)?,
+                TextTarget::Field(field) => matcher.matches_file(file, *field, scratch)?,
                 TextTarget::Content => match content {
                     Some(s) => matcher.matches(s)?,
                     None => false,
                 },
-                TextTarget::Property(key) => match file.properties.get(key).and_then(Value::as_str)
-                {
-                    Some(s) => matcher.matches(s)?,
-                    None => false,
-                },
-                TextTarget::Extension => matcher.matches(&file.extension)?,
+                TextTarget::Property(key) => {
+                    match file.properties().get(key).and_then(Value::as_str) {
+                        Some(s) => matcher.matches(s)?,
+                        None => false,
+                    }
+                }
+                TextTarget::Extension => matcher.matches(file.extension())?,
             },
             Self::Extension(extensions) => {
-                if file.folded_extension.is_ascii() {
+                if file.folded_extension().is_ascii() {
                     extensions
                         .iter()
-                        .any(|extension| extension == file.folded_extension.as_ref())
+                        .any(|extension| extension == file.folded_extension())
                 } else {
-                    let extension = fold_search(&file.extension);
+                    let extension = fold_search(file.extension());
                     extensions.contains(&extension)
                 }
             }
-            Self::IsDir(dir) => file.is_dir == *dir,
-            Self::IsSymlink => file.is_symlink,
-            Self::Hidden => file.name.starts_with('.') || file.flags & 0x8000 != 0,
+            Self::IsDir(dir) => file.is_dir() == *dir,
+            Self::IsSymlink => file.is_symlink(),
+            Self::Hidden => file.name().starts_with('.') || file.flags() & 0x8000 != 0,
             Self::Content { needle, sensitive } => content.is_some_and(|s| {
                 (if *sensitive { nfc(s) } else { fold_search(s) }).contains(needle)
             }),
             Self::PropertyText(key, needle) => file
-                .properties
+                .properties()
                 .get(key)
                 .and_then(Value::as_str)
                 .is_some_and(|s| fold_search(s).contains(needle)),
             Self::Unknown { field, negate } => {
                 let unknown = match field.as_str() {
-                    "size" => file.is_dir,
+                    "size" => file.is_dir(),
                     "modified" | "created" => false,
-                    other => file.properties.get(other).and_then(Value::as_f64).is_none(),
+                    other => file
+                        .properties()
+                        .get(other)
+                        .and_then(Value::as_f64)
+                        .is_none(),
                 };
                 if *negate { !unknown } else { unknown }
             }
@@ -1616,15 +1732,15 @@ impl Term {
             } => {
                 let n = match field.as_str() {
                     "size" => {
-                        if file.is_dir {
+                        if file.is_dir() {
                             None
                         } else {
-                            Some(file.size as f64)
+                            Some(file.size() as f64)
                         }
                     }
-                    "modified" => Some(file.modified as f64),
-                    "created" => Some(file.created as f64),
-                    other => file.properties.get(other).and_then(Value::as_f64),
+                    "modified" => Some(file.modified() as f64),
+                    "created" => Some(file.created() as f64),
+                    other => file.properties().get(other).and_then(Value::as_f64),
                 };
                 n.is_some_and(|n| {
                     let inside = (if *include_low { n >= *low } else { n > *low })

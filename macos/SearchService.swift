@@ -62,6 +62,7 @@ final class FileListOutput {
 ) -> UnsafeMutablePointer<CChar>?
 @_silgen_name("apfsearch_engine_free_string") func engineFree(_ s: UnsafeMutablePointer<CChar>)
 @_silgen_name("apfsearch_engine_close") func engineClose(_ e: UnsafeMutableRawPointer)
+@_silgen_name("apfsearch_release_query_caches") func releaseQueryCaches()
 
 final class SearchEngine {
   let pointer: UnsafeMutableRawPointer
@@ -643,7 +644,10 @@ struct CSVReader {
       let listener = NSXPCListener(machServiceName: serviceName)
       listener.delegate = service
       listener.resume()
-      RunLoop.current.run()
+      let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .global(qos: .utility))
+      pressure.setEventHandler { releaseQueryCaches() }
+      pressure.resume()
+      withExtendedLifetime(pressure) { RunLoop.current.run() }
     }
   }
 

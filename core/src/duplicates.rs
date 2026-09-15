@@ -1,5 +1,6 @@
 //! Duplicate results describe freshly verified regular-file objects. Directory
 //! entries (hard-link aliases) are reported separately from independent objects.
+use crate::entry_table::FileEntry;
 use crate::{index_store::SearchSnapshot, query};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -173,15 +174,15 @@ pub(crate) fn find(
     // Stale index size buckets otherwise miss duplicates after a file changes.
     for entry in snapshot.visible_entries() {
         poll(cancelled)?;
-        if entry.is_dir || entry.is_symlink {
+        if entry.is_dir() || entry.is_symlink() {
             continue;
         }
         examined_paths += 1;
-        match fresh_identity(&entry.path) {
+        match entry.path().with_str(fresh_identity) {
             Ok(identity) => {
                 let row = Row {
-                    path: entry.path.clone(),
-                    name: entry.name.clone(),
+                    path: entry.path().to_string(),
+                    name: entry.name().to_owned(),
                     identity: identity.clone(),
                 };
                 let key = (identity.device_id, identity.file_id);
@@ -197,7 +198,9 @@ pub(crate) fn find(
                     });
                 }
             }
-            Err(error) => record_error(&mut errors, &entry.path, "metadata", error)?,
+            Err(error) => entry
+                .path()
+                .with_str(|path| record_error(&mut errors, path, "metadata", error))?,
         }
     }
     let fresh_objects = objects.len();

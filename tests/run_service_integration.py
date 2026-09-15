@@ -16,6 +16,7 @@ from test_bundle import create_test_bundle
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--core-sha256', required=True)
+parser.add_argument('--library', type=pathlib.Path)
 parser.add_argument('--work', type=pathlib.Path)
 args = parser.parse_args()
 project = pathlib.Path(__file__).resolve().parents[1]
@@ -23,7 +24,7 @@ work = args.work or pathlib.Path(tempfile.mkdtemp(prefix='APFSearch-integration-
 work.mkdir(parents=True, exist_ok=True)
 # Match the scanner's canonical namespace even when tempfile returns /var.
 work = work.resolve()
-library = project / 'core/target/release/libapfsearch_core.a'
+library = args.library or project / 'core/target/release/libapfsearch_core.a'
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -34,9 +35,10 @@ source_names = ['ApplicationIdentity.swift', 'SearchProtocol.swift', 'Localizati
 sources = [project / 'macos' / name for name in source_names]
 source_hashes = {path.name: sha(path) for path in sources}
 executables = {}
+sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True).strip()
 for name in ['ContentAndFileTests', 'ServiceTests']:
     executable = work / name
-    command = ['swiftc', '-module-cache-path', str(work / 'ModuleCache'), '-D', 'TEST_BUILD', '-swift-version', '5', '-O', '-target', swift_target()]
+    command = ['xcrun', '--sdk', 'macosx', 'swiftc', '-sdk', sdk, '-module-cache-path', str(work / 'ModuleCache'), '-D', 'TEST_BUILD', '-swift-version', '5', '-O', '-target', swift_target()]
     command += list(map(str, sources)) + [str(project / 'tests' / (name + '.swift')), str(library)]
     for framework in ['AppKit', 'PDFKit', 'AVFoundation', 'ImageIO', 'Security', 'DiskArbitration', 'CoreServices', 'CoreFoundation']:
         command += ['-framework', framework]

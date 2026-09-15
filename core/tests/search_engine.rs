@@ -22,7 +22,7 @@ fn reusable_evaluator_preserves_unknown_content_and_boolean_semantics() {
         ("report | child:report", true, true, true),
     ] {
         let query = query::parse(text, &HashMap::new()).unwrap();
-        let evaluator = query.evaluator();
+        let mut evaluator = query.evaluator();
         for (body, expected) in [
             (None, absent),
             (Some("needle"), matching),
@@ -289,7 +289,11 @@ fn cache_dirty_transaction_wins_after_unpublished_batch() {
     let (recovered, _) = db
         .cache_read()
         .expect("the changed-id journal restores a dirty prepared cache");
-    assert!(recovered.visible_entries().any(|entry| entry.path == extra));
+    assert!(
+        recovered
+            .visible_entries()
+            .any(|entry| entry.path() == extra)
+    );
     drop(db);
     let reopened = SearchEngine::open(&dbpath).unwrap();
     assert_eq!(
@@ -437,7 +441,11 @@ fn stale_snapshot_cannot_clear_new_batch_dirty_flag() {
     db.cache_write(&snapshot, revision).unwrap();
     assert!(db.cache_is_dirty());
     let (recovered, _) = db.cache_read().unwrap();
-    assert!(recovered.visible_entries().any(|entry| entry.path == added));
+    assert!(
+        recovered
+            .visible_entries()
+            .any(|entry| entry.path() == added)
+    );
 }
 #[test]
 fn date_comparisons_use_exclusive_next_calendar_boundary() {
@@ -527,7 +535,7 @@ fn binary_cache_preserves_paths_properties_and_rejects_corruption() {
     assert_eq!(actual["rows"], expected["rows"]);
     let db = apfsearch_core::index_store::IndexStore::open(&dbpath).unwrap();
     let mut bytes = std::fs::read(&db.cache_path).unwrap();
-    assert_eq!(&bytes[..8], b"APFIDX01");
+    assert_eq!(&bytes[..8], b"APFMAP03");
     bytes[55] ^= 1;
     std::fs::write(&db.cache_path, &bytes).unwrap();
     assert!(db.cache_read().is_none());
@@ -653,9 +661,12 @@ fn incremental_snapshot_matches_full_rebuild_for_metadata_and_renames() {
     assert_eq!(reused.trigrams, rebuilt.trigrams);
     assert_eq!(reused.name_order, rebuilt.name_order);
     for (a, b) in reused.entries.iter().zip(rebuilt.entries.iter()) {
-        assert_eq!(a.folded_path, b.folded_path);
-        assert_eq!(a.folded_name, b.folded_name);
-        assert_eq!(a.size, b.size);
+        assert_eq!(a.folded_path(), b.folded_path());
+        assert_eq!(a.folded_name(), b.folded_name());
+        assert_eq!(
+            apfsearch_core::entry_table::FileEntry::size(&a),
+            apfsearch_core::entry_table::FileEntry::size(&b)
+        );
     }
     entries.remove(0);
     let mut added = entry("新文件3.txt");

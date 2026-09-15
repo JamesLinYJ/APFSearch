@@ -1,5 +1,6 @@
 //! Parsed result ordering and cancellable sorting shared by snapshots and queries.
-use crate::{index_store::IndexedFile, query};
+use crate::entry_table::FileEntry;
+use crate::query;
 use serde_json::Value;
 use std::{
     cmp::Ordering,
@@ -19,6 +20,9 @@ enum Field {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct ResultOrder(Vec<(Field, bool)>);
 impl ResultOrder {
+    pub(crate) fn heap_bytes(&self) -> usize {
+        self.0.capacity() * std::mem::size_of::<(Field, bool)>()
+    }
     pub(crate) fn parse(value: &Value) -> Result<Self, String> {
         let Some(items) = value.as_array() else {
             return Ok(Self::name());
@@ -52,39 +56,43 @@ impl ResultOrder {
             .first()
             .and_then(|(field, ascending)| (*field == Field::Path).then_some(*ascending))
     }
-    pub(crate) fn affected_by_change(&self, previous: &IndexedFile, current: &IndexedFile) -> bool {
-        if previous.path != current.path || previous.id != current.id {
+    pub(crate) fn affected_by_change(
+        &self,
+        previous: &impl FileEntry,
+        current: &impl FileEntry,
+    ) -> bool {
+        if previous.path() != current.path() || previous.id() != current.id() {
             return true;
         }
         self.0.iter().any(|(field, _)| match field {
-            Field::Name => previous.name != current.name,
+            Field::Name => previous.name() != current.name(),
             Field::Path => false, // checked above; also the fallback for every order
-            Field::Extension => previous.extension != current.extension,
-            Field::Size => previous.size != current.size,
-            Field::Modified => previous.modified != current.modified,
-            Field::Created => previous.created != current.created,
-            Field::Directory => previous.is_dir != current.is_dir,
+            Field::Extension => previous.extension() != current.extension(),
+            Field::Size => previous.size() != current.size(),
+            Field::Modified => previous.modified() != current.modified(),
+            Field::Created => previous.created() != current.created(),
+            Field::Directory => previous.is_dir() != current.is_dir(),
         })
     }
-    pub(crate) fn compare(&self, first: &IndexedFile, second: &IndexedFile) -> Ordering {
+    pub(crate) fn compare(&self, first: &impl FileEntry, second: &impl FileEntry) -> Ordering {
         for (field, ascending) in &self.0 {
             let order = match field {
-                Field::Name => query::natural_cmp_folded(&first.folded_name, &second.folded_name),
-                Field::Path => query::natural_cmp_folded(&first.folded_path, &second.folded_path),
-                Field::Extension => first.extension.cmp(&second.extension),
-                Field::Size => first.size.cmp(&second.size),
-                Field::Modified => first.modified.cmp(&second.modified),
-                Field::Created => first.created.cmp(&second.created),
-                Field::Directory => first.is_dir.cmp(&second.is_dir),
+                Field::Name => query::natural_cmp_folded(first.folded_name(), second.folded_name()),
+                Field::Path => first.folded_path().natural_cmp(second.folded_path()),
+                Field::Extension => first.extension().cmp(second.extension()),
+                Field::Size => first.size().cmp(&second.size()),
+                Field::Modified => first.modified().cmp(&second.modified()),
+                Field::Created => first.created().cmp(&second.created()),
+                Field::Directory => first.is_dir().cmp(&second.is_dir()),
             };
             if !order.is_eq() {
                 return if *ascending { order } else { order.reverse() };
             }
         }
         first
-            .path
-            .cmp(&second.path)
-            .then_with(|| first.id.cmp(&second.id))
+            .path()
+            .cmp(&second.path())
+            .then_with(|| first.id().cmp(&second.id()))
     }
 }
 /// Sort bounded runs, then merge them. Cancellation never changes comparator

@@ -1,4 +1,5 @@
 use super::*;
+use crate::entry_table::FileEntry;
 use std::sync::atomic::AtomicBool;
 
 fn fixture(count: usize) -> (tempfile::TempDir, IndexStore, Vec<ScannedFile>) {
@@ -45,14 +46,14 @@ fn writes(store: &IndexStore) -> i64 {
 
 fn rows(snapshot: &SearchSnapshot) -> Value {
     let mut entries: Vec<_> = snapshot.visible_entries().collect();
-    entries.sort_unstable_by_key(|file| file.id);
+    entries.sort_unstable_by_key(|file| file.id());
     serde_json::to_value(entries).unwrap()
 }
 
 fn paths(snapshot: &SearchSnapshot, order: &[u32]) -> Vec<String> {
     order
         .iter()
-        .map(|slot| snapshot.entries[*slot as usize].path.clone())
+        .map(|slot| snapshot.entries.at(*slot as usize).path().to_string())
         .collect()
 }
 
@@ -125,7 +126,7 @@ fn replay_more_than_two_thousand_changes_is_read_only_and_matches_sql() {
     assert_eq!(
         restored
             .visible_entries()
-            .filter(|file| file.file_id == 999_999)
+            .filter(|file| file.file_id() == 999_999)
             .count(),
         2
     );

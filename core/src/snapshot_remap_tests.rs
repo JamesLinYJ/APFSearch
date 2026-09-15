@@ -1,5 +1,6 @@
 //! Stable-slot restoration, deliberate compaction, and cache-restart regressions.
 use super::*;
+use crate::entry_table::FileEntry;
 
 fn file(id: i64, name: &str) -> IndexedFile {
     serde_json::from_value(json!({
@@ -13,7 +14,7 @@ fn file(id: i64, name: &str) -> IndexedFile {
     .unwrap()
 }
 fn ids(snapshot: &SearchSnapshot) -> Vec<i64> {
-    let mut ids: Vec<_> = snapshot.visible_entries().map(|file| file.id).collect();
+    let mut ids: Vec<_> = snapshot.visible_entries().map(|file| file.id()).collect();
     ids.sort_unstable();
     ids
 }
@@ -44,9 +45,15 @@ fn a_restored_middle_id_appends_stable_slots_without_mutating_the_old_snapshot()
     assert_eq!(ids(&remapped), [1, 2, 4, 5]);
     assert_eq!(ids(&previous), [1, 3, 5]);
     assert_eq!(remapped.content_revision, 91);
-    assert!(Arc::ptr_eq(&previous.entries[0], &remapped.entries[0]));
-    assert!(Arc::ptr_eq(&previous.entries[2], &remapped.entries[2]));
-    assert_eq!(previous.entries[1].name, "Cafe\u{301}2.pdf");
+    assert!(crate::entry_table::same_record(
+        &previous.entries.at(0),
+        &remapped.entries.at(0)
+    ));
+    assert!(crate::entry_table::same_record(
+        &previous.entries.at(2),
+        &remapped.entries.at(2)
+    ));
+    assert_eq!(previous.entries.at(1).name(), "Cafe\u{301}2.pdf");
     assert_eq!(remapped.entries.len(), 5);
     assert_eq!(remapped.slot_for_id(1), Some(0));
     assert_eq!(remapped.slot_for_id(3), Some(1));
@@ -54,15 +61,15 @@ fn a_restored_middle_id_appends_stable_slots_without_mutating_the_old_snapshot()
     assert_eq!(remapped.slot_for_id(2), Some(3));
     assert_eq!(remapped.slot_for_id(4), Some(4));
     assert!(!remapped.live.contains(1));
-    let mut changed = remapped.entries[0].as_ref().clone();
+    let mut changed = remapped.entries.at(0).to_owned_file();
     changed.size = 999;
     let updated = SearchSnapshot::from_changes(vec![(1, Some(changed))], 12, &remapped).unwrap();
-    assert_eq!(updated.entries[0].size, 999);
-    assert_eq!(previous.entries[0].size, 10);
-    assert_eq!(remapped.entries[0].size, 10);
-    assert!(crate::shared_text::SharedText::ptr_eq(
-        &remapped.entries[0].search_name,
-        &updated.entries[0].search_name
+    assert_eq!(updated.entries.at(0).size(), 999);
+    assert_eq!(previous.entries.at(0).size(), 10);
+    assert_eq!(remapped.entries.at(0).size(), 10);
+    assert!(crate::entry_table::same_text_storage(
+        remapped.entries.at(0).search_name(),
+        updated.entries.at(0).search_name()
     ));
 }
 
@@ -75,12 +82,18 @@ fn remapping_compacts_inactive_slots_and_preserves_order_after_delete_restore() 
     let compacted = SearchSnapshot::remap_changes(vec![(3, None)], 12, &hidden);
     assert_eq!(ids(&compacted), [5]);
     assert_eq!(compacted.entries.len(), 1);
-    assert!(Arc::ptr_eq(&previous.entries[2], &compacted.entries[0]));
+    assert!(crate::entry_table::same_record(
+        &previous.entries.at(2),
+        &compacted.entries.at(0)
+    ));
     let restored =
         SearchSnapshot::from_changes(vec![(1, Some(file(1, "report10.txt")))], 13, &compacted)
             .unwrap();
     assert_eq!(ids(&restored), [1, 5]);
-    assert!(Arc::ptr_eq(&compacted.entries[0], &restored.entries[0]));
+    assert!(crate::entry_table::same_record(
+        &compacted.entries.at(0),
+        &restored.entries.at(0)
+    ));
     let restored_again =
         SearchSnapshot::from_changes(vec![(3, Some(file(3, "Cafe\u{301}2.pdf")))], 14, &restored)
             .unwrap();
@@ -89,7 +102,7 @@ fn remapping_compacts_inactive_slots_and_preserves_order_after_delete_restore() 
         restored_again
             .entries
             .iter()
-            .map(|file| file.id)
+            .map(|file| file.id())
             .collect::<Vec<_>>(),
         [5, 1, 3]
     );
@@ -98,7 +111,7 @@ fn remapping_compacts_inactive_slots_and_preserves_order_after_delete_restore() 
         compacted_again
             .entries
             .iter()
-            .map(|file| file.id)
+            .map(|file| file.id())
             .collect::<Vec<_>>(),
         [1, 3, 5]
     );
@@ -111,7 +124,7 @@ fn stable_slot_indexes_and_cache_preserve_queries_natural_sort_and_anchors() {
     let remapped = SearchSnapshot::from_changes_with_reason(delta(), 11, &previous()).unwrap();
     let cache = temporary.path().join("prepared.cache");
     snapshot_cache::write(&cache, &remapped, 123).unwrap();
-    assert_eq!(&std::fs::read(&cache).unwrap()[..8], b"APFIDX01");
+    assert_eq!(&std::fs::read(&cache).unwrap()[..8], b"APFMAP03");
     let (restored, generation) = snapshot_cache::read(&cache, 11, 123).unwrap();
     assert_eq!(generation, 11);
     let reference = SearchSnapshot::new(
@@ -174,7 +187,7 @@ fn unordered_new_ids_and_repeated_restoration_keep_stable_id_lookup_valid() {
     let updated = SearchSnapshot::from_changes(changes, 12, &appended).unwrap();
     assert_eq!(ids(&updated), [1, 2, 3, 5, 7, 9]);
     assert_eq!(
-        updated.entries[updated.slot_for_id(2).unwrap()].name,
+        updated.entries.at(updated.slot_for_id(2).unwrap()).name(),
         "kept"
     );
     let too_many = (0..2001).map(|_| (1, None)).collect::<Vec<_>>();
@@ -250,9 +263,9 @@ fn an_engine_reopens_stable_slot_cache_and_incrementally_updates_a_restored_id()
         .snapshot
         .load()
         .visible_entries()
-        .find(|file| file.path == files[1].path)
+        .find(|file| file.path() == files[1].path)
         .unwrap()
-        .id;
+        .id();
     let restored_slot = reopened.snapshot.load().slot_for_id(restored_id).unwrap();
     let mut updated_file = files[1].clone();
     updated_file.size = 12345;
@@ -267,7 +280,10 @@ fn an_engine_reopens_stable_slot_cache_and_incrementally_updates_a_restored_id()
         reopened.snapshot.load().slot_for_id(restored_id),
         Some(restored_slot)
     );
-    assert_eq!(reopened.snapshot.load().entries[restored_slot].size, 12345);
+    assert_eq!(
+        reopened.snapshot.load().entries.at(restored_slot).size(),
+        12345
+    );
     reopened
         .index_store
         .lock()
@@ -339,7 +355,7 @@ fn persistent_id_extremes_and_tail_changes_keep_every_existing_slot() {
     assert_eq!(again.slot_for_id(i64::MAX), Some(2));
     assert_eq!(again.slot_for_id(10), Some(6));
     assert!(!again.live.contains(again.slot_for_id(0).unwrap() as u32));
-    assert_eq!(restored.entries[5].name, "tail");
+    assert_eq!(restored.entries.at(5).name(), "tail");
 }
 
 #[test]
@@ -373,13 +389,16 @@ fn sorted_prefix_index_only_allocates_entries_for_the_out_of_order_tail() {
         (1000, 2)
     );
     for slot in 0..1000 {
-        assert!(Arc::ptr_eq(&previous.entries[slot], &later.entries[slot]));
+        assert!(crate::entry_table::same_record(
+            &previous.entries.at(slot),
+            &later.entries.at(slot)
+        ));
         assert_eq!(later.slot_for_id((slot as i64 + 1) * 2), Some(slot));
     }
     let repeated = vec![
-        later.entries[0].clone(),
-        later.entries[1].clone(),
-        later.entries[0].clone(),
+        Arc::new(later.entries.at(0).to_owned_file()),
+        Arc::new(later.entries.at(1).to_owned_file()),
+        Arc::new(later.entries.at(0).to_owned_file()),
     ];
     assert_eq!(
         index_store::FileSlots::from_entries(&repeated.into()).err(),
@@ -415,10 +434,10 @@ fn restoring_102_middle_ids_reuses_original_rows_and_unaffected_posting_bitmaps(
     );
     for (slot, old) in previous.entries.iter().enumerate() {
         assert!(
-            Arc::ptr_eq(old, &updated.entries[slot]),
+            crate::entry_table::same_record(&old, &updated.entries.at(slot)),
             "old record {slot} must not be cloned or prepared"
         );
-        assert_eq!(updated.slot_for_id(old.id), Some(slot));
+        assert_eq!(updated.slot_for_id(old.id()), Some(slot));
     }
     assert!(
         Arc::ptr_eq(&original_posting, updated.trigrams.get(b"sta").unwrap()),

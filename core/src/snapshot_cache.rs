@@ -1,18 +1,24 @@
 //! Disposable prepared search snapshots, published with atomic rename.
 //! SQLite remains authoritative. The cache restores normalized columns, postings,
 //! visibility and name order without repeating Unicode work or sorting on launch.
+#[cfg(test)]
+use crate::entry_table::FileEntry;
+#[cfg(test)]
+use crate::index_store::IndexedFile;
 use crate::label_pool::LabelPool;
-use crate::shared_text::{SharedText, TextArena};
 use crate::{
-    index_store::{FileSlots, IndexedFile, SearchSnapshot},
+    index_store::{FileSlots, SearchSnapshot},
     metadata_postings::MetadataPostings,
 };
 use roaring::RoaringBitmap;
+#[cfg(test)]
 use serde_json::json;
+#[cfg(test)]
+use std::io::{Seek, SeekFrom};
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
-    io::{self, BufWriter, Cursor, Read, Seek, SeekFrom, Write},
+    io::{self, BufWriter, Cursor, Read, Write},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{
@@ -21,9 +27,9 @@ use std::{
     },
 };
 // Slot order remains stable when an older SQLite ID becomes visible again.
-const MAGIC: &[u8; 8] = b"APFIDX01";
+#[cfg(test)]
+const MAGIC: &[u8; 8] = b"APFIDX03";
 const HEADER: usize = 56;
-const RECORD: usize = 212;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) struct PreparedSnapshot {
@@ -39,48 +45,9 @@ pub(crate) struct PreparedSnapshot {
     pub generation: u64,
     pub content_revision: u64,
 }
-#[derive(Clone, Copy, Hash, PartialEq, Eq)]
-struct StringReference {
-    offset: u64,
-    length: u32,
-}
-fn intern<'a>(
-    text: &'a str,
-    strings: &mut HashMap<&'a str, StringReference>,
-    pool: &mut Vec<u8>,
-) -> io::Result<StringReference> {
-    if let Some(reference) = strings.get(text) {
-        return Ok(*reference);
-    }
-    let reference = append_string(text, pool)?;
-    strings.insert(text, reference);
-    Ok(reference)
-}
-fn append_string(text: &str, pool: &mut Vec<u8>) -> io::Result<StringReference> {
-    let reference = StringReference {
-        offset: pool.len() as u64,
-        length: text
-            .len()
-            .try_into()
-            .map_err(|_| invalid("Cache string exceeds 4 GiB"))?,
-    };
-    pool.extend_from_slice(text.as_bytes());
-    Ok(reference)
-}
-fn invalid(message: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message)
-}
 fn push64(out: &mut [u8], pos: &mut usize, value: u64) {
     out[*pos..*pos + 8].copy_from_slice(&value.to_le_bytes());
     *pos += 8;
-}
-fn push32(out: &mut [u8], pos: &mut usize, value: u32) {
-    out[*pos..*pos + 4].copy_from_slice(&value.to_le_bytes());
-    *pos += 4;
-}
-fn push_reference(out: &mut [u8], pos: &mut usize, reference: StringReference) {
-    push64(out, pos, reference.offset);
-    push32(out, pos, reference.length);
 }
 struct TemporaryCache(PathBuf);
 impl Drop for TemporaryCache {
@@ -111,26 +78,12 @@ fn checksum(header: &[u8], payload: &blake3::Hash) -> blake3::Hash {
     hash.finalize()
 }
 pub fn write(path: &Path, snapshot: &SearchSnapshot, revision: u64) -> Result<(), String> {
-    write_snapshot(path, snapshot, revision).map_err(|error| error.to_string())
+    segments::write(path, snapshot, revision).map_err(|error| error.to_string())
 }
-fn write_snapshot(path: &Path, snapshot: &SearchSnapshot, revision: u64) -> io::Result<()> {
-    let temporary = TemporaryCache(path.with_extension(format!(
-        "{}-{}.tmp",
-        std::process::id(),
-        TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-    )));
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temporary.0)?;
-    let mut output = BufWriter::new(file);
-    encode_snapshot(&mut output, snapshot, revision)?;
-    output.flush()?;
-    output.get_ref().sync_all()?;
-    drop(output);
-    std::fs::rename(&temporary.0, path)
-}
+#[path = "snapshot_segments.rs"]
+mod segments;
+pub(crate) use segments::Section;
+#[cfg(test)]
 fn encode_snapshot(
     output: &mut (impl Write + Seek),
     snapshot: &SearchSnapshot,
@@ -145,93 +98,13 @@ fn encode_snapshot(
             hash: &mut payload_hash,
             bytes: 0,
         };
-        let mut pool = Vec::new();
-        let mut strings = HashMap::new();
-        let mut properties = HashMap::<String, StringReference>::new();
-        let empty_properties = intern("{}", &mut strings, &mut pool)?;
-        // Keep the hot search-name column contiguous within the existing pool.
-        // All later references still use the same global interning table, so
-        // this changes byte placement rather than duplicating text or I/O.
-        for entry in snapshot.entries.iter() {
-            intern(entry.search_name.as_ref(), &mut strings, &mut pool)?;
+        writer.write_all(&(snapshot.entries.chunks.len() as u64).to_le_bytes())?;
+        for chunk in &snapshot.entries.chunks {
+            let bytes = encode_chunk(chunk)?;
+            writer.write_all(&(bytes.len() as u64).to_le_bytes())?;
+            writer.write_all(&bytes)?;
         }
-        for entry in snapshot.entries.iter() {
-            let properties_reference = if entry
-                .properties
-                .as_object()
-                .is_some_and(|object| object.is_empty())
-            {
-                empty_properties
-            } else {
-                let text = entry.properties.to_string();
-                if let Some(reference) = properties.get(&text) {
-                    *reference
-                } else {
-                    let reference = append_string(&text, &mut pool)?;
-                    properties.insert(text, reference);
-                    reference
-                }
-            };
-            let canonical = Path::new(entry.parent.as_ref()).join(&entry.name);
-            let override_path = if canonical.as_os_str() == Path::new(&entry.path).as_os_str() {
-                ""
-            } else {
-                &entry.path
-            };
-            let mut row = [0u8; RECORD];
-            let mut position = 0;
-            push64(&mut row, &mut position, entry.id as u64);
-            for text in [
-                entry.parent.as_ref(),
-                entry.name.as_str(),
-                entry.extension.as_ref(),
-                entry.volume_id.as_ref(),
-            ] {
-                push_reference(
-                    &mut row,
-                    &mut position,
-                    intern(text, &mut strings, &mut pool)?,
-                );
-            }
-            push_reference(&mut row, &mut position, properties_reference);
-            for text in [
-                override_path,
-                entry.folded_name.as_ref(),
-                entry.folded_extension.as_ref(),
-                entry.folded_path.as_ref(),
-                entry.search_name.as_ref(),
-                entry.search_path.as_ref(),
-            ] {
-                push_reference(
-                    &mut row,
-                    &mut position,
-                    intern(text, &mut strings, &mut pool)?,
-                );
-            }
-            for value in [
-                entry.size,
-                entry.modified as u64,
-                entry.created as u64,
-                entry.changed as u64,
-                entry.modified_ns as u64,
-                entry.changed_ns as u64,
-                entry.file_id,
-                entry.parent_id,
-            ] {
-                push64(&mut row, &mut position, value);
-            }
-            push32(&mut row, &mut position, entry.flags);
-            push32(
-                &mut row,
-                &mut position,
-                u32::from(entry.is_dir)
-                    | (u32::from(entry.is_symlink) << 1)
-                    | (u32::from(entry.content_indexed) << 2),
-            );
-            debug_assert_eq!(position, RECORD);
-            writer.write_all(&row)?;
-        }
-        writer.write_all(&pool)?;
+        let chunk_bytes = writer.bytes;
         let index_start = writer.bytes;
         snapshot.live.serialize_into(&mut writer)?;
         writer.write_all(&(snapshot.name_order.len() as u64).to_le_bytes())?;
@@ -249,7 +122,7 @@ fn encode_snapshot(
             slots.serialize_into(&mut writer)?;
         }
         snapshot.metadata_postings.write_to(&mut writer)?;
-        (pool.len() as u64, writer.bytes - index_start)
+        (chunk_bytes, writer.bytes - index_start)
     };
     header[..8].copy_from_slice(MAGIC);
     let mut position = 8;
@@ -278,51 +151,253 @@ fn get64(data: &[u8], position: &mut usize) -> Option<u64> {
     *position += 8;
     Some(value)
 }
-fn get32(data: &[u8], position: &mut usize) -> Option<u32> {
-    let value = u32::from_le_bytes(
-        data.get(*position..position.checked_add(4)?)?
-            .try_into()
-            .ok()?,
+
+fn align_buffer(bytes: &mut Vec<u8>) {
+    bytes.resize(bytes.len().next_multiple_of(8), 0);
+}
+fn encode_chunk(chunk: &crate::entry_table::EntryChunk) -> io::Result<Vec<u8>> {
+    let labels = serde_json::to_vec(chunk.labels.as_ref())?;
+    let properties: std::collections::BTreeMap<_, _> = chunk
+        .properties
+        .iter()
+        .map(|(slot, value)| (*slot, value))
+        .collect();
+    let properties = serde_json::to_vec(&properties)?;
+    let mut bytes = Vec::new();
+    let mut paths = Vec::new();
+    let mut texts = Vec::new();
+    for value in [
+        chunk.len() as u64,
+        chunk.text.text().len() as u64,
+        labels.len() as u64,
+        properties.len() as u64,
+    ] {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    chunk.id.encode(&mut bytes);
+    chunk.size.encode(&mut bytes);
+    chunk.modified.encode(&mut bytes);
+    chunk.created.encode(&mut bytes);
+    chunk.changed.encode(&mut bytes);
+    chunk.modified_ns.encode(&mut bytes);
+    chunk.changed_ns.encode(&mut bytes);
+    chunk.file_id.encode(&mut bytes);
+    chunk.parent_id.encode(&mut bytes);
+    chunk.flags.encode(&mut bytes);
+    encode_reference(&mut bytes, &chunk.path, &mut paths);
+    encode_reference(&mut bytes, &chunk.name, &mut texts);
+    encode_reference(&mut bytes, &chunk.folded_name, &mut texts);
+    encode_reference(&mut bytes, &chunk.folded_path, &mut paths);
+    encode_reference(&mut bytes, &chunk.search_name, &mut texts);
+    encode_reference(&mut bytes, &chunk.search_path, &mut paths);
+    encode_reference(&mut bytes, &chunk.parent, &mut texts);
+    chunk.extension.encode(&mut bytes);
+    chunk.folded_extension.encode(&mut bytes);
+    chunk.volume_id.encode(&mut bytes);
+    align_buffer(&mut bytes);
+    bytes.extend_from_slice(chunk.states.bytes());
+    bytes.extend_from_slice(&labels);
+    bytes.extend_from_slice(&properties);
+    bytes.extend_from_slice(chunk.text.text().as_bytes());
+    align_buffer(&mut bytes);
+    Ok(bytes)
+}
+fn encode_reference<'a, T: crate::entry_table::ColumnValue>(
+    bytes: &mut Vec<u8>,
+    column: &'a crate::entry_table::Column<T>,
+    previous: &mut Vec<&'a crate::entry_table::Column<T>>,
+) {
+    align_buffer(bytes);
+    let alias = previous
+        .iter()
+        .position(|other| other.values() == column.values());
+    bytes.extend_from_slice(&(alias.map_or(0, |index| index + 1) as u64).to_le_bytes());
+    if alias.is_none() {
+        bytes.extend_from_slice(column.bytes());
+    }
+    previous.push(column);
+}
+fn decode_reference<T: crate::entry_table::ColumnValue>(
+    mapping: &Arc<memmap2::Mmap>,
+    position: &mut usize,
+    count: usize,
+    end: usize,
+    previous: &mut Vec<crate::entry_table::Column<T>>,
+) -> Option<crate::entry_table::Column<T>> {
+    *position = position.checked_add(7)? & !7;
+    let alias = usize::try_from(get64(mapping.get(..end)?, position)?).ok()?;
+    let column = if alias == 0 {
+        mapped_column::<T>(mapping, position, count, end)?
+    } else {
+        previous.get(alias - 1)?.clone()
+    };
+    previous.push(column.clone());
+    Some(column)
+}
+fn mapped_column<T: crate::entry_table::ColumnValue>(
+    mapping: &Arc<memmap2::Mmap>,
+    offset: &mut usize,
+    count: usize,
+    end: usize,
+) -> Option<crate::entry_table::Column<T>> {
+    *offset = offset.checked_add(7)? & !7;
+    let next = offset.checked_add(count.checked_mul(std::mem::size_of::<T>())?)?;
+    if next > end {
+        return None;
+    }
+    let column = crate::entry_table::Column::mapped(mapping.clone(), *offset..next)?;
+    *offset = next;
+    Some(column)
+}
+fn decode_chunk(
+    mapping: &Arc<memmap2::Mmap>,
+    start: usize,
+    end: usize,
+) -> Option<Arc<crate::entry_table::EntryChunk>> {
+    use crate::entry_table::{EntryChunk, PathRef, TextData, TextRef};
+    let data = mapping.get(start..end)?;
+    let mut position = 0;
+    let count = usize::try_from(get64(data, &mut position)?).ok()?;
+    if count == 0 || count > crate::entry_table::CHUNK_LENGTH {
+        return None;
+    }
+    let text_bytes = usize::try_from(get64(data, &mut position)?).ok()?;
+    let label_bytes = usize::try_from(get64(data, &mut position)?).ok()?;
+    let property_bytes = usize::try_from(get64(data, &mut position)?).ok()?;
+    let mut position = start + position;
+    let mut paths = Vec::new();
+    let mut texts = Vec::new();
+    let id =
+        crate::integer_column::IntegerColumn::<i64>::decode(mapping, &mut position, count, end)?;
+    let size =
+        crate::integer_column::IntegerColumn::<u64>::decode(mapping, &mut position, count, end)?;
+    let modified =
+        crate::integer_column::IntegerColumn::<i64>::decode(mapping, &mut position, count, end)?;
+    let created =
+        crate::integer_column::IntegerColumn::<i64>::decode(mapping, &mut position, count, end)?;
+    let changed =
+        crate::integer_column::IntegerColumn::<i64>::decode(mapping, &mut position, count, end)?;
+    let modified_ns =
+        crate::integer_column::IntegerColumn::<i64>::decode(mapping, &mut position, count, end)?;
+    let changed_ns =
+        crate::integer_column::IntegerColumn::<i64>::decode(mapping, &mut position, count, end)?;
+    let file_id =
+        crate::integer_column::IntegerColumn::<u64>::decode(mapping, &mut position, count, end)?;
+    let parent_id =
+        crate::integer_column::IntegerColumn::<u64>::decode(mapping, &mut position, count, end)?;
+    let flags =
+        crate::integer_column::IntegerColumn::<u32>::decode(mapping, &mut position, count, end)?;
+    let path = decode_reference::<PathRef>(mapping, &mut position, count, end, &mut paths)?;
+    let name = decode_reference::<TextRef>(mapping, &mut position, count, end, &mut texts)?;
+    let folded_name = decode_reference::<TextRef>(mapping, &mut position, count, end, &mut texts)?;
+    let folded_path = decode_reference::<PathRef>(mapping, &mut position, count, end, &mut paths)?;
+    let search_name = decode_reference::<TextRef>(mapping, &mut position, count, end, &mut texts)?;
+    let search_path = decode_reference::<PathRef>(mapping, &mut position, count, end, &mut paths)?;
+    let parent = decode_reference::<TextRef>(mapping, &mut position, count, end, &mut texts)?;
+    let extension =
+        crate::integer_column::IntegerColumn::<u32>::decode(mapping, &mut position, count, end)?;
+    let folded_extension =
+        crate::integer_column::IntegerColumn::<u32>::decode(mapping, &mut position, count, end)?;
+    let volume_id =
+        crate::integer_column::IntegerColumn::<u32>::decode(mapping, &mut position, count, end)?;
+    let states = mapped_column::<u8>(mapping, &mut position, count, end)?;
+    let labels_end = position.checked_add(label_bytes)?;
+    if labels_end > end {
+        return None;
+    }
+    let labels: Vec<String> = serde_json::from_slice(mapping.get(position..labels_end)?).ok()?;
+    let properties_end = labels_end.checked_add(property_bytes)?;
+    if properties_end > end {
+        return None;
+    }
+    let properties: HashMap<usize, serde_json::Value> =
+        serde_json::from_slice(mapping.get(labels_end..properties_end)?).ok()?;
+    let text_end = properties_end.checked_add(text_bytes)?;
+    if text_end > end || text_end.checked_add(7)? & !7 != end {
+        return None;
+    }
+    let text = std::str::from_utf8(mapping.get(properties_end..text_end)?).ok()?;
+    let references = [
+        name.values(),
+        folded_name.values(),
+        search_name.values(),
+        parent.values(),
+    ]
+    .into_iter()
+    .flatten()
+    .copied()
+    .chain(
+        [path.values(), folded_path.values(), search_path.values()]
+            .into_iter()
+            .flatten()
+            .flat_map(|path| [path.prefix, path.suffix]),
     );
-    *position += 4;
-    Some(value)
+    {
+        for reference in references {
+            let start = reference.offset as usize;
+            let end = start.checked_add(reference.length as usize)?;
+            text.get(start..end)?;
+        }
+    }
+    // Matchers rely on the writer's last-separator split. Check it before
+    // publishing borrowed views, even for a checksummed but malformed section.
+    for column in [&path, &folded_path, &search_path] {
+        for path in column.values() {
+            let fragment = |reference: TextRef| {
+                &text[reference.offset as usize
+                    ..(reference.offset as usize + reference.length as usize)]
+            };
+            let prefix = fragment(path.prefix);
+            if (!prefix.is_empty() && !prefix.ends_with('/')) || fragment(path.suffix).contains('/')
+            {
+                return None;
+            }
+        }
+    }
+    for column in [&extension, &folded_extension, &volume_id] {
+        if (0..count).any(|slot| column.get(slot) as usize >= labels.len()) {
+            return None;
+        }
+    }
+    if states.values().iter().enumerate().any(|(slot, state)| {
+        state & !31 != 0 || (*state & 16 != 0) != properties.contains_key(&slot) || state & 24 == 24
+    }) || properties.keys().any(|slot| *slot >= count)
+    {
+        return None;
+    }
+    Some(Arc::new(EntryChunk {
+        pending_text: None,
+        section: std::sync::OnceLock::new(),
+        id,
+        size,
+        modified,
+        created,
+        changed,
+        modified_ns,
+        changed_ns,
+        file_id,
+        parent_id,
+        flags,
+        path,
+        name,
+        folded_name,
+        folded_path,
+        search_name,
+        search_path,
+        parent,
+        extension,
+        folded_extension,
+        volume_id,
+        states,
+        text: Arc::new(TextData::Mapped {
+            mapping: mapping.clone(),
+            range: properties_end..text_end,
+        }),
+        labels: Arc::new(labels),
+        properties: Arc::new(properties),
+    }))
 }
-struct StringPool<'a> {
-    bytes: &'a [u8],
-    arena: TextArena,
-    labels: Arc<LabelPool>,
-}
-impl<'a> StringPool<'a> {
-    fn reference(row: &[u8], position: &mut usize) -> Option<StringReference> {
-        Some(StringReference {
-            offset: get64(row, position)?,
-            length: get32(row, position)?,
-        })
-    }
-    fn text(&self, reference: StringReference) -> Option<&'a str> {
-        let start = usize::try_from(reference.offset).ok()?;
-        std::str::from_utf8(
-            self.bytes
-                .get(start..start.checked_add(reference.length as usize)?)?,
-        )
-        .ok()
-    }
-    fn borrowed(&self, row: &[u8], position: &mut usize) -> Option<&'a str> {
-        self.text(Self::reference(row, position)?)
-    }
-    fn label(&mut self, row: &[u8], position: &mut usize) -> Option<Arc<str>> {
-        let text = self.borrowed(row, position)?;
-        Some(LabelPool::intern(&mut self.labels, text))
-    }
-    fn owned(&self, row: &[u8], position: &mut usize) -> Option<String> {
-        Some(self.borrowed(row, position)?.into())
-    }
-    fn shared(&mut self, row: &[u8], position: &mut usize) -> Option<SharedText> {
-        let reference = Self::reference(row, position)?;
-        self.arena
-            .get(usize::try_from(reference.offset).ok()?, reference.length)
-    }
-}
+
 fn read_bitmap(reader: &mut impl Read, count: usize) -> Option<RoaringBitmap> {
     let bitmap = RoaringBitmap::deserialize_from(reader).ok()?;
     if bitmap.max().is_some_and(|slot| slot as usize >= count) {
@@ -331,11 +406,7 @@ fn read_bitmap(reader: &mut impl Read, count: usize) -> Option<RoaringBitmap> {
     Some(bitmap)
 }
 pub fn read(path: &Path, generation: u64, revision: u64) -> Option<(SearchSnapshot, u64)> {
-    let file = File::open(path).ok()?;
-    // This module only publishes immutable files by rename; mapped files are
-    // never truncated by a cache writer, and all offsets are checked below.
-    let mapped = unsafe { memmap2::Mmap::map(&file).ok()? };
-    decode(&mapped, generation, revision).map(|snapshot| (snapshot, generation))
+    segments::read(path, generation, revision).map(|snapshot| (snapshot, generation))
 }
 const PARALLEL_CHECKSUM_MIN_BYTES: usize = 8 * 1024 * 1024;
 
@@ -352,15 +423,34 @@ fn payload_digest(bytes: &[u8]) -> blake3::Hash {
     blake3::hash(bytes)
 }
 
+#[cfg(test)]
 fn decode(data: &[u8], generation: u64, revision: u64) -> Option<SearchSnapshot> {
     decode_with_metrics(data, generation, revision, |_, _| {})
 }
+#[cfg(test)]
 fn decode_with_metrics(
     data: &[u8],
     generation: u64,
     revision: u64,
+    phase: impl FnMut(&str, usize),
+) -> Option<SearchSnapshot> {
+    let mut mapping = memmap2::MmapMut::map_anon(data.len()).ok()?;
+    mapping.copy_from_slice(data);
+    decode_mapping(
+        Arc::new(mapping.make_read_only().ok()?),
+        generation,
+        revision,
+        phase,
+    )
+}
+#[cfg(test)]
+fn decode_mapping(
+    mapping: Arc<memmap2::Mmap>,
+    generation: u64,
+    revision: u64,
     mut phase: impl FnMut(&str, usize),
 ) -> Option<SearchSnapshot> {
+    let data = mapping.as_ref();
     if data.get(..8)? != MAGIC {
         return None;
     }
@@ -375,8 +465,7 @@ fn decode_with_metrics(
     }
     let pool_bytes = usize::try_from(get64(data, &mut position)?).ok()?;
     let index_bytes = usize::try_from(get64(data, &mut position)?).ok()?;
-    let pool_start = HEADER.checked_add(count.checked_mul(RECORD)?)?;
-    let index_start = pool_start.checked_add(pool_bytes)?;
+    let index_start = HEADER.checked_add(pool_bytes)?;
     let payload_end = index_start.checked_add(index_bytes)?;
     if payload_end.checked_add(32)? != data.len() {
         return None;
@@ -389,97 +478,51 @@ fn decode_with_metrics(
         return None;
     }
     phase("checksum_verified", 0);
-    let mut pool = StringPool {
-        bytes: data.get(pool_start..index_start)?,
-        labels: Arc::new(LabelPool::default()),
-        arena: TextArena::new(data.get(pool_start..index_start)?)?,
-    };
-    let mut entries: Vec<Arc<IndexedFile>> = Vec::with_capacity(count);
-    for row in data.get(HEADER..pool_start)?.as_chunks::<RECORD>().0 {
-        let mut position = 0;
-        let id = get64(row, &mut position)? as i64;
-        let parent = pool.shared(row, &mut position)?;
-        let name = pool.owned(row, &mut position)?;
-        let extension = pool.label(row, &mut position)?;
-        let volume_id = pool.label(row, &mut position)?;
-        let properties_text = pool.borrowed(row, &mut position)?;
-        let override_path = pool.borrowed(row, &mut position)?;
-        let path = if override_path.is_empty() {
-            // Pre-size the owned path before pushing components: shrinking a
-            // grown allocation need not release its physical allocator block.
-            let base = if Path::new(&name).is_absolute() {
-                ""
-            } else {
-                parent.as_ref()
-            };
-            let separator =
-                usize::from(!base.is_empty() && !base.ends_with(std::path::MAIN_SEPARATOR));
-            let capacity = base.len().checked_add(name.len())?.checked_add(separator)?;
-            let mut path = PathBuf::with_capacity(capacity);
-            path.push(base);
-            path.push(&name);
-            path.into_os_string().into_string().ok()?
-        } else {
-            override_path.to_owned()
-        };
-        let folded_name = pool.shared(row, &mut position)?;
-        let folded_extension = pool.label(row, &mut position)?;
-        let folded_path = pool.shared(row, &mut position)?;
-        let search_name = pool.shared(row, &mut position)?;
-        let search_path = pool.shared(row, &mut position)?;
-        let size = get64(row, &mut position)?;
-        let modified = get64(row, &mut position)? as i64;
-        let created = get64(row, &mut position)? as i64;
-        let changed = get64(row, &mut position)? as i64;
-        let modified_ns = get64(row, &mut position)? as i64;
-        let changed_ns = get64(row, &mut position)? as i64;
-        let file_id = get64(row, &mut position)?;
-        let parent_id = get64(row, &mut position)?;
-        let flags = get32(row, &mut position)?;
-        let bits = get32(row, &mut position)?;
-        if bits & !7 != 0 {
+    let mut position = HEADER;
+    let chunk_count = usize::try_from(get64(data, &mut position)?).ok()?;
+    if chunk_count != count.div_ceil(crate::entry_table::CHUNK_LENGTH) {
+        return None;
+    }
+    let mut chunks = Vec::with_capacity(chunk_count);
+    for _ in 0..chunk_count {
+        let length = usize::try_from(get64(data, &mut position)?).ok()?;
+        let end = position.checked_add(length)?;
+        if end > index_start || !position.is_multiple_of(8) {
             return None;
         }
-        entries.push(Arc::new(IndexedFile {
-            id,
-            path,
-            name,
-            extension,
-            volume_id,
-            properties: if properties_text == "{}" {
-                json!({})
-            } else {
-                serde_json::from_str(properties_text).ok()?
-            },
-            parent,
-            folded_name,
-            folded_extension,
-            folded_path,
-            search_name,
-            search_path,
-            size,
-            modified,
-            created,
-            changed,
-            modified_ns,
-            changed_ns,
-            file_id,
-            parent_id,
-            flags,
-            is_dir: bits & 1 != 0,
-            is_symlink: bits & 2 != 0,
-            content_indexed: bits & 4 != 0,
-        }));
+        chunks.push(decode_chunk(&mapping, position, end)?);
+        position = end;
     }
-    phase("records_restored", 0);
-    let labels = pool.labels.clone();
-    drop(pool);
-    phase("string_table_released", 0);
-    // The usual sorted prefix needs no permanent ID map. Sparse appended IDs
-    // are checked against both that prefix and each other by FileSlots.
-    let entries: crate::index_store::EntryTable = entries.into();
+    if position != index_start {
+        return None;
+    }
+    let entries = crate::entry_table::EntryTable::from_chunks(chunks)?;
+    if entries.len() != count {
+        return None;
+    }
+    phase("columns_mapped", 0);
+    restore_indexes(
+        entries,
+        data.get(index_start..payload_end)?,
+        generation,
+        content_revision,
+        phase,
+    )
+}
+
+#[cfg(test)]
+fn restore_indexes(
+    entries: crate::entry_table::EntryTable,
+    index_data: &[u8],
+    generation: u64,
+    content_revision: u64,
+    mut phase: impl FnMut(&str, usize),
+) -> Option<SearchSnapshot> {
+    let count = entries.len();
+    let index_bytes = index_data.len();
+    let labels = Arc::new(LabelPool::default());
     let file_slots = FileSlots::from_entries(&entries).ok()?;
-    let mut indexes = Cursor::new(data.get(index_start..payload_end)?);
+    let mut indexes = Cursor::new(index_data);
     let live = read_bitmap(&mut indexes, count)?;
     let mut size_bytes = [0; 8];
     indexes.read_exact(&mut size_bytes).ok()?;
@@ -639,7 +682,7 @@ mod tests {
         let path = directory.path().join("unsupported.snapshot.bin");
         write(&path, &fixture(), 19).unwrap();
         let original = std::fs::read(&path).unwrap();
-        for magic in [b"AFSIDX03", b"AFSIDX04", b"APFIDX02"] {
+        for magic in [b"AFSIDX03", b"AFSIDX04", b"APFIDX01"] {
             let mut bytes = original.clone();
             set_version(&mut bytes, magic);
             std::fs::write(&path, &bytes).unwrap();
@@ -696,13 +739,13 @@ mod tests {
             original
                 .entries
                 .iter()
-                .map(|file| file.id)
+                .map(|file| file.id())
                 .collect::<Vec<_>>(),
             [1, 5, 9, 2, 3]
         );
         write(&path, &original, 19).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[..8], MAGIC);
+        assert_eq!(&bytes[..8], b"APFMAP03");
         let (restored, _) = read(&path, 8, 19).unwrap();
         assert_eq!(restored.live, original.live);
         assert_eq!(restored.name_order, original.name_order);
@@ -714,7 +757,7 @@ mod tests {
             serde_json::to_value(&original.entries).unwrap()
         );
         for (slot, file) in original.entries.iter().enumerate() {
-            assert_eq!(restored.slot_for_id(file.id), Some(slot));
+            assert_eq!(restored.slot_for_id(file.id()), Some(slot));
         }
         assert_eq!(restored.slot_for_id(4), None);
         for text in [
@@ -739,19 +782,28 @@ mod tests {
 
     #[test]
     fn valid_checksum_cannot_hide_duplicate_ids() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("duplicate.snapshot.bin");
-        write(&path, &stable_slot_fixture(), 19).unwrap();
-        let original = std::fs::read(&path).unwrap();
+        let mut archive = Cursor::new(Vec::new());
+        encode_snapshot(&mut archive, &stable_slot_fixture(), 19).unwrap();
+        let original = archive.into_inner();
+        assert!(decode(&original, 8, 19).is_some());
         // Duplicate within the initial sorted prefix, against that prefix from
         // a sparse tail entry, and within the sparse tail itself.
         for (slot, duplicate_id) in [(1, 1_i64), (3, 5_i64), (4, 2_i64)] {
             let mut bytes = original.clone();
-            let offset = HEADER + slot * RECORD;
-            bytes[offset..offset + 8].copy_from_slice(&duplicate_id.to_le_bytes());
+            let column = HEADER + 8 + 8 + 32;
+            let base = u64::from_le_bytes(bytes[column..column + 8].try_into().unwrap());
+            let width =
+                u64::from_le_bytes(bytes[column + 8..column + 16].try_into().unwrap()) as usize;
+            assert!(width > 0);
+            let stored = if width == 8 {
+                duplicate_id as u64
+            } else {
+                ((duplicate_id as u64) ^ (1 << 63)) - base
+            };
+            let offset = column + 16 + slot * width;
+            bytes[offset..offset + width].copy_from_slice(&stored.to_le_bytes()[..width]);
             set_version(&mut bytes, MAGIC);
-            std::fs::write(&path, &bytes).unwrap();
-            assert!(read(&path, 8, 19).is_none());
+            assert!(decode(&bytes, 8, 19).is_none());
         }
     }
     #[test]
@@ -775,19 +827,19 @@ mod tests {
             serde_json::to_value(&original.entries).unwrap()
         );
         for (before, after) in original.entries.iter().zip(restored.entries.iter()) {
-            assert_eq!(before.folded_name, after.folded_name);
-            assert_eq!(before.search_name, after.search_name);
-            assert_eq!(before.folded_path, after.folded_path);
-            assert_eq!(before.search_path, after.search_path);
-            assert_eq!(before.parent, after.parent);
+            assert_eq!(before.folded_name(), after.folded_name());
+            assert_eq!(before.search_name(), after.search_name());
+            assert_eq!(before.folded_path(), after.folded_path());
+            assert_eq!(before.search_path(), after.search_path());
+            assert_eq!(before.parent(), after.parent());
         }
-        assert!(SharedText::ptr_eq(
-            &restored.entries[0].parent,
-            &restored.entries[2].parent
+        assert!(crate::entry_table::same_text_storage(
+            restored.entries.at(0).parent(),
+            restored.entries.at(2).parent()
         ));
-        assert!(SharedText::ptr_eq(
-            &restored.entries[0].folded_name,
-            &restored.entries[0].search_name
+        assert!(crate::entry_table::same_text_storage(
+            restored.entries.at(0).folded_name(),
+            restored.entries.at(0).search_name()
         ));
         for text in ["a", "fi", "ext:pdf", "!ext:pdf", "folder:", "cafe", "报告"] {
             let query = crate::query::parse(text, &HashMap::new()).unwrap();
@@ -802,21 +854,26 @@ mod tests {
         // A second publication does not truncate an existing mapping.
         let file = File::open(&path).unwrap();
         let mapped = unsafe { memmap2::Mmap::map(&file).unwrap() };
+        let original_manifest = mapped.to_vec();
         write(
             &path,
             &SearchSnapshot::new(vec![entry(1, "replacement")], 9),
             20,
         )
         .unwrap();
-        assert!(decode(&mapped, 8, 19).is_some());
+        assert_eq!(&mapped[..], original_manifest);
+        assert_eq!(
+            serde_json::to_value(&restored.entries).unwrap(),
+            serde_json::to_value(&original.entries).unwrap()
+        );
         assert!(read(&path, 9, 20).is_some());
     }
     #[test]
     fn truncated_corrupt_and_obsolete_snapshots_are_rejected() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("index.snapshot.bin");
-        write(&path, &fixture(), 19).unwrap();
-        let bytes = std::fs::read(&path).unwrap();
+        let mut archive = Cursor::new(Vec::new());
+        encode_snapshot(&mut archive, &fixture(), 19).unwrap();
+        let bytes = archive.into_inner();
+        assert!(decode(&bytes, 8, 19).is_some());
         for length in 0..bytes.len() {
             assert!(
                 decode(&bytes[..length], 8, 19).is_none(),
@@ -834,14 +891,14 @@ mod tests {
     }
     #[test]
     fn valid_checksum_does_not_allow_invalid_slot_or_duplicate_order() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("index.snapshot.bin");
-        write(&path, &fixture(), 19).unwrap();
-        let original = std::fs::read(&path).unwrap();
+        let mut archive = Cursor::new(Vec::new());
+        encode_snapshot(&mut archive, &fixture(), 19).unwrap();
+        let original = archive.into_inner();
+        assert!(decode(&original, 8, 19).is_some());
         let mut position = 32;
         let count = get64(&original, &mut position).unwrap() as usize;
         let pool_size = get64(&original, &mut position).unwrap() as usize;
-        let index_start = HEADER + count * RECORD + pool_size;
+        let index_start = HEADER + pool_size;
         let mut cursor = Cursor::new(&original[index_start..]);
         let _ = read_bitmap(&mut cursor, count).unwrap();
         let order_start = index_start + cursor.position() as usize + 8;
@@ -861,3 +918,7 @@ mod tests {
 #[cfg(all(test, target_os = "macos"))]
 #[path = "cache_memory_tests.rs"]
 mod memory_tests;
+
+#[cfg(test)]
+#[path = "cache_fixture_conversion_tests.rs"]
+mod fixture_conversion;

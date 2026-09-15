@@ -1,5 +1,19 @@
 use super::*;
+use crate::entry_table::FileEntry;
 use std::time::Instant;
+
+fn load_profile_snapshot() -> (SearchSnapshot, u64) {
+    let path = std::env::var_os("APFSEARCH_PROFILE_CACHE").expect("Set APFSEARCH_PROFILE_CACHE");
+    let mut header = [0u8; 24];
+    File::open(&path).unwrap().read_exact(&mut header).unwrap();
+    let mut position = 8;
+    let generation = get64(&header, &mut position).unwrap();
+    let revision = get64(&header, &mut position).unwrap();
+    let snapshot = read(Path::new(&path), generation, revision)
+        .expect("A valid production cache is required")
+        .0;
+    (snapshot, revision)
+}
 
 fn dense_page_reference(
     order: &[u32],
@@ -51,15 +65,7 @@ fn dense_page_reference(
 #[test]
 #[ignore = "Same-process first-page selection profile on an existing disposable cache"]
 fn prepared_cache_page_selection_profile() {
-    let bytes = std::fs::read(
-        std::env::var_os("APFSEARCH_PROFILE_CACHE").expect("Set APFSEARCH_PROFILE_CACHE"),
-    )
-    .unwrap();
-    let mut position = 8;
-    let generation = get64(&bytes, &mut position).unwrap();
-    let revision = get64(&bytes, &mut position).unwrap();
-    let snapshot = decode(&bytes, generation, revision).unwrap();
-    drop(bytes);
+    let (snapshot, _) = load_profile_snapshot();
     let mut ranks = vec![0u32; snapshot.entries.len()];
     for (rank, &slot) in snapshot.name_order.iter().enumerate() {
         ranks[slot as usize] = rank as u32;
@@ -122,8 +128,8 @@ fn prepared_cache_page_selection_profile() {
                             |a, b| {
                                 if method == 1 {
                                     order.compare(
-                                        &snapshot.entries[a as usize],
-                                        &snapshot.entries[b as usize],
+                                        &snapshot.entries.at(a as usize),
+                                        &snapshot.entries.at(b as usize),
                                     )
                                 } else {
                                     ranks[a as usize].cmp(&ranks[b as usize])
@@ -153,49 +159,34 @@ fn prepared_cache_page_selection_profile() {
 #[test]
 #[ignore = "Explicitly export one derived layout fixture from an existing disposable cache"]
 fn prepared_cache_export_layout_fixture() {
-    let input = std::env::var_os("APFSEARCH_PROFILE_CACHE").expect("Set APFSEARCH_PROFILE_CACHE");
-    let output =
-        std::env::var_os("APFSEARCH_PROFILE_OUTPUT").expect("Set APFSEARCH_PROFILE_OUTPUT");
-    let bytes = std::fs::read(input).unwrap();
-    let mut position = 8;
-    let generation = get64(&bytes, &mut position).unwrap();
-    let revision = get64(&bytes, &mut position).unwrap();
-    let snapshot = decode(&bytes, generation, revision).unwrap();
-    let mut file = BufWriter::new(
+    let output = PathBuf::from(
+        std::env::var_os("APFSEARCH_PROFILE_OUTPUT").expect("Set APFSEARCH_PROFILE_OUTPUT"),
+    );
+    let (snapshot, revision) = load_profile_snapshot();
+    // Reserve a new output name atomically before publishing its sections.
+    drop(
         OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
-            .open(output)
+            .open(&output)
             .unwrap(),
     );
-    encode_snapshot(&mut file, &snapshot, revision).unwrap();
-    file.flush().unwrap();
-    file.get_ref().sync_all().unwrap();
-    assert_eq!(file.get_ref().metadata().unwrap().len(), bytes.len() as u64);
+    write(&output, &snapshot, revision).unwrap();
+    let restored = read(&output, snapshot.generation, revision).unwrap().0;
+    assert_eq!(restored.len(), snapshot.len());
 }
 
 #[test]
 #[ignore = "Same-process cache layout comparison; reads a disposable cache and encodes only in memory"]
 fn prepared_cache_name_layout_profile() {
-    let path = std::env::var_os("APFSEARCH_PROFILE_CACHE").expect("Set APFSEARCH_PROFILE_CACHE");
-    let file = File::open(path).unwrap();
-    // SAFETY: the fixture remains immutable; decode validates all referenced ranges.
-    let mapped = unsafe { memmap2::Mmap::map(&file).unwrap() };
-    let mut offset = 8;
-    let generation = get64(&mapped, &mut offset).unwrap();
-    let revision = get64(&mapped, &mut offset).unwrap();
-    let original = decode(&mapped, generation, revision).unwrap();
+    let (original, revision) = load_profile_snapshot();
+    let generation = original.generation;
     let before = process_usage();
     let mut encoded = Cursor::new(Vec::new());
     let started = Instant::now();
     encode_snapshot(&mut encoded, &original, revision).unwrap();
     let encode_ms = started.elapsed().as_secs_f64() * 1000.;
-    assert_eq!(
-        encoded.get_ref().len(),
-        mapped.len(),
-        "Layout must not inflate the cache"
-    );
     let packed = decode(encoded.get_ref(), generation, revision).unwrap();
     assert_eq!(original.len(), packed.len());
     let mut results = Vec::new();
@@ -236,7 +227,7 @@ fn prepared_cache_name_layout_profile() {
     assert_eq!(before["logical_writes"], after["logical_writes"]);
     println!(
         "{}",
-        json!({"scope":"Same-process candidate planning and name matching; both snapshots retained; excludes result pages, XPC and UI", "cache_bytes":mapped.len(),"encode_ms":encode_ms,"queries":results})
+        json!({"scope":"Production file mappings versus an anonymous test archive; same-process name matching, both snapshots retained; excludes result pages, XPC and UI", "archive_bytes":encoded.get_ref().len(),"encode_ms":encode_ms,"queries":results})
     );
 }
 
@@ -268,27 +259,24 @@ fn prepared_cache_memory_profile() {
     let path = std::env::var_os("APFSEARCH_PROFILE_CACHE")
         .expect("Set APFSEARCH_PROFILE_CACHE to a disposable test cache");
     let before = process_usage();
-    let file = File::open(path).unwrap();
-    // SAFETY: the supplied test cache is immutable for this measurement;
-    // the production decoder checks all byte ranges before accessing them.
-    let mapped = unsafe { memmap2::Mmap::map(&file).unwrap() };
-    let bytes = mapped.len();
+    let mut file = File::open(&path).unwrap();
+    let mut header = [0u8; 24];
+    file.read_exact(&mut header).unwrap();
+    let bytes = file.metadata().unwrap().len();
     let mut offset = 8;
-    let generation = get64(&mapped, &mut offset).unwrap();
-    let revision = get64(&mapped, &mut offset).unwrap();
+    let generation = get64(&header, &mut offset).unwrap();
+    let revision = get64(&header, &mut offset).unwrap();
     let started = Instant::now();
-    let mut phases = Vec::new();
-    let snapshot = decode_with_metrics(&mapped, generation, revision, |name, temporary_table_bytes| {
-        phases.push(json!({"phase":name,"elapsed_ms":started.elapsed().as_secs_f64()*1000.,"temporary_table_payload_capacity_bytes":temporary_table_bytes,"process":process_usage()}));
-    }).expect("Cache must pass the complete production decoder");
+    let snapshot = read(Path::new(&path), generation, revision)
+        .expect("Cache must pass the complete production decoder")
+        .0;
     let elapsed = started.elapsed().as_secs_f64() * 1000.;
-    drop(mapped);
     let after = process_usage();
     assert_eq!(before["logical_writes"], after["logical_writes"]);
     assert_eq!(before["disk_bytes_written"], after["disk_bytes_written"]);
     println!(
         "{}",
-        json!({"scope":"Read-only prepared-cache restoration in the core process; includes hashing, string reconstruction and derived columns; excludes SQLite and XPC; OS cache warmth uncontrolled","entries":snapshot.len(),"cache_bytes":bytes,"elapsed_ms":elapsed,"before":before,"phases":phases,"after_unmap":after})
+        json!({"scope":"Read-only production cache restoration; includes checksum, mapping validation and derived indexes; excludes SQLite and XPC; OS cache warmth uncontrolled","entries":snapshot.len(),"manifest_bytes":bytes,"elapsed_ms":elapsed,"before":before,"after_restore":after,"storage":snapshot.entries.storage_metrics()})
     );
     std::hint::black_box(snapshot);
 }
@@ -296,78 +284,24 @@ fn prepared_cache_memory_profile() {
 #[test]
 #[ignore = "Read-only allocation inventory of an explicitly supplied disposable cache"]
 fn prepared_cache_string_layout_profile() {
-    let path = std::env::var_os("APFSEARCH_PROFILE_CACHE").expect("Set APFSEARCH_PROFILE_CACHE");
-    let file = File::open(path).unwrap();
-    // SAFETY: this profiling input is an immutable disposable cache; decode
-    // validates the mapping and retains no borrowed references after returning.
-    let mapped = unsafe { memmap2::Mmap::map(&file).unwrap() };
-    let mut offset = 8;
-    let generation = get64(&mapped, &mut offset).unwrap();
-    let revision = get64(&mapped, &mut offset).unwrap();
-    let snapshot = decode(&mapped, generation, revision).unwrap();
-    drop(mapped);
-    let mut owned = [0usize; 2];
-    let mut references = [0usize; 5];
-    let mut distinct = std::collections::HashSet::new();
-    let mut shared_bytes = 0usize;
-    let mut labels = std::collections::HashSet::new();
-    let mut label_bytes = 0usize;
-    for entry in snapshot.entries.iter() {
-        for label in [&entry.extension, &entry.folded_extension, &entry.volume_id] {
-            if labels.insert(Arc::as_ptr(label) as *const u8 as usize) {
-                label_bytes += label.len();
-            }
-        }
-        for (index, text) in [&entry.path, &entry.name].into_iter().enumerate() {
-            owned[index] += text.capacity();
-        }
-        for (index, text) in [
-            &entry.parent,
-            &entry.folded_name,
-            &entry.folded_path,
-            &entry.search_name,
-            &entry.search_path,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            references[index] += text.len();
-            if distinct.insert(text.allocation_identity()) {
-                shared_bytes += text.allocation_identity().1;
-            }
-        }
-    }
-    println!(
-        "{}",
-        json!({"scope":"Allocation inventory, not a latency or RSS benchmark; excludes allocator overhead, JSON and secondary indexes",
-        "entries":snapshot.len(), "record_size_bytes":std::mem::size_of::<IndexedFile>(),
-        "owned_string_capacity_bytes":{"path":owned[0],"name":owned[1]},
-        "shared_string_referenced_bytes":{"parent":references[0],"folded_name":references[1],"folded_path":references[2],"search_name":references[3],"search_path":references[4]},
-        "distinct_label_allocations":labels.len(),"distinct_label_bytes":label_bytes,"distinct_shared_allocations":distinct.len(),"distinct_shared_string_bytes":shared_bytes})
-    );
+    let (snapshot, _) = load_profile_snapshot();
+    println!("{}", snapshot.entries.storage_metrics());
 }
 
 #[test]
 #[ignore = "Read-only cache restoration followed by in-memory incremental updates"]
 fn prepared_cache_incremental_update_profile() {
-    let path = std::env::var_os("APFSEARCH_PROFILE_CACHE").expect("Set APFSEARCH_PROFILE_CACHE");
-    let file = File::open(path).unwrap();
-    // SAFETY: immutable disposable input; the decoder validates every range.
-    let mapped = unsafe { memmap2::Mmap::map(&file).unwrap() };
-    let mut offset = 8;
-    let generation = get64(&mapped, &mut offset).unwrap();
-    let revision = get64(&mapped, &mut offset).unwrap();
-    let original = decode(&mapped, generation, revision).unwrap();
-    drop(mapped);
+    let (original, _) = load_profile_snapshot();
     assert!(original.len() > 4096);
-    let mut current = SearchSnapshot::from_changes(Vec::new(), generation + 1, &original).unwrap();
+    let mut current =
+        SearchSnapshot::from_changes(Vec::new(), original.generation + 1, &original).unwrap();
     let before = process_usage();
     let mut samples = Vec::new();
     for iteration in 0..64 {
         let slot = (iteration * 4096) % original.entries.len();
-        let previous = &current.entries[slot];
-        let old_name = previous.search_name.clone();
-        let mut replacement = previous.as_ref().clone();
+        let previous = &current.entries.at(slot);
+        let old_name = previous.search_name();
+        let mut replacement = previous.to_owned_file();
         replacement.size = replacement.size.checked_add(1).unwrap();
         let rename = iteration % 8 == 0;
         if rename {
@@ -384,14 +318,14 @@ fn prepared_cache_incremental_update_profile() {
         .unwrap();
         let update_ms = started.elapsed().as_secs_f64() * 1000.;
         assert_eq!(updated.len(), current.len());
-        assert!(Arc::ptr_eq(
-            &current.entries[(slot + 1) % current.entries.len()],
-            &updated.entries[(slot + 1) % current.entries.len()]
+        assert!(crate::entry_table::same_record(
+            &current.entries.at((slot + 1) % current.entries.len()),
+            &updated.entries.at((slot + 1) % current.entries.len())
         ));
         if !rename {
-            assert!(SharedText::ptr_eq(
-                &old_name,
-                &updated.entries[slot].search_name
+            assert!(crate::entry_table::same_text_storage(
+                old_name,
+                updated.entries.at(slot).search_name()
             ));
         } else {
             let query = crate::query::parse(&expected_name, &HashMap::new()).unwrap();
@@ -423,15 +357,7 @@ fn prepared_cache_incremental_update_profile() {
 #[test]
 #[ignore = "Read-only posting-directory profiling of a disposable cache"]
 fn prepared_cache_posting_update_profile() {
-    let path = std::env::var_os("APFSEARCH_PROFILE_CACHE").expect("Set APFSEARCH_PROFILE_CACHE");
-    let file = File::open(path).unwrap();
-    // SAFETY: this isolated immutable cache is validated by the production decoder.
-    let mapped = unsafe { memmap2::Mmap::map(&file).unwrap() };
-    let mut offset = 8;
-    let generation = get64(&mapped, &mut offset).unwrap();
-    let revision = get64(&mapped, &mut offset).unwrap();
-    let original = decode(&mapped, generation, revision).unwrap();
-    drop(mapped);
+    let (original, _) = load_profile_snapshot();
     let mut keys: Vec<_> = original
         .trigrams
         .iter()
@@ -464,15 +390,7 @@ fn prepared_cache_posting_update_profile() {
 #[test]
 #[ignore = "Read-only sparse/dense sort-update crossover benchmark"]
 fn prepared_cache_order_update_profile() {
-    let path = std::env::var_os("APFSEARCH_PROFILE_CACHE").expect("Set APFSEARCH_PROFILE_CACHE");
-    let file = File::open(path).unwrap();
-    // SAFETY: isolated immutable cache, fully checked by the decoder.
-    let mapped = unsafe { memmap2::Mmap::map(&file).unwrap() };
-    let mut offset = 8;
-    let generation = get64(&mapped, &mut offset).unwrap();
-    let revision = get64(&mapped, &mut offset).unwrap();
-    let original = decode(&mapped, generation, revision).unwrap();
-    drop(mapped);
+    let (original, _) = load_profile_snapshot();
     let order = crate::result_order::ResultOrder::name();
     let mut reports = Vec::new();
     for count in [1usize, 16, 256, 1024, 2048, 4096, 16_384] {
@@ -484,11 +402,11 @@ fn prepared_cache_order_update_profile() {
             .collect();
         let mut entries = original.entries.clone();
         for slot in &changed {
-            let mut entry = entries[slot as usize].as_ref().clone();
+            let mut entry = entries.at(slot as usize).to_owned_file();
             entry.name = format!("replacement-{slot}.txt");
             entry.path = format!("{}/{}", entry.parent, entry.name);
             entry.prepare();
-            entries[slot as usize] = Arc::new(entry);
+            entries.set(slot as usize, entry);
         }
         let mut samples = Vec::new();
         for run in 0..6 {

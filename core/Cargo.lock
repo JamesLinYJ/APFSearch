@@ -13,12 +13,13 @@ dependencies = [
 
 [[package]]
 name = "apfsearch-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "arc-swap",
  "blake3",
  "chrono",
  "chrono-tz",
+ "hashlink",
  "icu_casemap",
  "libc",
  "memchr",

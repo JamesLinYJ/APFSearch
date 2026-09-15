@@ -31,10 +31,10 @@ impl FileIdentity {
     pub(crate) fn changed_ns(&self) -> i64 {
         self.changed * 1_000_000_000 + self.changed_nsec
     }
-    pub(crate) fn matches_entry(&self, entry: &crate::index_store::IndexedFile) -> bool {
-        self.file_id == entry.file_id
-            && self.size == entry.size
-            && self.modified_ns() == entry.modified_ns
-            && self.changed_ns() == entry.changed_ns
+    pub(crate) fn matches_entry(&self, entry: &impl crate::entry_table::FileEntry) -> bool {
+        self.file_id == entry.file_id()
+            && self.size == entry.size()
+            && self.modified_ns() == entry.modified_ns()
+            && self.changed_ns() == entry.changed_ns()
     }
 }

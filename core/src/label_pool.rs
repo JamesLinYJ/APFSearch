@@ -6,12 +6,14 @@ pub(crate) struct LabelPool {
     values: HashSet<Arc<str>>,
 }
 impl LabelPool {
-    pub(crate) fn retaining<'a>(labels: impl IntoIterator<Item = &'a Arc<str>>) -> Self {
+    #[cfg(test)]
+    fn retaining<'a>(labels: impl IntoIterator<Item = &'a Arc<str>>) -> Self {
         Self {
             values: labels.into_iter().cloned().collect(),
         }
     }
-    pub(crate) fn intern(pool: &mut Arc<Self>, text: &str) -> Arc<str> {
+    #[cfg(test)]
+    fn intern(pool: &mut Arc<Self>, text: &str) -> Arc<str> {
         if let Some(existing) = pool.values.get(text) {
             return existing.clone();
         }

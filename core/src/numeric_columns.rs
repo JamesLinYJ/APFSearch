@@ -1,6 +1,7 @@
 //! Compact numerical columns with block range bounds. A query reads one dense
 //! numeric column, rather than following millions of separately allocated files.
-use crate::{index_store::IndexedFile, query::Term};
+use crate::entry_table::FileEntry;
+use crate::{index_store::EntryTable, query::Term};
 use roaring::RoaringBitmap;
 use std::sync::{
     Arc,
@@ -11,14 +12,14 @@ const BLOCK_ENTRIES: usize = 4096;
 
 #[derive(Clone)]
 struct Block {
-    values: Vec<f64>,
+    length: usize,
     minimum: f64,
     maximum: f64,
 }
 impl Block {
     fn empty() -> Self {
         Self {
-            values: Vec::with_capacity(BLOCK_ENTRIES),
+            length: 0,
             minimum: f64::INFINITY,
             maximum: f64::NEG_INFINITY,
         }
@@ -27,16 +28,6 @@ impl Block {
         if !value.is_nan() {
             self.minimum = self.minimum.min(value);
             self.maximum = self.maximum.max(value);
-        }
-    }
-    fn recompute_bounds(&mut self) {
-        self.minimum = f64::INFINITY;
-        self.maximum = f64::NEG_INFINITY;
-        for &value in &self.values {
-            if !value.is_nan() {
-                self.minimum = self.minimum.min(value);
-                self.maximum = self.maximum.max(value);
-            }
         }
     }
 }
@@ -54,7 +45,7 @@ impl Column {
             self.blocks.push(Arc::new(Block::empty()));
         }
         let block = Arc::make_mut(self.blocks.last_mut().unwrap());
-        block.values.push(value);
+        block.length += 1;
         block.include(value);
         if !value.is_nan() {
             // Roaring's checked append searches the current maximum in dense
@@ -68,71 +59,96 @@ impl Column {
             self.push(value);
             return;
         }
-        let block_index = slot as usize / BLOCK_ENTRIES;
-        let offset = slot as usize % BLOCK_ENTRIES;
-        let old = self.blocks[block_index].values[offset];
-        if old.to_bits() == value.to_bits() {
-            return;
+        if value.is_nan() {
+            Arc::make_mut(&mut self.known).remove(slot);
+        } else {
+            Arc::make_mut(&mut self.known).insert(slot);
         }
-        Arc::make_mut(&mut self.blocks[block_index]).values[offset] = value;
-        if old.is_nan() != value.is_nan() {
-            if value.is_nan() {
-                Arc::make_mut(&mut self.known).remove(slot);
-            } else {
-                Arc::make_mut(&mut self.known).insert(slot);
-            }
-        }
-        self.dirty_blocks.insert(block_index as u32);
+        self.dirty_blocks.insert(slot / BLOCK_ENTRIES as u32);
     }
-    fn finish_update(&mut self) {
+    fn finish_update(&mut self, entries: &EntryTable, field: NumericField) {
         for index in &self.dirty_blocks {
-            Arc::make_mut(&mut self.blocks[index as usize]).recompute_bounds();
+            let block = Arc::make_mut(&mut self.blocks[index as usize]);
+            block.minimum = f64::INFINITY;
+            block.maximum = f64::NEG_INFINITY;
+            let source = &entries.chunks[index as usize];
+            for slot in 0..source.len() {
+                block.include(field.value(source, slot));
+            }
         }
         self.dirty_blocks.clear();
     }
     fn range(
         &self,
         bounds: Bounds,
+        entries: &EntryTable,
+        field: NumericField,
         live: &RoaringBitmap,
         cancelled: &AtomicBool,
     ) -> Result<RoaringBitmap, String> {
-        let mut bytes = vec![0; self.length.div_ceil(8)];
-        for (index, block) in self.blocks.iter().enumerate() {
+        let ranks = match field {
+            NumericField::Size => bounds.rank_range(|value: u64| value as f64),
+            NumericField::Modified | NumericField::Created => {
+                bounds.rank_range(|value: i64| value as f64)
+            }
+        };
+        crate::query_scratch::with_bytes(self.length.div_ceil(8), |bytes| {
+            bytes.resize(self.length.div_ceil(8), 0);
+            for (index, block) in self.blocks.iter().enumerate() {
+                if cancelled.load(Ordering::Relaxed) {
+                    return Err("Query cancelled".into());
+                }
+                if block.minimum > block.maximum
+                    || !bounds.above_lower(block.maximum)
+                    || !bounds.below_upper(block.minimum)
+                {
+                    continue;
+                }
+                let offset = index * BLOCK_ENTRIES / 8;
+                let output = &mut bytes[offset..offset + block.length.div_ceil(8)];
+                if bounds.above_lower(block.minimum) && bounds.below_upper(block.maximum) {
+                    output.fill(u8::MAX);
+                } else if let Some((lower, upper)) = ranks {
+                    let source = &entries.chunks[index];
+                    match field {
+                        NumericField::Size => source.size.fill_rank_range(output, lower, upper),
+                        NumericField::Modified => {
+                            source.modified.fill_rank_range(output, lower, upper)
+                        }
+                        NumericField::Created => {
+                            source.created.fill_rank_range(output, lower, upper)
+                        }
+                    }
+                }
+            }
             if cancelled.load(Ordering::Relaxed) {
                 return Err("Query cancelled".into());
             }
-            if block.minimum > block.maximum
-                || !bounds.above_lower(block.maximum)
-                || !bounds.below_upper(block.minimum)
-            {
-                continue;
-            }
-            let offset = index * BLOCK_ENTRIES / 8;
-            let output = &mut bytes[offset..offset + block.values.len().div_ceil(8)];
-            if bounds.above_lower(block.minimum) && bounds.below_upper(block.maximum) {
-                output.fill(u8::MAX);
+            let inside = RoaringBitmap::from_lsb0_bytes(0, bytes);
+            let mut result = if bounds.negate {
+                self.known.as_ref() - &inside
             } else {
-                for (values, byte) in block.values.chunks(8).zip(output) {
-                    let mut bits = 0;
-                    for (bit, &value) in values.iter().enumerate() {
-                        bits |=
-                            ((bounds.above_lower(value) && bounds.below_upper(value)) as u8) << bit;
-                    }
-                    *byte = bits;
-                }
-            }
+                inside & self.known.as_ref()
+            };
+            result &= live;
+            Ok(result)
+        })
+    }
+}
+#[derive(Clone, Copy)]
+enum NumericField {
+    Size,
+    Modified,
+    Created,
+}
+impl NumericField {
+    fn value(self, chunk: &crate::entry_table::EntryChunk, slot: usize) -> f64 {
+        match self {
+            Self::Size if chunk.states.values()[slot] & 1 != 0 => f64::NAN,
+            Self::Size => chunk.size.get(slot) as f64,
+            Self::Modified => chunk.modified.get(slot) as f64,
+            Self::Created => chunk.created.get(slot) as f64,
         }
-        if cancelled.load(Ordering::Relaxed) {
-            return Err("Query cancelled".into());
-        }
-        let inside = RoaringBitmap::from_lsb0_bytes(0, &bytes);
-        let mut result = if bounds.negate {
-            self.known.as_ref() - &inside
-        } else {
-            inside & self.known.as_ref()
-        };
-        result &= live;
-        Ok(result)
     }
 }
 #[derive(Clone, Copy)]
@@ -143,7 +159,101 @@ struct Bounds {
     include_high: bool,
     negate: bool,
 }
+#[cfg(test)]
+mod rank_bounds_tests {
+    use super::*;
+    use crate::integer_column::Scalar;
+    #[test]
+    fn rank_boundaries_preserve_float_ties_infinities_and_signed_limits() {
+        fn check<T: Scalar>(values: &[T], convert: impl Fn(T) -> f64 + Copy) {
+            let bounds: Vec<_> = [f64::NEG_INFINITY, -0.5, 0.0, 0.5, f64::INFINITY]
+                .into_iter()
+                .chain(values.iter().copied().map(convert))
+                .collect();
+            for &low in &bounds {
+                for &high in &bounds {
+                    if low > high {
+                        continue;
+                    }
+                    for include_low in [false, true] {
+                        for include_high in [false, true] {
+                            let interval = Bounds {
+                                low,
+                                high,
+                                include_low,
+                                include_high,
+                                negate: false,
+                            };
+                            let ranks = interval.rank_range(convert);
+                            for &value in values {
+                                assert_eq!(
+                                    ranks.is_some_and(
+                                        |(start, end)| (start..=end).contains(&value.rank())
+                                    ),
+                                    interval.above_lower(convert(value))
+                                        && interval.below_upper(convert(value))
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        check(
+            &[
+                0u64,
+                1,
+                (1 << 53) - 1,
+                1 << 53,
+                (1 << 53) + 1,
+                (1 << 53) + 2,
+                u64::MAX - 1,
+                u64::MAX,
+            ],
+            |value| value as f64,
+        );
+        check(
+            &[
+                i64::MIN,
+                i64::MIN + 1,
+                -(1 << 53) - 1,
+                -1,
+                0,
+                1,
+                (1 << 53) + 1,
+                i64::MAX - 1,
+                i64::MAX,
+            ],
+            |value| value as f64,
+        );
+    }
+}
 impl Bounds {
+    fn rank_range<T: crate::integer_column::Scalar>(
+        self,
+        convert: impl Fn(T) -> f64,
+    ) -> Option<(u64, u64)> {
+        // Float conversion is monotone, including ties above 2^53. Locate exact
+        // rank boundaries once, preserving the query language's current float
+        // semantics without converting every stored integer during the scan.
+        let first = |predicate: &dyn Fn(f64) -> bool| {
+            let (mut low, mut high) = (0u128, 1u128 << 64);
+            while low < high {
+                let middle = (low + high) / 2;
+                let value = convert(T::from_rank(middle as u64).unwrap());
+                if predicate(value) {
+                    high = middle;
+                } else {
+                    low = middle + 1;
+                }
+            }
+            low
+        };
+        let lower = first(&|value| self.above_lower(value));
+        let end = first(&|value| !self.below_upper(value));
+        (lower < end).then(|| (lower as u64, (end - 1) as u64))
+    }
+
     fn above_lower(self, value: f64) -> bool {
         if self.include_low {
             value >= self.low
@@ -173,25 +283,26 @@ impl NumericColumns {
     pub(crate) fn build(entries: &crate::index_store::EntryTable) -> Self {
         let mut columns = Self::default();
         for file in entries.iter() {
-            columns.size.push(size_value(file));
-            columns.modified.push(file.modified as f64);
-            columns.created.push(file.created as f64);
+            columns.size.push(size_value(&file));
+            columns.modified.push(file.modified() as f64);
+            columns.created.push(file.created() as f64);
         }
         columns
     }
-    pub(crate) fn set(&mut self, slot: u32, file: &IndexedFile) {
+    pub(crate) fn set(&mut self, slot: u32, file: &impl FileEntry) {
         self.size.set(slot, size_value(file));
-        self.modified.set(slot, file.modified as f64);
-        self.created.set(slot, file.created as f64);
+        self.modified.set(slot, file.modified() as f64);
+        self.created.set(slot, file.created() as f64);
     }
-    pub(crate) fn finish_update(&mut self) {
-        self.size.finish_update();
-        self.modified.finish_update();
-        self.created.finish_update();
+    pub(crate) fn finish_update(&mut self, entries: &EntryTable) {
+        self.size.finish_update(entries, NumericField::Size);
+        self.modified.finish_update(entries, NumericField::Modified);
+        self.created.finish_update(entries, NumericField::Created);
     }
     pub(crate) fn exact(
         &self,
         term: &Term,
+        entries: &EntryTable,
         live: &RoaringBitmap,
         cancelled: &AtomicBool,
     ) -> Result<Option<RoaringBitmap>, String> {
@@ -213,6 +324,11 @@ impl NumericColumns {
                     "created" => &self.created,
                     _ => return Ok(None),
                 };
+                let source = match field.as_str() {
+                    "size" => NumericField::Size,
+                    "modified" => NumericField::Modified,
+                    _ => NumericField::Created,
+                };
                 column.range(
                     Bounds {
                         low: *low,
@@ -221,6 +337,8 @@ impl NumericColumns {
                         include_high: *include_high,
                         negate: *negate,
                     },
+                    entries,
+                    source,
                     live,
                     cancelled,
                 )?
@@ -243,12 +361,12 @@ impl NumericColumns {
         Ok(Some(result))
     }
 }
-fn size_value(file: &IndexedFile) -> f64 {
+fn size_value(file: &impl FileEntry) -> f64 {
     // An uncomputed directory size is unknown, including inside a negated
     // numeric term. The outer Boolean NOT still complements the live universe.
-    if file.is_dir {
+    if file.is_dir() {
         f64::NAN
     } else {
-        file.size as f64
+        file.size() as f64
     }
 }

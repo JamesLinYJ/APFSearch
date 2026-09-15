@@ -96,11 +96,11 @@ fn substring_candidates_are_a_superset_for_unicode_and_boolean_combinations() {
         let q = parse(text);
         let candidates = snapshot.candidates(&q);
         for (i, e) in snapshot.entries.iter().enumerate() {
-            if q.matches(e, None).unwrap() {
+            if q.matches(&e, None).unwrap() {
                 assert!(
                     candidates.as_ref().is_none_or(|v| v.contains(i as u32)),
                     "candidate omitted {} for {text}",
-                    e.name
+                    e.name()
                 );
             }
         }
