@@ -6,12 +6,12 @@ use icu_casemap::CaseMapper;
 use memchr::memmem::Finder;
 use pcre2::bytes::{Regex, RegexBuilder};
 use serde_json::Value;
-use std::{
-    cell::{Cell, OnceCell},
-    collections::HashMap,
-    rc::Rc,
-};
+use std::{cell::OnceCell, collections::HashMap};
 use unicode_normalization::{UnicodeNormalization, char::is_combining_mark};
+
+#[cfg(test)]
+#[path = "query_parser_tests.rs"]
+mod parser_tests;
 
 pub fn fold(s: &str) -> String {
     if s.is_ascii() {
@@ -492,150 +492,233 @@ pub fn parse_at(
     macros: &HashMap<String, String>,
     now: chrono::DateTime<Local>,
 ) -> Result<Query, String> {
-    parse_depth(input, macros, 0, now)
-}
-
-fn parse_depth(
-    input: &str,
-    macros: &HashMap<String, String>,
-    depth: usize,
-    now: chrono::DateTime<Local>,
-) -> Result<Query, String> {
-    if depth > 16 {
-        return Err("Macro expansion exceeds 16 levels (possible cycle)".into());
-    }
     let tokens = lex(input)?;
     if tokens.is_empty() {
         return Ok(Query::All);
     }
-    let mut parser = Parser {
-        tokens,
-        pos: 0,
-        macros,
-        depth,
-        nesting: 0,
-        remaining: Rc::new(Cell::new(8192)),
-    };
     let options = MatchOptions {
         now,
         ..MatchOptions::default()
     };
-    let query = parser.and(&options)?;
-    if parser.pos != parser.tokens.len() {
-        return Err("Unexpected closing group or trailing token".into());
+    Parser {
+        macros,
+        remaining: 8192,
     }
-    Ok(query)
+    .parse(tokens, options)
 }
+
+/// Suspended groups and macros live on the heap, not on the thread stack.
+/// Nesting and expansion limits bound accepted work independently of compiler
+/// optimization, architecture, and the caller's thread-stack size.
 struct Parser<'a> {
-    tokens: Vec<Token>,
-    pos: usize,
     macros: &'a HashMap<String, String>,
-    depth: usize,
-    nesting: usize,
-    remaining: Rc<Cell<usize>>,
+    remaining: usize,
 }
-impl Parser<'_> {
-    fn or(&mut self, options: &MatchOptions) -> Result<Query, String> {
-        let mut queries = vec![self.unary(options)?];
-        while self.tokens.get(self.pos) == Some(&Token::Or) {
-            self.pos += 1;
-            queries.push(self.unary(options)?);
+
+enum ExpressionScope {
+    Root,
+    Group {
+        is_dir: Option<bool>,
+        related: Option<bool>,
+    },
+    Macro,
+}
+
+struct ExpressionFrame {
+    tokens: std::vec::IntoIter<Token>,
+    options: MatchOptions,
+    scope: ExpressionScope,
+    macro_depth: usize,
+    nesting: usize,
+    negations: usize,
+    expecting_operand: bool,
+    conjunction: Vec<Query>,
+    disjunction: Vec<Query>,
+}
+
+impl ExpressionFrame {
+    fn new(
+        tokens: std::vec::IntoIter<Token>,
+        options: MatchOptions,
+        scope: ExpressionScope,
+        macro_depth: usize,
+        nesting: usize,
+    ) -> Self {
+        Self {
+            tokens,
+            options,
+            scope,
+            macro_depth,
+            nesting,
+            negations: 0,
+            expecting_operand: true,
+            conjunction: Vec::new(),
+            disjunction: Vec::with_capacity(1),
         }
-        Ok(if queries.len() == 1 {
-            queries.remove(0)
+    }
+
+    fn accept(&mut self, mut query: Query) {
+        for _ in 0..self.negations {
+            query = Query::Not(Box::new(query));
+        }
+        self.negations = 0;
+        self.disjunction.push(query);
+        self.expecting_operand = false;
+    }
+
+    fn finish_disjunction(&mut self) -> Query {
+        let mut queries = std::mem::take(&mut self.disjunction);
+        if queries.len() == 1 {
+            queries.pop().unwrap()
         } else {
             Query::Or(queries)
-        })
-    }
-    fn and(&mut self, options: &MatchOptions) -> Result<Query, String> {
-        let mut queries = vec![self.or(options)?];
-        while self.pos < self.tokens.len() && self.tokens[self.pos] != Token::R {
-            if self.tokens[self.pos] == Token::And {
-                self.pos += 1;
-            }
-            queries.push(self.or(options)?);
         }
-        Ok(if queries.len() == 1 {
-            queries.remove(0)
+    }
+
+    fn finish(&mut self) -> Query {
+        let last = self.finish_disjunction();
+        if self.conjunction.is_empty() {
+            last
         } else {
-            Query::And(queries)
-        })
-    }
-    fn group(&mut self, options: &MatchOptions) -> Result<Query, String> {
-        let query = self.and(options)?;
-        if self.tokens.get(self.pos) != Some(&Token::R) {
-            return Err("Unclosed search group".into());
+            self.conjunction.push(last);
+            Query::And(std::mem::take(&mut self.conjunction))
         }
-        self.pos += 1;
-        Ok(query)
     }
-    fn unary(&mut self, options: &MatchOptions) -> Result<Query, String> {
-        if self.nesting >= 128 {
-            return Err("Search expression nesting exceeds 128 levels".into());
-        }
-        let remaining = self.remaining.get();
-        if remaining == 0 {
-            return Err("Expanded query exceeds 8192 expressions".into());
-        }
-        self.remaining.set(remaining - 1);
-        self.nesting += 1;
-        let result = self.unary_inner(options);
-        self.nesting -= 1;
-        result
-    }
-    fn unary_inner(&mut self, options: &MatchOptions) -> Result<Query, String> {
-        let token = self
-            .tokens
-            .get(self.pos)
-            .cloned()
-            .ok_or("Missing search expression")?;
-        self.pos += 1;
-        match token {
-            Token::Not => Ok(Query::Not(Box::new(self.unary(options)?))),
-            Token::L => self.group(options),
-            Token::Atom(s, literal_from) => {
-                if literal_from != Some(0) && self.tokens.get(self.pos) == Some(&Token::L) {
-                    if let Some((recursive, kind, scoped)) = relation_scope(&s, options) {
-                        self.pos += 1;
-                        let query = restrict_type(self.group(&scoped)?, kind);
-                        return Ok(Query::Term(Term::Related {
-                            recursive,
-                            query: Box::new(query),
-                        }));
+}
+
+impl Parser<'_> {
+    fn parse(&mut self, tokens: Vec<Token>, options: MatchOptions) -> Result<Query, String> {
+        // The usual ungrouped query does not allocate a frame stack.
+        let mut frame =
+            ExpressionFrame::new(tokens.into_iter(), options, ExpressionScope::Root, 0, 0);
+        let mut suspended = Vec::<ExpressionFrame>::new();
+        loop {
+            if !frame.expecting_operand {
+                match frame.tokens.as_slice().first() {
+                    Some(Token::Or) => {
+                        frame.tokens.next();
+                        frame.expecting_operand = true;
+                        continue;
                     }
-                    if let Some((scoped, is_dir)) = scoped_options(&s, options) {
-                        self.pos += 1;
-                        return Ok(restrict_type(self.group(&scoped)?, is_dir));
+                    None | Some(Token::R) => {
+                        match &frame.scope {
+                            ExpressionScope::Group { .. } => {
+                                if frame.tokens.next() != Some(Token::R) {
+                                    return Err("Unclosed search group".into());
+                                }
+                            }
+                            ExpressionScope::Root if frame.tokens.len() != 0 => {
+                                return Err("Unexpected closing group or trailing token".into());
+                            }
+                            ExpressionScope::Macro if frame.tokens.len() != 0 => {
+                                return Err("Unexpected closing group in macro".into());
+                            }
+                            _ => {}
+                        }
+                        let mut query = frame.finish();
+                        let Some(mut parent) = suspended.pop() else {
+                            return Ok(query);
+                        };
+                        if let ExpressionScope::Group { is_dir, related } = frame.scope {
+                            query = restrict_type(query, is_dir);
+                            if let Some(recursive) = related {
+                                query = Query::Term(Term::Related {
+                                    recursive,
+                                    query: Box::new(query),
+                                });
+                            }
+                            // A group consumes its parent's token stream; a macro
+                            // owns a separate stream and leaves the parent intact.
+                            parent.tokens = frame.tokens;
+                        }
+                        parent.accept(query);
+                        frame = parent;
+                        continue;
+                    }
+                    _ => {
+                        if frame.tokens.as_slice().first() == Some(&Token::And) {
+                            frame.tokens.next();
+                        }
+                        let query = frame.finish_disjunction();
+                        frame.conjunction.push(query);
+                        frame.expecting_operand = true;
                     }
                 }
-                if let Some(value) = (literal_from != Some(0))
-                    .then(|| s.strip_suffix(':').and_then(|key| self.macros.get(key)))
-                    .flatten()
-                {
-                    // Parse macro tokens with the inherited group scope, without textual substitution.
-                    if self.depth >= 16 {
-                        return Err("Macro expansion exceeds 16 levels (possible cycle)".into());
-                    }
-                    let mut parser = Parser {
-                        tokens: lex(value)?,
-                        pos: 0,
-                        macros: self.macros,
-                        depth: self.depth + 1,
-                        nesting: self.nesting,
-                        remaining: self.remaining.clone(),
-                    };
-                    if parser.tokens.is_empty() {
-                        return Ok(Query::All);
-                    }
-                    let query = parser.and(options)?;
-                    if parser.pos != parser.tokens.len() {
-                        return Err("Unexpected closing group in macro".into());
-                    }
-                    return Ok(query);
-                }
-                atom_with_options(&s, options, literal_from)
             }
-            _ => Err("Expected a search expression".into()),
+
+            let nesting = frame.nesting + frame.negations;
+            if nesting >= 128 {
+                return Err("Search expression nesting exceeds 128 levels".into());
+            }
+            if self.remaining == 0 {
+                return Err("Expanded query exceeds 8192 expressions".into());
+            }
+            self.remaining -= 1;
+            let token = frame.tokens.next().ok_or("Missing search expression")?;
+            let child = match token {
+                Token::Not => {
+                    frame.negations += 1;
+                    continue;
+                }
+                Token::L => ExpressionFrame::new(
+                    std::mem::take(&mut frame.tokens),
+                    frame.options.clone(),
+                    ExpressionScope::Group {
+                        is_dir: None,
+                        related: None,
+                    },
+                    frame.macro_depth,
+                    nesting + 1,
+                ),
+                Token::Atom(text, literal_from) => {
+                    let scope = if literal_from != Some(0)
+                        && frame.tokens.as_slice().first() == Some(&Token::L)
+                    {
+                        relation_scope(&text, &frame.options)
+                            .map(|(recursive, kind, options)| (options, kind, Some(recursive)))
+                            .or_else(|| {
+                                scoped_options(&text, &frame.options)
+                                    .map(|(options, kind)| (options, kind, None))
+                            })
+                    } else {
+                        None
+                    };
+                    if let Some((options, is_dir, related)) = scope {
+                        frame.tokens.next();
+                        ExpressionFrame::new(
+                            std::mem::take(&mut frame.tokens),
+                            options,
+                            ExpressionScope::Group { is_dir, related },
+                            frame.macro_depth,
+                            nesting + 1,
+                        )
+                    } else if let Some(value) = (literal_from != Some(0))
+                        .then(|| text.strip_suffix(':').and_then(|key| self.macros.get(key)))
+                        .flatten()
+                    {
+                        if frame.macro_depth >= 16 {
+                            return Err("Macro expansion exceeds 16 levels (possible cycle)".into());
+                        }
+                        let tokens = lex(value)?;
+                        if tokens.is_empty() {
+                            frame.accept(Query::All);
+                            continue;
+                        }
+                        ExpressionFrame::new(
+                            tokens.into_iter(),
+                            frame.options.clone(),
+                            ExpressionScope::Macro,
+                            frame.macro_depth + 1,
+                            nesting + 1,
+                        )
+                    } else {
+                        frame.accept(atom_with_options(&text, &frame.options, literal_from)?);
+                        continue;
+                    }
+                }
+                _ => return Err("Expected a search expression".into()),
+            };
+            suspended.push(std::mem::replace(&mut frame, child));
         }
     }
 }

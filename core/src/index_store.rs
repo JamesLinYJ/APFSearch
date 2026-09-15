@@ -2205,10 +2205,18 @@ impl IndexStore {
             .map_err(|error| error.to_string())
     }
     pub fn cache_write(&self, snapshot: &SearchSnapshot, revision: u64) -> Result<(), String> {
+        self.cache_write_with(snapshot, revision, crate::snapshot_cache::write)
+    }
+    fn cache_write_with(
+        &self,
+        snapshot: &SearchSnapshot,
+        revision: u64,
+        publish: impl FnOnce(&Path, &SearchSnapshot, u64) -> Result<(), String>,
+    ) -> Result<(), String> {
         if self.get("revision", json!(0)).as_u64().unwrap_or(0) != revision {
             return Ok(());
         }
-        crate::snapshot_cache::write(&self.cache_path, snapshot, revision)?;
+        publish(&self.cache_path, snapshot, revision)?;
         // Publishing the file precedes one atomic journal checkpoint. A crash
         // between the two leaves mismatched cache metadata, which is rejected.
         let transaction = self
@@ -2283,3 +2291,7 @@ mod namespace_prune_tests;
 #[cfg(test)]
 #[path = "bounded_cache_tests.rs"]
 mod bounded_cache_tests;
+
+#[cfg(test)]
+#[path = "cache_publication_tests.rs"]
+mod cache_publication_tests;

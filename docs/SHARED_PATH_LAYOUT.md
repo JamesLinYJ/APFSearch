@@ -210,3 +210,54 @@ sort/posting arrays are still owned in memory, and changed secondary shards are
 serialized to identify reuse. Relevant-record-only reconciliation retries and
 full event-scope refinement also remain open. This release is a measured
 checkpoint, not completion of the broader Everything feature or resource plan.
+
+## Parser safety follow-up
+
+Release validation exposed an existing unoptimized Intel stack overflow when
+rejecting deeply nested expressions. The preceding parser reproduced it; the
+shared-path change did not modify that parser. A recursion-depth limit alone
+does not bound stack bytes across architectures and optimization levels.
+
+Parsing now uses one loop and owned suspended expression frames. Groups and
+macros transfer token iterators instead of cloning token strings. Simple queries
+need no suspended-frame allocation. The existing 128-level nesting, 16-level
+macro and 8,192-expression work limits remain intact, including error behavior
+and Everything's OR-before-AND precedence. Matching and index layout are unchanged.
+
+The frozen recursive parser is retained only as a test oracle. More than 4,000
+generated valid/malformed expressions compare full syntax trees and errors.
+Both ARM64 and Intel debug suites pass **316 tests** without a stack override;
+the new regression deliberately uses a **256 KiB** thread stack and checks deep
+groups, negations, macro limits and sibling scopes. Strict Clippy also passes.
+
+CI separately exposed a timing-dependent cache-publication test: it polled for
+a short-lived temporary file to guess when to commit a concurrent update. The
+test now uses synchronous channel handshakes before and after publication, with
+the real cache writer and SQLite checkpoint path. It verifies that the newer
+delta remains dirty and replays correctly, with a tiny fixture and no timing
+assumption. Production publication behavior is unchanged.
+
+The five-round layout measurements above precede this parser follow-up. Use the
+opt-in `query::parser_tests::parser_latency_profile` to compare parsing alone;
+it alternates 40 batches of 200 parses per implementation and reports raw batch
+averages, not individual-query P95. Final signed-window verification and package
+checks are recorded with the [0.1.4 release](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.4).
+
+In the release-mode parser-only run, median batch-average time changed as follows
+(nanoseconds per parse). These do not imply the same percentage change in total
+file-search latency; query matching and native transport have their own costs.
+
+| Parser case | Recursive reference | Explicit frames |
+| --- | ---: | ---: |
+| Empty input | 6.0 | 8.1 |
+| Filename | 270.3 | 217.6 |
+| Chinese filename | 298.0 | 259.1 |
+| Ordinary path | 435.8 | 382.7 |
+| Size condition | 440.2 | 395.4 |
+| Date condition | 667.0 | 641.9 |
+| Extension | 352.4 | 322.6 |
+| Boolean combination | 713.1 | 662.5 |
+| Scoped macro | 1,415.6 | 1,328.4 |
+| Full-path regex | 4,577.2 | 4,544.2 |
+| Nested groups | 916.8 | 886.9 |
+| Repeated negation | 411.5 | 361.0 |

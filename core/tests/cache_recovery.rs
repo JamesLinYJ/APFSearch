@@ -1,4 +1,3 @@
-use apfsearch_core::entry_table::FileEntry;
 use apfsearch_core::{
     index_store::{IndexStore, SearchSnapshot},
     scanner::ScannedFile,
@@ -396,71 +395,4 @@ fn denied_index_open_leaves_existing_database_untouched() {
         "A denied open must report failure instead of fabricating an empty index"
     );
     assert_eq!(after, before);
-}
-
-#[test]
-fn metadata_commit_during_cache_write_retains_the_new_delta() {
-    use std::{
-        sync::mpsc,
-        time::{Duration, Instant},
-    };
-    let directory = tempfile::tempdir().unwrap();
-    let database = directory.path().join("index.sqlite");
-    let mut store = IndexStore::open(&database).unwrap();
-    let rows: Vec<_> = (1..=20_000)
-        .map(|id| row(&format!("file{id}.txt"), id))
-        .collect();
-    store.batch(&rows, 1).unwrap();
-    checkpoint(&store, 1);
-    let revision = store.get("revision", json!(0)).as_u64().unwrap();
-    let snapshot = SearchSnapshot::new(store.entries().unwrap(), 1);
-    let writer_database = database.clone();
-    let (done_sender, done_receiver) = mpsc::channel();
-    let writer = std::thread::spawn(move || {
-        let writer_store = IndexStore::open(&writer_database).unwrap();
-        writer_store.cache_write(&snapshot, revision).unwrap();
-        done_sender.send(()).unwrap();
-    });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        if std::fs::read_dir(directory.path()).unwrap().any(|entry| {
-            entry
-                .unwrap()
-                .path()
-                .extension()
-                .is_some_and(|extension| extension == "tmp")
-        }) {
-            break;
-        }
-        assert!(
-            done_receiver.try_recv().is_err(),
-            "The writer must still be serializing when the concurrent commit begins"
-        );
-        assert!(
-            Instant::now() < deadline,
-            "Cache writer did not create its atomic-rename temporary file"
-        );
-        std::thread::yield_now();
-    }
-    let mut changed = row("file1.txt", 1);
-    changed.size = 999_999;
-    store.batch(&[changed], 2).unwrap();
-    store.set("generation", &json!(2)).unwrap();
-    writer.join().unwrap();
-    assert!(
-        store.cache_is_dirty(),
-        "An old cache writer must not checkpoint a newer SQLite revision"
-    );
-    assert_current(&store);
-    assert_eq!(
-        store
-            .cache_read()
-            .unwrap()
-            .0
-            .visible_entries()
-            .find(|entry| entry.name() == "file1.txt")
-            .unwrap()
-            .size(),
-        999_999
-    );
 }
