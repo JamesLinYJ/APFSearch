@@ -111,12 +111,57 @@ Public release bundles contain no index, search history, credentials, or local
 validation captures. Developer ID certificates do expose Apple's registered
 signing identity; neutral package names cannot anonymize that certificate.
 
-## Installer and automated update releases
+## GitHub Actions releases
 
-`scripts/release.sh` and `.github/workflows/release.yml` additionally build a
-signed installer and authenticated update manifest. They require separately
-configured Developer ID Installer and update-signing credentials, and use
-`notarytool` with a keychain profile or app-specific credentials. They notarize
+The `Signed macOS release` workflow builds Universal, AppleSilicon and Intel
+DMG/ZIP downloads. It uses a Developer ID Application identity and an App Store
+Connect API key; it does not need an Apple account password, Developer ID
+Installer certificate, or update-signing key.
+
+Configure a GitHub environment named `release`, with deployment branches limited
+to `main`. Store these **environment secrets**, not repository files or variables:
+
+| Secret | Value |
+| --- | --- |
+| `APFSEARCH_CERTIFICATE_P12` | Base64-encoded, password-encrypted export of only the selected Developer ID Application identity |
+| `APFSEARCH_CERTIFICATE_PASSWORD` | Random password protecting that export |
+| `APFSEARCH_SIGN_IDENTITY` | Selected certificate's SHA-1 fingerprint |
+| `APP_STORE_CONNECT_PRIVATE_KEY` | Dedicated App Store Connect team API private key, using the Developer role |
+| `APP_STORE_CONNECT_KEY_ID` | API key identifier |
+| `APP_STORE_CONNECT_ISSUER_ID` | API issuer identifier |
+
+Upload secret values through GitHub's encrypted Secrets interface or `gh secret
+set --env release` with standard input. Do not place them in commands, Git,
+issue text, screenshots, or workflow artifacts. Keep the original Apple key in
+a private local location; Apple allows downloading it only once. An API key can
+be revoked independently of the Developer ID certificate.
+
+Update the app and Cargo version together and add `docs/releases/VERSION.md`.
+Commit and push to `main`, then run **Actions → Signed macOS release → Run
+workflow** on `main`, supplying its full commit SHA and a new matching `vX.Y.Z`
+tag. The workflow checks version consistency and requires the selected commit
+to equal the current `main` checkout. Tags and published releases cannot be
+overwritten. Pull requests and other branches cannot use the release environment.
+
+Tests run before credentials are imported. Raw secret environment variables are
+scoped to the import step; credentials enter a temporary private keychain, removed
+even when a later step fails. Notarization must return `Accepted`; signature,
+stapled ticket and Gatekeeper checks are required for every architecture and
+every mounted DMG. Only the eight allowlisted download files are published.
+The workflow downloads its draft assets and compares them before making the
+preview release public. Failures leave any draft unpublished for inspection.
+No local index, runtime report or credentials are uploaded as workflow artifacts.
+
+GitHub repository administrators and trusted code on `main` control release
+secrets. Restrict repository write access accordingly. If adding collaborators,
+consider required reviews and environment reviewers before granting write access.
+
+## Optional installer and automated update releases
+
+`scripts/release.sh` can separately build a
+signed installer and authenticated update manifest. It requires separately
+configured Developer ID Installer and update-signing credentials, and uses
+`notarytool` with a keychain profile or app-specific credentials. It notarizes
 the app and final installer, verify both tickets, and hash the final package
 after stapling. Their credentials belong in the local keychain or protected CI
 secrets, never in source control.

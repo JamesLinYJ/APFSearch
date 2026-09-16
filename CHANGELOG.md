@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.5 Preview
+
+### 中文
+
+- 修复大量硬链接下长时间停留在“扫描中”的根因：区分新路径发现与文件对象变化，在同一轮中复用已提交、元数据版本一致的核验结果，避免每发现一个路径就重新读取整组路径。
+- 文件内容、身份、链接数或权限状态变化时仍重新核验；未知链接数、未完成核验、取消或事务失败不能留下可复用的成功记录。
+- 挂载身份只包含实际影响读取边界的属性；无关卷挂载和挂载列表顺序变化不再打断当前批次。相关边界变化会重新排队受影响工作，保留未提交的事件进度及覆盖信息。
+- 保留已有索引、设置、查询语义和派生缓存格式。构建号、数据库及公开协议版本仍为 1。
+- GitHub Actions 自动验证、签名、公证并发布三种架构的 DMG/ZIP；应用和 DMG 均须通过公证与交付校验，凭据限定在 release 环境的临时钥匙串中。
+
+### English
+
+- Fix prolonged scanning with large hard-link groups by separating path discovery from object changes. Reuse committed, version-matched verification within the same pass instead of rereading the entire group for each new path.
+- Reverify changed content, identity, link count and failed coverage. Unknown counts, incomplete verification, cancellation and failed commits cannot establish reusable success.
+- Compare relevant mount boundaries using canonical identity. Unrelated mounts and enumeration-order changes no longer abort a batch; relevant namespace changes requeue the work while preserving pending event progress and coverage.
+- Retain existing indexes, settings, search semantics and derived-cache format. Build, database and public protocol versions remain 1.
+- Automate validation, signing, notarization and all three DMG/ZIP architecture variants with GitHub Actions. App and DMG checks gate publication; release-environment credentials use a temporary keychain.
+
+**Validation / 验证：** 329 Rust tests and 121 Swift service/content/file checks passed on Apple Silicon, along with strict Clippy and localization checks. Real-file regressions cover 4, 32 and 128 hard links; unchanged discovery requires one initial peer read plus each path's own observation. The signed installed candidate completed recovery and historical replay, entered live watching, and passed creation, content-change, replacement, unlink, rename and removal checks. This is not a controlled whole-machine speedup or physical Intel/macOS 14 validation.
+
 ## 0.1.3 Preview
 
 ### 中文

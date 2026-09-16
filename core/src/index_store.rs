@@ -1223,12 +1223,45 @@ impl From<Vec<ScannedFile>> for LinkVerification {
     }
 }
 pub(crate) type LinkVerifier<'a> = dyn FnMut(Vec<String>) -> Result<LinkVerification, String> + 'a;
-// About one MiB of inode-set storage for a few volumes. Clearing the optional
-// cache only restores repeated verification; it never changes indexed results.
+// Bound pass-local proofs independently of the number of indexed paths. Eviction
+// only restores verification; it never changes indexed results.
 const MAX_VERIFIED_LINK_OBJECTS: usize = 65_536;
+/// Object metadata shared by hard links. Names, extensions and parent IDs belong
+/// to directory entries and must not turn discovery into an object mutation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileObjectVersion {
+    size: u64,
+    modified: i64,
+    created: i64,
+    changed: i64,
+    modified_ns: i64,
+    changed_ns: i64,
+    link_count: u64,
+    flags: u32,
+    is_symlink: bool,
+}
+impl FileObjectVersion {
+    fn of(file: &ScannedFile) -> Option<Self> {
+        let link_count = file.link_count?;
+        if file.is_dir || file.file_id == 0 || link_count <= 1 {
+            return None;
+        }
+        Some(Self {
+            size: file.size,
+            modified: file.modified,
+            created: file.created,
+            changed: file.changed,
+            modified_ns: file.modified_ns,
+            changed_ns: file.changed_ns,
+            link_count,
+            flags: file.flags,
+            is_symlink: file.is_symlink,
+        })
+    }
+}
 #[derive(Clone, Default)]
 pub(crate) struct VerifiedFileObjects {
-    by_volume: HashMap<String, std::collections::HashSet<u64>>,
+    by_volume: HashMap<String, HashMap<u64, FileObjectVersion>>,
     count: usize,
     reused: u64,
     insertion_order: VecDeque<(String, u64)>,
@@ -1246,11 +1279,25 @@ impl VerifiedFileObjects {
     fn contains(&self, volume: &str, file_id: u64) -> bool {
         self.by_volume
             .get(volume)
-            .is_some_and(|files| files.contains(&file_id))
+            .is_some_and(|files| files.contains_key(&file_id))
+    }
+    /// Invalidate mismatched/unknown observations before any fallible work, so
+    /// failure cannot make a queued older observation reuse an obsolete proof.
+    fn observe(&mut self, file: &ScannedFile) -> bool {
+        let reusable = FileObjectVersion::of(file).is_some_and(|version| {
+            self.by_volume
+                .get(&file.volume_id)
+                .and_then(|files| files.get(&file.file_id))
+                == Some(&version)
+        });
+        if !reusable {
+            self.forget(&file.volume_id, file.file_id);
+        }
+        reusable
     }
     fn forget(&mut self, volume: &str, file_id: u64) {
         if let Some(files) = self.by_volume.get_mut(volume) {
-            if files.remove(&file_id) {
+            if files.remove(&file_id).is_some() {
                 self.count -= 1;
             }
             if files.is_empty() {
@@ -1258,8 +1305,13 @@ impl VerifiedFileObjects {
             }
         }
     }
-    fn confirm(&mut self, volume: &str, file_id: u64) {
-        if self.contains(volume, file_id) {
+    fn confirm(&mut self, volume: &str, file_id: u64, version: FileObjectVersion) {
+        if let Some(previous) = self
+            .by_volume
+            .get_mut(volume)
+            .and_then(|files| files.get_mut(&file_id))
+        {
+            *previous = version;
             return;
         }
         if self.count >= MAX_VERIFIED_LINK_OBJECTS {
@@ -1273,14 +1325,14 @@ impl VerifiedFileObjects {
         self.by_volume
             .entry(volume.into())
             .or_default()
-            .insert(file_id);
+            .insert(file_id, version);
         self.count += 1;
         self.insertion_order.push_back((volume.into(), file_id));
         if self.insertion_order.len() > MAX_VERIFIED_LINK_OBJECTS * 2 {
             let live = &self.by_volume;
             let mut seen = std::collections::HashSet::new();
             self.insertion_order.retain(|(volume, id)| {
-                live.get(volume).is_some_and(|ids| ids.contains(id))
+                live.get(volume).is_some_and(|ids| ids.contains_key(id))
                     && seen.insert((volume.clone(), *id))
             });
         }
@@ -1444,7 +1496,7 @@ impl IndexStore {
     pub(crate) fn verification_paths(
         &self,
         entries: &[ScannedFile],
-        tracker: &VerifiedFileObjects,
+        tracker: &mut VerifiedFileObjects,
     ) -> Result<Vec<String>, String> {
         let mut current = self.connection.prepare_cached("SELECT id,name,extension,size,modified,created,changed,is_dir,is_symlink,file_id,parent_id,volume_id,flags,modified_ns,changed_ns,accessible FROM files WHERE path=?1").map_err(|error| error.to_string())?;
         let mut peers = self
@@ -1486,14 +1538,22 @@ impl IndexStore {
                 .map_err(|error| error.to_string())?;
 
             let changed = existing.as_ref().is_none_or(|row| row.1);
+            let reusable = tracker.observe(file);
             if let Some(old) = existing.and_then(|row| row.3) {
-                objects.insert(old, true);
+                let force = !reusable || old.0 != file.volume_id || old.1 != file.file_id;
+                if force {
+                    tracker.forget(&old.0, old.1);
+                }
+                objects
+                    .entry(old)
+                    .and_modify(|required| *required |= force)
+                    .or_insert(force);
             }
             if !file.is_dir && file.file_id != 0 && (changed || file.link_count != Some(1)) {
                 objects
                     .entry((file.volume_id.clone(), file.file_id))
-                    .and_modify(|force| *force |= changed)
-                    .or_insert(changed);
+                    .and_modify(|force| *force |= !reusable)
+                    .or_insert(!reusable);
             }
         }
         let mut paths = std::collections::BTreeSet::new();
@@ -1529,7 +1589,7 @@ impl IndexStore {
             .map_err(|error| error.to_string())?;
         let mut changed = 0usize;
         let mut visited_objects = std::collections::HashSet::new();
-        let mut cacheable_objects = std::collections::HashSet::new();
+        let mut cacheable_objects = HashMap::<(String, u64), Option<FileObjectVersion>>::new();
         let mut verification_complete = true;
         {
             let mut current = transaction.prepare_cached("SELECT id,name,extension,size,modified,created,changed,is_dir,is_symlink,file_id,parent_id,volume_id,flags,modified_ns,changed_ns,accessible FROM files WHERE path=?1").map_err(|error| error.to_string())?;
@@ -1588,26 +1648,28 @@ impl IndexStore {
                         .optional()
                         .map_err(|error| error.to_string())?;
                     let file_changed = existing.as_ref().is_none_or(|row| row.1);
+                    let reusable = verified_objects
+                        .as_deref_mut()
+                        .is_some_and(|tracker| tracker.observe(file));
                     let mut id = existing.as_ref().map(|row| row.0);
                     if file_changed {
-                        // Invalidate before any fallible SQL or callback. An
-                        // unsuccessful attempt must never leave a reusable old
-                        // success associated with changed object metadata.
-                        if let Some(verified_objects) = verified_objects.as_deref_mut() {
-                            verified_objects.forget(&file.volume_id, file.file_id);
-                            if let Some((volume, file_id)) =
-                                existing.as_ref().and_then(|row| row.3.as_ref())
-                            {
-                                verified_objects.forget(volume, *file_id);
+                        // A replaced path invalidates the previous object too.
+                        // Discovery alone preserves a matching object proof.
+                        if let Some(old) = existing.as_ref().and_then(|row| row.3.as_ref()) {
+                            let force =
+                                !reusable || old.0 != file.volume_id || old.1 != file.file_id;
+                            if force && let Some(tracker) = verified_objects.as_deref_mut() {
+                                tracker.forget(&old.0, old.1);
                             }
+                            objects
+                                .entry(old.clone())
+                                .and_modify(|required| *required |= force)
+                                .or_insert(force);
                         }
                         if existing.as_ref().is_some_and(|row| row.2) {
                             invalidate
                                 .execute([&file.path])
                                 .map_err(|error| error.to_string())?;
-                        }
-                        if let Some(old_object) = existing.and_then(|row| row.3) {
-                            objects.insert(old_object, true);
                         }
                         changed += upsert_statement
                             .execute(params![
@@ -1642,13 +1704,10 @@ impl IndexStore {
                         && (file_changed || file.link_count != Some(1))
                     {
                         let object = (file.volume_id.clone(), file.file_id);
-                        if file.link_count.is_some_and(|count| count > 1) {
-                            cacheable_objects.insert(object.clone());
-                        }
                         objects
                             .entry(object)
-                            .and_modify(|force| *force |= file_changed)
-                            .or_insert(file_changed);
+                            .and_modify(|force| *force |= !reusable)
+                            .or_insert(!reusable);
                     }
                     if let Some(epoch) = epoch {
                         seen.execute(params![file.path, epoch])
@@ -1690,6 +1749,19 @@ impl IndexStore {
                 }
                 let requested_paths = paths.len();
                 let verified = check_links(paths)?;
+                // Proofs come only from fresh verifier observations, never from
+                // queued primary rows. Mixed versions cannot establish a proof.
+                for file in &verified.entries {
+                    let version = FileObjectVersion::of(file);
+                    cacheable_objects
+                        .entry((file.volume_id.clone(), file.file_id))
+                        .and_modify(|previous| {
+                            if *previous != version {
+                                *previous = None;
+                            }
+                        })
+                        .or_insert(version);
+                }
                 // Production verification accounts for every requested path.
                 // Unknown/unavailable or incomplete results cannot establish a
                 // reusable success, even if the remaining updates can commit.
@@ -1748,8 +1820,10 @@ impl IndexStore {
         // Only durable successful verification may influence a later batch.
         // This set belongs to one reconcile call, never another event drain.
         if verification_complete && let Some(verified_objects) = verified_objects {
-            for (volume, file_id) in visited_objects.intersection(&cacheable_objects) {
-                verified_objects.confirm(volume, *file_id);
+            for (volume, file_id) in visited_objects {
+                if let Some(Some(version)) = cacheable_objects.get(&(volume.clone(), file_id)) {
+                    verified_objects.confirm(&volume, file_id, *version);
+                }
             }
         }
         Ok(changed)

@@ -99,6 +99,116 @@ fn unchanged_aliases_across_batches_are_verified_once_per_pass() {
 }
 
 #[test]
+fn discovering_existing_aliases_does_not_reverify_the_growing_group() {
+    let mut fixture = fixture();
+    fixture
+        .store
+        .connection
+        .execute(
+            "DELETE FROM files WHERE path != ?1",
+            [fixture.paths[0].to_str().unwrap()],
+        )
+        .unwrap();
+    let mut tracker = VerifiedFileObjects::default();
+    let (mut calls, mut paths_read) = (0, 0);
+    for index in 0..fixture.paths.len() {
+        verify_one(
+            &mut fixture,
+            index,
+            &mut tracker,
+            &mut calls,
+            &mut paths_read,
+        );
+    }
+    assert_eq!(calls, 1, "Discovery must reuse the verified object version");
+    assert_eq!(
+        paths_read, 1,
+        "Each new path already carries a fresh observation"
+    );
+    assert_eq!(sizes(&fixture.store), vec![3; 4]);
+}
+
+#[test]
+fn discovery_after_content_or_link_count_change_reverifies_peers() {
+    for change_content in [true, false] {
+        let mut fixture = fixture();
+        fixture
+            .store
+            .connection
+            .execute(
+                "DELETE FROM files WHERE path != ?1",
+                [fixture.paths[0].to_str().unwrap()],
+            )
+            .unwrap();
+        let mut tracker = VerifiedFileObjects::default();
+        let (mut calls, mut paths_read) = (0, 0);
+        verify_one(&mut fixture, 0, &mut tracker, &mut calls, &mut paths_read);
+        if change_content {
+            std::fs::write(&fixture.paths[0], b"new content").unwrap();
+        } else {
+            std::fs::remove_file(&fixture.paths[3]).unwrap();
+        }
+        verify_one(&mut fixture, 1, &mut tracker, &mut calls, &mut paths_read);
+        assert_eq!(calls, 2, "A changed object cannot reuse its earlier proof");
+        assert_eq!(paths_read, 3);
+        let expected_size = if change_content { 11 } else { 3 };
+        assert_eq!(sizes(&fixture.store), vec![expected_size; 2]);
+    }
+}
+
+#[test]
+fn unknown_or_changed_link_count_cannot_reuse_a_matching_metadata_proof() {
+    for count in [None, Some(3)] {
+        let mut fixture = fixture();
+        let mut tracker = VerifiedFileObjects::default();
+        let (mut calls, mut paths_read) = (0, 0);
+        verify_one(&mut fixture, 0, &mut tracker, &mut calls, &mut paths_read);
+        let mut file = current(&fixture.paths[0]);
+        file.link_count = count;
+        let mut checked = 0;
+        fixture
+            .store
+            .observe_batch(
+                &[file],
+                None,
+                Some(&mut |paths| {
+                    checked += paths.len();
+                    verify(paths)
+                }),
+                Some(&mut tracker),
+            )
+            .unwrap();
+        assert_eq!(
+            checked, 4,
+            "Link count participates even when other fields match"
+        );
+    }
+}
+
+#[test]
+fn inconsistent_verifier_versions_do_not_create_a_reusable_proof() {
+    let mut fixture = fixture();
+    let mut tracker = VerifiedFileObjects::default();
+    let file = current(&fixture.paths[0]);
+    fixture
+        .store
+        .observe_batch(
+            &[file],
+            None,
+            Some(&mut |paths| {
+                let mut result = verify(paths)?;
+                result.entries[0].link_count = None;
+                Ok(result)
+            }),
+            Some(&mut tracker),
+        )
+        .unwrap();
+    let (mut calls, mut reads) = (0, 0);
+    verify_one(&mut fixture, 1, &mut tracker, &mut calls, &mut reads);
+    assert_eq!((calls, reads), (1, 4));
+}
+
+#[test]
 fn a_content_change_forces_all_aliases_even_after_a_successful_pass_cache_entry() {
     let mut fixture = fixture();
     let mut tracker = VerifiedFileObjects::default();

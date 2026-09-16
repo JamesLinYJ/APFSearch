@@ -1,4 +1,92 @@
 use super::*;
+
+fn synthetic_mount(path: &str, source: &str) -> libc::statfs {
+    let mut filesystem = mounted_filesystems().unwrap().remove(0);
+    fn set_field(field: &mut [c_char], text: &str) {
+        field.fill(0);
+        for (slot, byte) in field.iter_mut().zip(text.bytes()) {
+            *slot = byte as c_char;
+        }
+    }
+    set_field(&mut filesystem.f_mntonname, path);
+    set_field(&mut filesystem.f_mntfromname, source);
+    set_field(&mut filesystem.f_fstypename, "apfs");
+    filesystem.f_flags = libc::MNT_LOCAL as u32;
+    filesystem
+}
+
+#[test]
+fn mount_identity_ignores_order_c_string_tails_and_unrelated_flags() {
+    let mut filesystems = vec![
+        synthetic_mount("/", "disk-root"),
+        synthetic_mount("/Volumes/Extra", "disk-extra"),
+    ];
+    let before = MountScope::from_current_filesystems(&filesystems).unwrap();
+    filesystems.reverse();
+    for filesystem in &mut filesystems {
+        filesystem.f_flags ^= libc::MNT_RDONLY as u32;
+        for field in [
+            &mut filesystem.f_mntonname[..],
+            &mut filesystem.f_mntfromname[..],
+            &mut filesystem.f_fstypename[..],
+        ] {
+            let tail = field.iter().position(|byte| *byte == 0).unwrap() + 1;
+            field[tail..].fill(73);
+        }
+    }
+    let after = MountScope::from_current_filesystems(&filesystems).unwrap();
+    assert_eq!(before.identity(), after.identity());
+    assert!(before.unchanged_for(&after, ["/fixture/file", "/Volumes/Extra/file"]));
+}
+
+#[test]
+fn mount_validation_only_invalidates_paths_whose_namespace_changed() {
+    let root = synthetic_mount("/", "disk-root");
+    let before = MountScope::from_current_filesystems(&[root]).unwrap();
+    let added =
+        MountScope::from_current_filesystems(&[root, synthetic_mount("/Volumes/Image", "image")])
+            .unwrap();
+    assert!(before.unchanged_for(&added, ["/fixture/file"]));
+    assert!(added.unchanged_for(&before, ["/fixture/file"]));
+    assert!(!before.unchanged_for(&added, ["/Volumes/Image/file"]));
+    assert!(!added.unchanged_for(&before, ["/Volumes/Image/file"]));
+    let replaced = MountScope::from_current_filesystems(&[
+        root,
+        synthetic_mount("/Volumes/Image", "replacement"),
+    ])
+    .unwrap();
+    assert!(!added.unchanged_for(&replaced, ["/Volumes/Image/file"]));
+    let mut remote = synthetic_mount("/fixture", "remote");
+    remote.f_flags &= !(libc::MNT_LOCAL as u32);
+    let overlaid = MountScope::from_current_filesystems(&[root, remote]).unwrap();
+    assert!(!before.unchanged_for(&overlaid, ["/fixture/file"]));
+    assert!(before.unchanged_for(&overlaid, ["/fixture-neighbor/file"]));
+}
+
+#[test]
+fn mount_validation_preserves_aliases_and_detects_same_source_remount() {
+    let root = synthetic_mount("/", "disk-root");
+    let external = synthetic_mount("/Volumes/External", "disk-external");
+    let raw = MountScope::from_current_filesystems(&[root, external]).unwrap();
+    let before = raw.with_aliases(std::iter::once((
+        PathBuf::from("/Volumes"),
+        PathBuf::from("/System/Volumes/Data/Volumes"),
+    )));
+    let unrelated = MountScope::from_current_filesystems(&[
+        root,
+        external,
+        synthetic_mount("/Volumes/Other", "other"),
+    ])
+    .unwrap();
+    assert!(before.unchanged_for(&unrelated, ["/System/Volumes/Data/Volumes/External/file"]));
+    let mut remounted = external;
+    // Only the opaque fsid changes: same path, source, filesystem and policy.
+    unsafe {
+        *std::ptr::addr_of_mut!(remounted.f_fsid).cast::<u8>() ^= 1;
+    }
+    let after = MountScope::from_current_filesystems(&[root, remounted]).unwrap();
+    assert!(!before.unchanged_for(&after, ["/System/Volumes/Data/Volumes/External/file"]));
+}
 #[test]
 fn unchanged_mount_tables_share_materialized_context_without_sharing_mutations() {
     let filesystems = mounted_filesystems().unwrap();

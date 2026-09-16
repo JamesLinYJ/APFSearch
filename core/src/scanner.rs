@@ -106,11 +106,30 @@ pub fn stat_entry(path: &str) -> Result<ScannedFile, String> {
 #[derive(Debug)]
 pub(crate) enum MetadataBatchError {
     Cancelled,
+    NamespaceChanged,
     Filesystem(String),
 }
 impl From<String> for MetadataBatchError {
     fn from(message: String) -> Self {
         Self::Filesystem(message)
+    }
+}
+impl From<std::io::Error> for MetadataBatchError {
+    fn from(error: std::io::Error) -> Self {
+        match error.raw_os_error() {
+            Some(
+                libc::EAGAIN
+                | libc::ENOENT
+                | libc::ENOTDIR
+                | libc::ELOOP
+                | libc::ENOTSUP
+                | libc::ENODEV
+                | libc::ESTALE
+                | libc::EACCES
+                | libc::EPERM,
+            ) => Self::NamespaceChanged,
+            _ => Self::Filesystem(error.to_string()),
+        }
     }
 }
 pub(crate) struct MetadataBatch {
@@ -126,7 +145,7 @@ pub(crate) fn stat_entries(
             .cmp(&Path::new(b).parent())
             .then(a.cmp(b))
     });
-    let scope = mount_scope().map_err(|error| error.to_string())?;
+    let scope = mount_scope()?;
     let mut reader = filesystem::MetadataReader::new(&scope);
     let mut parent = None::<std::path::PathBuf>;
     let mut result = Vec::with_capacity(paths.len());
@@ -136,25 +155,25 @@ pub(crate) fn stat_entries(
         }
         let next = Path::new(&path).parent().map(Path::to_owned);
         if next != parent {
-            reader
-                .validate_parent()
-                .map_err(|error| error.to_string())?;
+            reader.validate_parent()?;
             reader = filesystem::MetadataReader::new(&scope);
             parent = next;
         }
-        let entry = reader
-            .stat_in_batch(Path::new(&path))
+        let entry = reader.stat_in_batch(Path::new(&path));
+        if entry
+            .as_ref()
+            .is_err_and(|error| error.raw_os_error() == Some(libc::EAGAIN))
+        {
+            return Err(MetadataBatchError::NamespaceChanged);
+        }
+        let entry = entry
             .map(|metadata| from_metadata(path.clone(), &metadata))
             .map_err(|error| format!("{path}: {error}"));
         result.push((path, entry));
     }
-    reader
-        .validate_parent()
-        .map_err(|error| error.to_string())?;
-    if !scope.still_current().map_err(|error| error.to_string())? {
-        return Err(MetadataBatchError::Filesystem(
-            "Mount identity changed during metadata verification".into(),
-        ));
+    reader.validate_parent()?;
+    if !scope.still_current_for(result.iter().map(|(path, _)| path.as_str()))? {
+        return Err(MetadataBatchError::NamespaceChanged);
     }
     Ok(MetadataBatch { entries: result })
 }

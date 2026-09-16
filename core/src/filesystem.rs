@@ -68,9 +68,31 @@ pub(crate) struct Volume {
 /// Loading uses getfsstat(MNT_NOWAIT), so rejecting SMB/autofs never opens them.
 #[derive(Clone, Debug)]
 pub(crate) struct MountScope {
-    mounts: Arc<Vec<(PathBuf, bool)>>,
+    mounts: Arc<Vec<MountBoundary>>,
     aliases: Arc<Vec<(PathBuf, PathBuf)>>,
     identity: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct MountBoundary {
+    path: PathBuf,
+    allowed: bool,
+    fsid: [u8; 8],
+    filesystem: Vec<u8>,
+    source: Vec<u8>,
+}
+
+fn mount_fsid(filesystem: &libc::statfs) -> [u8; 8] {
+    let mut fsid = [0u8; 8];
+    // Darwin's opaque fsid_t is exactly two integers. Read its representation,
+    // not the surrounding statfs padding or counters.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            std::ptr::addr_of!(filesystem.f_fsid).cast::<u8>(),
+            fsid.as_mut_ptr(),
+            fsid.len(),
+        );
+    }
+    fsid
 }
 impl MountScope {
     pub(crate) fn load() -> io::Result<Self> {
@@ -79,30 +101,21 @@ impl MountScope {
     }
     fn from_current_filesystems(filesystems: &[libc::statfs]) -> io::Result<Self> {
         use std::hash::{Hash, Hasher};
-        static MATERIALIZED: Mutex<Option<MountScope>> = Mutex::new(None);
-        let mut identity = std::collections::hash_map::DefaultHasher::new();
+        static MATERIALIZED: Mutex<Option<(u64, MountScope)>> = Mutex::new(None);
+        let mut fingerprint = std::collections::hash_map::DefaultHasher::new();
         for filesystem in filesystems {
-            filesystem.f_flags.hash(&mut identity);
-            filesystem.f_fstypename.hash(&mut identity);
-            filesystem.f_mntonname.hash(&mut identity);
-            filesystem.f_mntfromname.hash(&mut identity);
-            let mut fsid = [0u8; 8];
-            // fsid_t has the Darwin two-int ABI; hash its owned representation.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    std::ptr::addr_of!(filesystem.f_fsid).cast::<u8>(),
-                    fsid.as_mut_ptr(),
-                    fsid.len(),
-                );
-            }
-            fsid.hash(&mut identity);
+            (filesystem.f_flags & (libc::MNT_LOCAL | libc::MNT_SNAPSHOT) as u32)
+                .hash(&mut fingerprint);
+            c_array_string(&filesystem.f_fstypename)?.hash(&mut fingerprint);
+            c_array_string(&filesystem.f_mntonname)?.hash(&mut fingerprint);
+            c_array_string(&filesystem.f_mntfromname)?.hash(&mut fingerprint);
+            mount_fsid(filesystem).hash(&mut fingerprint);
         }
-        let identity = identity.finish();
+        let fingerprint = fingerprint.finish();
         let mut cached = MATERIALIZED.lock().unwrap();
-        if let Some(scope) = cached.as_ref().filter(|scope| scope.identity == identity) {
+        if let Some((_, scope)) = cached.as_ref().filter(|(key, _)| *key == fingerprint) {
             return Ok(scope.clone());
         }
-        crate::resource_metrics::MOUNT_REFRESHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut mounts = Vec::new();
         for filesystem in filesystems {
             let path = PathBuf::from(
@@ -113,15 +126,60 @@ impl MountScope {
             let allowed = c_array_string(&filesystem.f_fstypename)?.to_bytes() == b"apfs"
                 && filesystem.f_flags & libc::MNT_LOCAL as u32 != 0
                 && (path == Path::new("/") || filesystem.f_flags & libc::MNT_SNAPSHOT as u32 == 0);
-            mounts.push((path, allowed));
+            mounts.push(MountBoundary {
+                path,
+                allowed,
+                fsid: mount_fsid(filesystem),
+                filesystem: c_array_string(&filesystem.f_fstypename)?
+                    .to_bytes()
+                    .to_vec(),
+                source: c_array_string(&filesystem.f_mntfromname)?
+                    .to_bytes()
+                    .to_vec(),
+            });
         }
-        let mut scope = Self::from_mounts(mounts);
-        scope.identity = identity;
-        *cached = Some(scope.clone());
+        // Enumeration order, bytes after a C string terminator and flags that
+        // do not change read authority are not mount identity. Keep the full
+        // canonical records for equality; the hash is only a cache generation.
+        Self::sort_mounts(&mut mounts);
+        if let Some((key, scope)) = cached.as_mut().filter(|(_, scope)| *scope.mounts == mounts) {
+            *key = fingerprint;
+            return Ok(scope.clone());
+        }
+        let mut identity = std::collections::hash_map::DefaultHasher::new();
+        mounts.hash(&mut identity);
+        crate::resource_metrics::MOUNT_REFRESHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let scope = Self {
+            mounts: Arc::new(mounts),
+            aliases: Arc::new(Vec::new()),
+            identity: identity.finish(),
+        };
+        *cached = Some((fingerprint, scope.clone()));
         Ok(scope)
     }
-    pub(crate) fn from_mounts(mut mounts: Vec<(PathBuf, bool)>) -> Self {
-        mounts.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+    fn sort_mounts(mounts: &mut [MountBoundary]) {
+        mounts.sort_by(|left, right| {
+            right
+                .path
+                .components()
+                .count()
+                .cmp(&left.path.components().count())
+                .then_with(|| left.path.cmp(&right.path))
+        });
+    }
+    #[cfg(test)]
+    pub(crate) fn from_mounts(mounts: Vec<(PathBuf, bool)>) -> Self {
+        let mut mounts: Vec<_> = mounts
+            .into_iter()
+            .map(|(path, allowed)| MountBoundary {
+                path,
+                allowed,
+                fsid: [0; 8],
+                filesystem: Vec::new(),
+                source: Vec::new(),
+            })
+            .collect();
+        Self::sort_mounts(&mut mounts);
         Self {
             mounts: Arc::new(mounts),
             aliases: Arc::new(Vec::new()),
@@ -135,26 +193,33 @@ impl MountScope {
         let aliases: Vec<_> = aliases.collect();
         let mut mapped = Vec::new();
         for (physical, logical) in &aliases {
-            for (mount, allowed) in self.mounts.iter() {
-                if let Ok(suffix) = mount.strip_prefix(physical) {
-                    mapped.push((logical.join(suffix), *allowed));
+            for mount in self.mounts.iter() {
+                if let Ok(suffix) = mount.path.strip_prefix(physical) {
+                    mapped.push(MountBoundary {
+                        path: logical.join(suffix),
+                        ..mount.clone()
+                    });
                 }
-                if let Ok(suffix) = mount.strip_prefix(logical) {
-                    mapped.push((physical.join(suffix), *allowed));
+                if let Ok(suffix) = mount.path.strip_prefix(logical) {
+                    mapped.push(MountBoundary {
+                        path: physical.join(suffix),
+                        ..mount.clone()
+                    });
                 }
             }
         }
         Arc::make_mut(&mut self.mounts).extend(mapped);
-        Arc::make_mut(&mut self.mounts)
-            .sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+        Self::sort_mounts(Arc::make_mut(&mut self.mounts).as_mut_slice());
         Arc::make_mut(&mut self.aliases).extend(aliases);
         self
     }
     pub(crate) fn allows(&self, path: &Path) -> bool {
+        self.boundary(path).is_some_and(|mount| mount.allowed)
+    }
+    fn boundary(&self, path: &Path) -> Option<&MountBoundary> {
         self.mounts
             .iter()
-            .find(|(mount, _)| path.starts_with(mount))
-            .is_some_and(|(_, allowed)| *allowed)
+            .find(|mount| path.starts_with(&mount.path))
     }
     fn check(&self, path: &Path) -> io::Result<()> {
         if self.allows(path) {
@@ -178,16 +243,29 @@ impl MountScope {
     pub(crate) fn identity(&self) -> u64 {
         self.identity
     }
-    pub(crate) fn still_current(&self) -> io::Result<bool> {
-        Ok(self.identity == Self::load()?.identity)
+    pub(crate) fn still_current_for<'a>(
+        &self,
+        paths: impl IntoIterator<Item = &'a str>,
+    ) -> io::Result<bool> {
+        Ok(self.unchanged_for(&Self::load()?, paths))
+    }
+    fn unchanged_for<'a>(&self, current: &Self, paths: impl IntoIterator<Item = &'a str>) -> bool {
+        if self.identity != 0 && self.identity == current.identity {
+            return true;
+        }
+        let current = current.clone().with_aliases(self.aliases.iter().cloned());
+        paths.into_iter().all(|path| {
+            let path = system_path(Path::new(path));
+            self.boundary(&path) == current.boundary(&path)
+        })
     }
     pub(crate) fn excluded_within(&self, roots: &[String]) -> Vec<String> {
         let mut excluded: Vec<_> = self
             .mounts
             .iter()
-            .filter(|(_, allowed)| !allowed)
-            .filter(|(mount, _)| roots.iter().any(|root| mount.starts_with(root)))
-            .map(|(path, _)| path.to_string_lossy().into_owned())
+            .filter(|mount| !mount.allowed)
+            .filter(|mount| roots.iter().any(|root| mount.path.starts_with(root)))
+            .map(|mount| mount.path.to_string_lossy().into_owned())
             .collect();
         excluded.extend(
             roots

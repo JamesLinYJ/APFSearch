@@ -35,6 +35,9 @@ mod query_cache_tests;
 mod query_latency_tests;
 mod query_scratch;
 mod reconciliation_batch;
+use reconciliation_batch::PreparationError;
+#[cfg(all(test, target_os = "macos"))]
+mod mount_recovery_tests;
 mod relations;
 mod resource_metrics;
 #[cfg(all(test, target_os = "macos"))]
@@ -64,6 +67,13 @@ use std::{
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReconciliationOutcome {
+    Complete,
+    Cancelled,
+    Retry,
+}
 
 /// Release disposable query products on system memory pressure. No database I/O.
 #[unsafe(no_mangle)]
@@ -109,6 +119,8 @@ pub struct SearchEngine {
     state: status_signal::StatusSignal,
     index_directory: PathBuf,
     leases: snapshot_leases::SnapshotLeases,
+    #[cfg(test)]
+    metadata_conflicts: std::sync::atomic::AtomicUsize,
 }
 impl SearchEngine {
     pub fn open(path: &Path) -> Result<Arc<Self>, String> {
@@ -178,6 +190,8 @@ impl SearchEngine {
             active: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             scan_cancel: AtomicBool::new(false),
+            #[cfg(test)]
+            metadata_conflicts: std::sync::atomic::AtomicUsize::new(0),
             generation: AtomicU64::new(generation),
             published_revision: AtomicU64::new(revision),
             needs_cache_rebuild: AtomicBool::new(needs_cache_rebuild),
@@ -1261,6 +1275,7 @@ impl SearchEngine {
         }
         Ok(json!({"started":true,"roots":roots_result,"watch":watch}))
     }
+    #[cfg(test)]
     fn reconcile(
         &self,
         roots: &[String],
@@ -1269,8 +1284,40 @@ impl SearchEngine {
         recursive: bool,
         initial: bool,
     ) -> Result<bool, String> {
+        self.reconcile_pass(roots, configured, event_id, recursive, initial)
+            .map(|outcome| outcome == ReconciliationOutcome::Complete)
+    }
+    fn reconcile_baseline(
+        &self,
+        roots: &[String],
+        configured: &[String],
+        event_id: u64,
+        initial: bool,
+    ) -> Result<bool, String> {
+        loop {
+            match self.reconcile_pass(roots, configured, event_id, true, initial)? {
+                ReconciliationOutcome::Complete => return Ok(true),
+                ReconciliationOutcome::Cancelled => return Ok(false),
+                ReconciliationOutcome::Retry => {
+                    if self.stop.load(Ordering::Relaxed) {
+                        return Ok(false);
+                    }
+                    self.scan_cancel.store(false, Ordering::Relaxed);
+                    std::thread::yield_now();
+                }
+            }
+        }
+    }
+    fn reconcile_pass(
+        &self,
+        roots: &[String],
+        configured: &[String],
+        event_id: u64,
+        recursive: bool,
+        initial: bool,
+    ) -> Result<ReconciliationOutcome, String> {
         if self.stop.load(Ordering::Relaxed) {
-            return Ok(false);
+            return Ok(ReconciliationOutcome::Cancelled);
         }
         self.state.lock().unwrap()["state"] = json!(if initial { "scanning" } else { "updating" });
         let mut observed = roaring::RoaringTreemap::new();
@@ -1282,38 +1329,37 @@ impl SearchEngine {
         let mut linked_uncovered = Vec::new();
         let mut linked_errors = Vec::new();
         let mut batch_cancelled = false;
+        let mut batch_retry = false;
         let mut verified_objects = index_store::VerifiedFileObjects::default();
         let mut publish_threshold =
             progressive_publish_threshold(self.snapshot.load().entries.len());
         let on_batch = |mut batch: Vec<scanner::ScannedFile>| {
             batch.retain(|e| !Path::new(&e.path).starts_with(&self.index_directory));
-            if error.is_some() || batch_cancelled {
+            if error.is_some() || batch_cancelled || batch_retry {
                 return;
             }
             let mut linked_count = 0usize;
-            let mut links_cancelled = false;
             let mut check_links =
-                |paths: Vec<String>| -> Result<index_store::LinkVerification, String> {
+                |paths: Vec<String>| -> Result<index_store::LinkVerification, PreparationError> {
                     let mut verified = index_store::LinkVerification::default();
                     if self.scan_cancel.load(Ordering::Relaxed) {
-                        links_cancelled = true;
-                        return Err("Hard-link reconciliation cancelled".into());
+                        return Err(PreparationError::Cancelled);
+                    }
+                    #[cfg(test)]
+                    if self
+                        .metadata_conflicts
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                            remaining.checked_sub(1)
+                        })
+                        .is_ok()
+                    {
+                        return Err(scanner::MetadataBatchError::NamespaceChanged.into());
                     }
                     let scanner::MetadataBatch { entries } =
-                        match scanner::stat_entries(paths, &self.scan_cancel) {
-                            Ok(result) => result,
-                            Err(scanner::MetadataBatchError::Cancelled) => {
-                                links_cancelled = true;
-                                return Err("Hard-link reconciliation cancelled".into());
-                            }
-                            Err(scanner::MetadataBatchError::Filesystem(error)) => {
-                                return Err(error);
-                            }
-                        };
+                        scanner::stat_entries(paths, &self.scan_cancel)?;
                     for (path, entry) in entries {
                         if self.scan_cancel.load(Ordering::Relaxed) {
-                            links_cancelled = true;
-                            return Err("Hard-link reconciliation cancelled".into());
+                            return Err(PreparationError::Cancelled);
                         }
                         match entry {
                             Ok(entry) => verified.entries.push(entry),
@@ -1392,14 +1438,19 @@ impl SearchEngine {
                 (!initial).then_some(&mut verified_objects),
             ) {
                 Ok(changed) => changed_count += changed,
-                Err(_) if links_cancelled => {
+                Err(PreparationError::Cancelled) => {
                     // The callback returned this cancellation before the batch
                     // could commit. Preserve that explicit outcome; a database
                     // error remains an error even when Stop was also requested.
                     batch_cancelled = true;
                     return;
                 }
-                Err(e) => {
+                Err(PreparationError::Retry) => {
+                    batch_retry = true;
+                    self.scan_cancel.store(true, Ordering::Relaxed);
+                    return;
+                }
+                Err(PreparationError::Failure(e)) => {
                     error = Some(e);
                     self.scan_cancel.store(true, Ordering::Relaxed);
                     return;
@@ -1457,6 +1508,12 @@ impl SearchEngine {
         };
         if let Some(e) = error {
             return Err(e);
+        }
+        if batch_retry {
+            // Do not finish coverage, publish an incomplete pass or acknowledge
+            // events. A new pass will enumerate the affected scope afresh.
+            resource_metrics::PREPARATION_RETRIES.fetch_add(1, Ordering::Relaxed);
+            return Ok(ReconciliationOutcome::Retry);
         }
         // Cancellation can arrive during the final metadata callback, after the
         // scanner's last token check. Never finish coverage or acknowledge it.
@@ -1529,7 +1586,11 @@ impl SearchEngine {
                 state["initial_scan_complete"] = json!(true);
             }
         }
-        Ok(!report.cancelled)
+        Ok(if report.cancelled {
+            ReconciliationOutcome::Cancelled
+        } else {
+            ReconciliationOutcome::Complete
+        })
     }
     fn resolve_directory_checks(&self, plan: &mut scanner::Reconciliation) -> Result<(), String> {
         let uncovered: Vec<String> =
@@ -1774,7 +1835,7 @@ impl SearchEngine {
                     // External/non-journal volumes and previous permission gaps do
                     // not inherit the boot volume's proof. Recheck only those paths.
                     if !recheck.is_empty()
-                        && !self.reconcile(&recheck, &roots, since, true, false)?
+                        && !self.reconcile_baseline(&recheck, &roots, since, false)?
                     {
                         return Ok(());
                     }
@@ -1783,7 +1844,7 @@ impl SearchEngine {
                     self.state.lock().unwrap()["initial_scan_complete"] = json!(true);
                 } else {
                     self.state.lock().unwrap()["resumed"] = json!(false);
-                    if !self.reconcile(&roots, &roots, since, true, true)? {
+                    if !self.reconcile_baseline(&roots, &roots, since, true)? {
                         return Ok(());
                     }
                     if watch && let Ok(before) = &inspection {
@@ -1866,7 +1927,13 @@ impl SearchEngine {
                         // Event progress is committed only after all paths in this
                         // drain have been reconciled; a crash replays an unfinished drain.
                         if !plan.recursive.is_empty()
-                            && !self.reconcile(&plan.recursive, &roots, persisted, true, false)?
+                            && self.reconcile_pass(
+                                &plan.recursive,
+                                &roots,
+                                persisted,
+                                true,
+                                false,
+                            )? != ReconciliationOutcome::Complete
                         {
                             pending_events = events;
                             if history_done {
@@ -1879,7 +1946,13 @@ impl SearchEngine {
                             continue;
                         }
                         if !plan.metadata.is_empty()
-                            && !self.reconcile(&plan.metadata, &roots, persisted, false, false)?
+                            && self.reconcile_pass(
+                                &plan.metadata,
+                                &roots,
+                                persisted,
+                                false,
+                                false,
+                            )? != ReconciliationOutcome::Complete
                         {
                             pending_events = events;
                             if history_done {

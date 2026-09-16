@@ -547,3 +547,57 @@ IME latency and compositor presentation; they do not establish full-volume or
 installed-application performance. Removing a timer can issue more requests for
 keystrokes arriving in different event-loop turns; cancellation remains in place,
 and no new indexing or disk-writing path is introduced.
+
+## Recovering from mount changes during reconciliation
+
+Mount identity now uses canonical mount records: mount point, filesystem, source,
+filesystem ID and indexing eligibility. Kernel enumeration order, bytes beyond
+C string terminators and flags unrelated to metadata-read authority do not
+invalidate that identity. Before a metadata batch commits, the captured and
+current mount boundaries are compared for its observed and verified paths.
+Mounting an unrelated volume no longer aborts the batch. Parent-descriptor
+identity checks and no-follow filesystem checks remain in place.
+
+A changed relevant boundary or parent namespace produces a typed retry outcome,
+separate from cancellation and permanent I/O failures. The worker discards the
+unfinished observations, enumerates the affected scopes again and keeps their
+event drain pending. It cannot acknowledge those events or finalize coverage
+before reconciliation succeeds. Exhausting the optimistic database-preparation
+attempts similarly requeues the work instead of terminating the watcher. This
+does not add a polling timer, change database/protocol formats or request an
+index rebuild.
+
+Regression tests cover canonical mount equality, unrelated mounts, remounts at
+the same path, filesystem-ID changes, firmlink aliases and transient parent
+errors. Deterministic conflicts exercise the actual reconciliation path and
+FSEvents worker, checking metadata, coverage, event progress, old snapshots and
+subsequent independent file updates. These tests use synthetic mount records and
+small real directories; they do not claim physical volume hot-unplug validation.
+
+## Hard-link discovery without repeated peer verification
+
+Reconciliation distinguishes a newly discovered directory entry from a changed
+file object. Previously, inserting an alias invalidated the pass-local object
+proof and reread every known alias. Discovering an unchanged group one path at a
+time therefore performed 1 + 2 + ... + N peer reads in addition to enumeration.
+
+The bounded pass-local proof now retains the verified object version: exact
+size, timestamps (including nanosecond modification/change times), link count,
+flags and file type, keyed by volume and file ID. Names, parent IDs and extensions
+remain directory-entry properties. Each new path still requires its own fresh
+metadata observation; only redundant peer verification is reused when the object
+version matches. Proofs are promoted after commit and originate from fresh peer
+observations. Unknown link counts, inconsistent observations, changed metadata,
+path replacement and incomplete verification cannot establish reusable success.
+Observed version changes revoke existing proofs before fallible preparation or
+SQL, so a failed attempt cannot let an older queued observation reuse stale proof.
+Mount binding and the existing capacity limit are unchanged.
+
+Real-file regressions discover groups of 4, 32 and 128 aliases through metadata
+preparation and commit. Each retains every directory entry with one initial peer
+read plus N primary observations. Separate tests cover content changes, link
+count changes, unknown counts, inconsistent verifier observations and cancelled
+preparation. This is a work-count guarantee for unchanged groups whose proof
+remains resident during the pass; eviction or a genuine object change requires
+verification again. It does not change query semantics, index scope, the database
+schema or the event checkpoint contract, and does not hide recovery progress.

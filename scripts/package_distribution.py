@@ -68,13 +68,16 @@ def verify_disk_image(image, architectures):
         run('hdiutil', 'detach', volume['dev-entry'])
 
 
-def notarize_disk_image(image, profile):
+def notarize_disk_image(image, profile, keychain=None):
     identity = os.environ.get('APFSEARCH_SIGN_IDENTITY')
     if not identity or identity == '-':
         raise ValueError('DMG notarization requires APFSEARCH_SIGN_IDENTITY')
     run('codesign', '--sign', identity, '--timestamp', image)
-    response = json.loads(run('xcrun', 'notarytool', 'submit', image, '--wait',
-                              '--output-format', 'json', '--keychain-profile', profile))
+    arguments = ['xcrun', 'notarytool', 'submit', image, '--wait',
+                 '--output-format', 'json', '--keychain-profile', profile]
+    if keychain:
+        arguments.extend(['--keychain', keychain])
+    response = json.loads(run(*arguments))
     if response.get('status') != 'Accepted':
         raise ValueError('DMG notarization was not accepted: ' + str(response.get('status')))
     run('xcrun', 'stapler', 'staple', image)
@@ -83,7 +86,7 @@ def notarize_disk_image(image, profile):
     run('spctl', '--assess', '--type', 'open', '--context', 'context:primary-signature', image)
 
 
-def package_distribution(source, destination, variants, notary_profile=None):
+def package_distribution(source, destination, variants, notary_profile=None, notary_keychain=None):
     source = source.resolve()
     verify_application(source, VARIANTS['Universal'])
     info = plistlib.loads((source / 'Contents/Info.plist').read_bytes())
@@ -124,7 +127,7 @@ def package_distribution(source, destination, variants, notary_profile=None):
                 'scroll_position': (0, 0), 'label_pos': 'bottom', 'text_size': 14, 'icon_size': 112,
             }, lookForHiDPI=False)
             if notary_profile:
-                notarize_disk_image(image, notary_profile)
+                notarize_disk_image(image, notary_profile, notary_keychain)
             verify_disk_image(image, architectures)
             for artifact in (archive, image):
                 with artifact.open('rb') as stream:
@@ -146,8 +149,11 @@ if __name__ == '__main__':
     parser.add_argument('destination', type=pathlib.Path, help='New directory for verified release downloads')
     parser.add_argument('--variant', choices=VARIANTS, action='append', help='Defaults to all three variants')
     parser.add_argument('--notary-profile', help='Optional existing notarytool profile to also notarize DMG containers')
+    parser.add_argument('--notary-keychain', help='Dedicated keychain containing the notarization profile')
     args = parser.parse_args()
     variants = args.variant or list(VARIANTS)
     if len(set(variants)) != len(variants):
         parser.error('Each variant may be selected only once')
-    package_distribution(args.application, args.destination, variants, args.notary_profile)
+    if args.notary_keychain and not args.notary_profile:
+        parser.error('--notary-keychain requires --notary-profile')
+    package_distribution(args.application, args.destination, variants, args.notary_profile, args.notary_keychain)
