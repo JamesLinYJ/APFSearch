@@ -38,12 +38,15 @@ fn active_watchers_can_move_threads_and_release_their_descriptors() {
         // Exercise ownership transfer while another event may still be queued.
         fs::write(&path, b"pending event while owner shuts down").unwrap();
         let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
+        let owner = thread::spawn(move || {
             drop(watcher);
             tx.send(()).unwrap();
         });
         rx.recv_timeout(Duration::from_secs(5))
             .expect("Watcher drop deadlocked");
+        // The message confirms Drop completed, not that the owning thread has
+        // exited. Join before measuring process-wide resources.
+        owner.join().unwrap();
         fs::remove_file(path).unwrap();
         // CF/dispatch may open shared process resources on first use. Warm up
         // three complete start/callback/drop cycles before checking growth.
@@ -71,9 +74,23 @@ fn active_watchers_can_move_threads_and_release_their_descriptors() {
             }
         }
     }
-    let final_count = descriptor_count();
+    // Stop/invalidate and callback draining protect our state synchronously;
+    // Apple's dispatch-source cancellation may finish releasing kernel handles
+    // asynchronously. Assert eventual reclamation with the SAME leak bound,
+    // instead of treating a transient process-wide count as a permanent leak.
+    // This deadline exists only in the test, never in Watcher::drop or queries.
+    let immediate = descriptor_count();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut final_count = immediate;
+    while final_count > baseline + 3 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+        final_count = descriptor_count();
+    }
+    eprintln!(
+        "Watcher descriptor reclamation: baseline={baseline}, immediate={immediate}, final={final_count}"
+    );
     assert!(
         final_count <= baseline + 3,
-        "Descriptors leaked across 80 watcher lifetimes: baseline={baseline}, final={final_count}"
+        "Descriptors leaked across 80 watcher lifetimes: baseline={baseline}, immediate={immediate}, final={final_count}"
     );
 }
