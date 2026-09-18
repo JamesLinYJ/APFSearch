@@ -17,6 +17,7 @@ import tempfile
 import dmgbuild
 
 from build_identity import IDENTITY, PROJECT, verify_bundle_signatures
+from build_toolchain import verify_bundle_sdk
 
 VARIANTS = {'Universal': ('arm64', 'x86_64'), 'AppleSilicon': ('arm64',), 'Intel': ('x86_64',)}
 
@@ -26,6 +27,7 @@ def run(*arguments):
 
 
 def verify_application(application, architectures):
+    verify_bundle_sdk(application)
     verify_bundle_signatures(application)
     run('codesign', '--verify', '--deep', '--strict', application)
     run('xcrun', 'stapler', 'validate', application)

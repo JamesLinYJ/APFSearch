@@ -1,11 +1,12 @@
 use crate::label_pool::LabelPool;
 use crate::shared_text::SharedText;
+use crate::slot_order::SlotOrder;
 #[path = "cache_journal.rs"]
 mod cache_journal;
 #[path = "change_reader.rs"]
 mod change_reader;
 #[path = "ordered_merge.rs"]
-mod ordered_merge;
+pub(crate) mod ordered_merge;
 #[cfg(test)]
 #[path = "streaming_snapshot_tests.rs"]
 mod streaming_snapshot_tests;
@@ -213,8 +214,42 @@ impl FileSlots {
         Ok(slot as usize)
     }
 }
-#[derive(Default)]
 pub struct SearchSnapshot {
+    data: Option<Arc<SnapshotData>>,
+}
+impl Default for SearchSnapshot {
+    fn default() -> Self {
+        Self::from_data(SnapshotData {
+            posting_sections: (0..crate::posting_map::SHARDS)
+                .map(|_| Arc::default())
+                .collect(),
+            ..SnapshotData::default()
+        })
+    }
+}
+impl std::ops::Deref for SearchSnapshot {
+    type Target = SnapshotData;
+    fn deref(&self) -> &SnapshotData {
+        self.data.as_deref().expect("Live snapshot storage")
+    }
+}
+impl std::ops::DerefMut for SearchSnapshot {
+    fn deref_mut(&mut self) -> &mut SnapshotData {
+        Arc::get_mut(self.data.as_mut().expect("Live snapshot storage"))
+            .expect("Snapshot storage has one owner until retirement")
+    }
+}
+impl Drop for SearchSnapshot {
+    fn drop(&mut self) {
+        if let Some(data) = self.data.take() {
+            crate::snapshot_reclaimer::retire(data);
+        }
+    }
+}
+#[doc(hidden)]
+#[derive(Default)]
+pub struct SnapshotData {
+    pub(crate) posting_sections: Vec<Arc<std::sync::OnceLock<Arc<crate::snapshot_cache::Section>>>>,
     pub(crate) index_section: Arc<std::sync::OnceLock<Arc<crate::snapshot_cache::Section>>>,
     // The cache owns the reusable tree; active queries hold their own Arcs.
     // A weak build result coalesces overlapping readers even when a tree is
@@ -226,13 +261,12 @@ pub struct SearchSnapshot {
     labels: Arc<LabelPool>,
     file_slots: FileSlots,
     pub live: RoaringBitmap,
-    pub trigrams: Arc<HashMap<[u8; 3], Arc<RoaringBitmap>>>,
-    pub name_order: Arc<Vec<u32>>,
-    pub(crate) path_order: Arc<Vec<u32>>,
+    pub(crate) trigrams: Arc<crate::posting_map::PostingMap<[u8; 3]>>,
+    pub(crate) name_order: Arc<SlotOrder>,
+    pub(crate) path_order: Arc<SlotOrder>,
     // Slots in non-singleton natural-path equivalence classes. Other sort
     // descriptors can only affect ordering inside these classes.
     pub(crate) path_ties: Arc<RoaringBitmap>,
-    path_rank: Arc<Vec<u32>>,
     pub(crate) metadata_postings: MetadataPostings,
     numeric_columns: NumericColumns,
     name_column: crate::name_column::NameColumn,
@@ -240,7 +274,46 @@ pub struct SearchSnapshot {
     pub content_revision: u64,
     cache: crate::derived_cache::DerivedCache,
 }
+impl SnapshotData {
+    pub(crate) fn reclaim(self, cpu: &mut crate::cpu_executor::BackgroundPermit) {
+        let Self {
+            entries,
+            name_column,
+            trigrams,
+            metadata_postings,
+            ..
+        } = self;
+        drop(name_column);
+        for chunk in entries.chunks {
+            cpu.checkpoint();
+            drop(chunk);
+        }
+        crate::posting_map::reclaim(trigrams, cpu);
+        metadata_postings.reclaim(cpu);
+    }
+    pub(crate) fn inventory(&self, inventory: &mut crate::memory_inventory::Inventory) {
+        self.entries.inventory(inventory);
+        self.numeric_columns.inventory(inventory);
+        self.name_column.inventory_directory(inventory);
+        inventory.record(
+            "file_slot_payload_bytes",
+            Arc::as_ptr(&self.file_slots.exceptions) as usize,
+            self.file_slots.exceptions.len() * std::mem::size_of::<(i64, u32)>(),
+        );
+        self.metadata_postings.inventory(inventory);
+        inventory.bitmap(&self.live);
+        inventory.bitmap(&self.path_ties);
+        self.trigrams.inventory(inventory);
+        self.name_order.inventory(inventory);
+        self.path_order.inventory(inventory);
+    }
+}
 impl SearchSnapshot {
+    fn from_data(data: SnapshotData) -> Self {
+        Self {
+            data: Some(Arc::new(data)),
+        }
+    }
     pub(crate) fn directory_hierarchy(
         &self,
         cancelled: &AtomicBool,
@@ -262,13 +335,15 @@ impl SearchSnapshot {
     }
 
     pub(crate) fn from_prepared_cache(parts: crate::snapshot_cache::PreparedSnapshot) -> Self {
-        let path_rank = Arc::new(order_ranks(parts.entries.len(), &parts.path_order));
         // These contiguous numeric blocks are cheap derived columns. Restoring
         // them requires no folding, sorting or cache format rewrite.
         let numeric_columns = NumericColumns::build(&parts.entries);
         let name_column = crate::name_column::NameColumn::build(&parts.entries);
         let file_slots = parts.file_slots;
-        Self {
+        Self::from_data(SnapshotData {
+            posting_sections: (0..crate::posting_map::SHARDS)
+                .map(|_| Arc::default())
+                .collect(),
             hierarchy: Mutex::new(std::sync::Weak::new()),
             index_section: Arc::default(),
             file_slots,
@@ -279,14 +354,13 @@ impl SearchSnapshot {
             name_order: parts.name_order,
             path_order: parts.path_order,
             path_ties: parts.path_ties,
-            path_rank,
             metadata_postings: parts.metadata_postings,
             numeric_columns,
             name_column,
             generation: parts.generation,
             content_revision: parts.content_revision,
             cache: crate::derived_cache::DerivedCache::default(),
-        }
+        })
     }
     pub(crate) fn slot_for_id(&self, id: i64) -> Option<usize> {
         self.file_slots.get(id, &self.entries)
@@ -328,12 +402,24 @@ impl SearchSnapshot {
         mut record: impl FnMut(&str, std::time::Duration),
     ) -> Result<Self, String> {
         let started = std::time::Instant::now();
-        let entries = EntryTable::from_rows(rows.into_iter().map(|row| {
+        let entries = Self::prepare_rows(rows)?;
+        record("prepare_compact_rows", started.elapsed());
+        Ok(Self::build_compact_rows(entries, generation, record))
+    }
+    fn prepare_rows(
+        rows: impl IntoIterator<Item = Result<IndexedFile, String>>,
+    ) -> Result<EntryTable, String> {
+        EntryTable::from_rows(rows.into_iter().map(|row| {
             let mut row = row?;
             row.prepare();
             Ok(row)
-        }))?;
-        record("prepare_compact_rows", started.elapsed());
+        }))
+    }
+    fn build_compact_rows(
+        entries: EntryTable,
+        generation: u64,
+        mut record: impl FnMut(&str, std::time::Duration),
+    ) -> Self {
         let started = std::time::Instant::now();
         let mut trigrams: HashMap<[u8; 3], Arc<RoaringBitmap>> = HashMap::new();
         let mut cpu = crate::cpu_executor::enter_background();
@@ -348,13 +434,13 @@ impl SearchSnapshot {
         }
         record("name_postings", started.elapsed());
         drop(cpu);
-        Ok(Self::build_prepared_indexes(
+        Self::build_prepared_indexes(
             entries,
             Arc::new(LabelPool::default()),
             trigrams,
             generation,
             record,
-        ))
+        )
     }
     /// Build slot-based derived structures from immutable, already folded rows.
     /// Reusing the row Arcs avoids cloning paths or recomputing Unicode columns
@@ -408,7 +494,6 @@ impl SearchSnapshot {
             }
             path_spec.compare(&entries.at(*a as usize), &entries.at(*b as usize))
         });
-        let path_rank = order_ranks(entries.len(), &path_order);
         let mut path_ties = RoaringBitmap::new();
         for pair in path_order.windows(2) {
             if same_natural_path(&entries, pair[0], pair[1]) {
@@ -416,8 +501,11 @@ impl SearchSnapshot {
                 path_ties.insert(pair[1]);
             }
         }
-        record("path_sort_and_ranks", started.elapsed());
-        Self {
+        record("path_sort_and_ties", started.elapsed());
+        Self::from_data(SnapshotData {
+            posting_sections: (0..crate::posting_map::SHARDS)
+                .map(|_| Arc::default())
+                .collect(),
             hierarchy: Mutex::new(std::sync::Weak::new()),
             index_section: Arc::default(),
             entries,
@@ -426,16 +514,15 @@ impl SearchSnapshot {
             live,
             generation,
             content_revision: 0,
-            trigrams: Arc::new(trigrams),
-            name_order: Arc::new(name_order),
-            path_order: Arc::new(path_order),
+            trigrams: Arc::new(trigrams.into()),
+            name_order: Arc::new(name_order.into()),
+            path_order: Arc::new(path_order.into()),
             path_ties: Arc::new(path_ties),
-            path_rank: Arc::new(path_rank),
             metadata_postings,
             numeric_columns,
             name_column,
             cache: crate::derived_cache::DerivedCache::default(),
-        }
+        })
     }
     /// Full reloads remain available for recovery and compaction. Ordinary event
     /// batches use from_changes, which never rereads or copies a million rows.
@@ -587,6 +674,8 @@ impl SearchSnapshot {
         let mut order_changes = RoaringBitmap::new();
         let mut path_changes = RoaringBitmap::new();
         let mut changed_slots = RoaringBitmap::new();
+        let mut pair_changes = crate::posting_changes::GramChanges::<2>::default();
+        let mut trigram_changes = crate::posting_changes::GramChanges::<3>::default();
         for (change_index, (id, replacement)) in changes.into_iter().enumerate() {
             if change_index.is_multiple_of(crate::entry_table::CHUNK_LENGTH) {
                 cpu.checkpoint();
@@ -625,17 +714,6 @@ impl SearchSnapshot {
                 }
                 _ => true,
             };
-            if was_live && metadata_changed {
-                metadata_postings.remove(slot as u32, &old.unwrap());
-            }
-            if name_changed && was_live {
-                let postings = Arc::make_mut(&mut trigrams);
-                for tri in old.unwrap().search_name().as_bytes().windows(3) {
-                    if let Some(bitmap) = postings.get_mut(&[tri[0], tri[1], tri[2]]) {
-                        Arc::make_mut(bitmap).remove(slot as u32);
-                    }
-                }
-            }
             if let Some(mut entry) = replacement {
                 entry.prepare_replacement(old);
                 entry.share_labels(&mut labels);
@@ -648,14 +726,21 @@ impl SearchSnapshot {
                     numeric_columns.set(slot as u32, &entry);
                 }
                 if metadata_changed {
-                    metadata_postings.insert(slot as u32, &entry);
+                    if let Some(old) = old.filter(|_| was_live) {
+                        metadata_postings.update(slot as u32, &old, &entry, &mut pair_changes);
+                    } else {
+                        metadata_postings.insert(slot as u32, &entry);
+                    }
                 }
                 if name_changed {
-                    let postings = Arc::make_mut(&mut trigrams);
-                    for tri in entry.search_name.as_bytes().windows(3) {
-                        Arc::make_mut(postings.entry([tri[0], tri[1], tri[2]]).or_default())
-                            .insert(slot as u32);
-                    }
+                    trigram_changes.apply(
+                        &mut trigrams,
+                        slot as u32,
+                        old.as_ref()
+                            .filter(|_| was_live)
+                            .map_or("", |old| old.search_name()),
+                        &entry.search_name,
+                    );
                 }
                 if slot == entries.len() {
                     entries.push(entry);
@@ -664,12 +749,17 @@ impl SearchSnapshot {
                 }
                 live.insert(slot as u32);
             } else {
+                if let Some(old) = old.filter(|_| was_live) {
+                    metadata_postings.remove(slot as u32, &old);
+                    trigram_changes.apply(&mut trigrams, slot as u32, old.search_name(), "");
+                }
                 live.remove(slot as u32);
             }
             if index_changed {
                 order_changes.insert(slot as u32);
             }
         }
+        drop((pair_changes, trigram_changes));
         drop(cpu);
         entries.finish_update();
         let mut cpu = crate::cpu_executor::enter_background();
@@ -689,12 +779,8 @@ impl SearchSnapshot {
         numeric_columns.finish_update(&entries);
         let name_column = crate::name_column::NameColumn::build(&entries);
         let old_orders = previous.cache.orders();
-        let (path_order, path_rank, path_ties) = if path_changes.is_empty() {
-            (
-                previous.path_order.clone(),
-                previous.path_rank.clone(),
-                previous.path_ties.clone(),
-            )
+        let (path_order, path_ties) = if path_changes.is_empty() {
+            (previous.path_order.clone(), previous.path_ties.clone())
         } else {
             let order = updated_order(
                 &previous.path_order,
@@ -704,9 +790,8 @@ impl SearchSnapshot {
                 &entries,
                 &ResultOrder::path(),
             );
-            let ranks = order_ranks(entries.len(), &order);
-            let ties = updated_path_ties(previous, &path_changes, &live, &entries, &order, &ranks);
-            (Arc::new(order), Arc::new(ranks), Arc::new(ties))
+            let ties = updated_path_ties(previous, &path_changes, &live, &entries, &order);
+            (Arc::new(order), Arc::new(ties))
         };
         let sort_orders = old_orders
             .into_iter()
@@ -737,6 +822,21 @@ impl SearchSnapshot {
                 }
             })
             .collect();
+        let posting_sections = (0..crate::posting_map::SHARDS)
+            .map(|shard| {
+                if trigrams.shares_partition(&previous.trigrams, shard)
+                    && metadata_postings.shares_partition(&previous.metadata_postings, shard)
+                {
+                    previous
+                        .posting_sections
+                        .get(shard)
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    Arc::default()
+                }
+            })
+            .collect();
         let index_section = if live == previous.live
             && Arc::ptr_eq(&trigrams, &previous.trigrams)
             && Arc::ptr_eq(&name_order, &previous.name_order)
@@ -748,7 +848,8 @@ impl SearchSnapshot {
         } else {
             Arc::default()
         };
-        Ok(Self {
+        Ok(Self::from_data(SnapshotData {
+            posting_sections,
             hierarchy: Mutex::new(std::sync::Weak::new()),
             index_section,
             entries,
@@ -758,7 +859,6 @@ impl SearchSnapshot {
             trigrams,
             name_order,
             path_order,
-            path_rank,
             path_ties,
             metadata_postings,
             numeric_columns,
@@ -766,7 +866,7 @@ impl SearchSnapshot {
             generation,
             content_revision: previous.content_revision,
             cache: crate::derived_cache::DerivedCache::from_orders(sort_orders),
-        })
+        }))
     }
     pub(crate) fn cached_page(&self, key: &str) -> Option<Arc<ResultPage>> {
         self.cache.page(key)
@@ -780,7 +880,7 @@ impl SearchSnapshot {
     pub(crate) fn cache_matches(&self, key: String, matches: Arc<RoaringBitmap>) {
         self.cache.insert_matches(key, matches);
     }
-    pub(crate) fn cached_order(&self, order: &ResultOrder) -> Option<Arc<Vec<u32>>> {
+    pub(crate) fn cached_order(&self, order: &ResultOrder) -> Option<Arc<SlotOrder>> {
         if order == &ResultOrder::name() {
             return Some(self.name_order.clone());
         }
@@ -795,7 +895,7 @@ impl SearchSnapshot {
         &self,
         order: &ResultOrder,
         cancelled: &AtomicBool,
-    ) -> Result<Arc<Vec<u32>>, String> {
+    ) -> Result<Arc<SlotOrder>, String> {
         if cancelled.load(Ordering::Relaxed) {
             return Err("Query cancelled".into());
         }
@@ -804,7 +904,7 @@ impl SearchSnapshot {
         }
         let mut slots: Vec<u32>;
         if let Some(ascending) = order.primary_path_direction() {
-            slots = self.path_order.as_ref().clone();
+            slots = self.path_order.to_vec();
             if !ascending {
                 slots.reverse();
             }
@@ -816,7 +916,9 @@ impl SearchSnapshot {
                 if position % 1024 == 0 && cancelled.load(Ordering::Relaxed) {
                     return Err("Query cancelled".into());
                 }
-                ranks.push(self.path_rank[slot as usize] as usize);
+                ranks.push(
+                    path_position(&self.path_order, &self.entries, slot).expect("Live path tie"),
+                );
             }
             ranks.sort_unstable();
             let mut first = 0;
@@ -863,7 +965,7 @@ impl SearchSnapshot {
                 cancelled,
             )?;
         }
-        let slots = Arc::new(slots);
+        let slots = Arc::new(SlotOrder::from(slots));
         if let Some(existing) = self.cache.order(order) {
             return Ok(existing);
         }
@@ -1058,59 +1160,42 @@ impl SearchSnapshot {
     }
 }
 pub(crate) fn updated_order(
-    previous: &[u32],
+    previous: &SlotOrder,
     previous_entries: &EntryTable,
     changed: &RoaringBitmap,
     live: &RoaringBitmap,
     entries: &EntryTable,
     order: &ResultOrder,
-) -> Vec<u32> {
+) -> SlotOrder {
     let mut replacements: Vec<_> = changed.iter().filter(|slot| live.contains(*slot)).collect();
     replacements
         .sort_unstable_by(|a, b| order.compare(&entries.at(*a as usize), &entries.at(*b as usize)));
-    let mut result = Vec::with_capacity(live.len() as usize);
-    // For sparse deltas, locate old keys using the old immutable rows. New
-    // values may already have moved elsewhere in sort order. Copy unchanged
-    // runs directly instead of checking every old slot against the delta.
-    // Dense deltas retain the linear membership pass to bound lookup work.
-    // A comparison follows record/string references and performs natural-key
-    // comparison; it is much more expensive than a bitmap membership check.
-    // Calibrated conservatively against the sparse/dense crossover profile.
-    const KEY_PROBE_RELATIVE_COST: u64 = 32;
     let lookup_work = changed
         .len()
         .saturating_mul(u64::from(previous.len().max(1).ilog2()) + 1)
-        .saturating_mul(KEY_PROBE_RELATIVE_COST);
-    if lookup_work < previous.len() as u64 {
-        let mut removed = Vec::with_capacity(changed.len() as usize);
-        for slot in changed {
-            if let Some(old) = previous_entries.get(slot as usize)
-                && let Ok(position) = previous.binary_search_by(|other| {
-                    order.compare(&previous_entries.at(*other as usize), &old)
-                })
-            {
-                removed.push(position);
-            }
-        }
-        removed.sort_unstable();
-        let mut start = 0;
-        for position in removed {
-            result.extend_from_slice(&previous[start..position]);
-            start = position + 1;
-        }
-        result.extend_from_slice(&previous[start..]);
+        .saturating_mul(32);
+    let mut removed = if lookup_work < previous.len() as u64 {
+        changed
+            .iter()
+            .filter_map(|slot| {
+                let old = previous_entries.get(slot as usize)?;
+                previous
+                    .binary_search_by(|candidate| {
+                        order.compare(&previous_entries.at(*candidate as usize), &old)
+                    })
+                    .ok()
+            })
+            .collect()
     } else {
-        result.extend(
-            previous
-                .iter()
-                .copied()
-                .filter(|slot| !changed.contains(*slot)),
-        );
-    }
-    ordered_merge::insert_sorted(&mut result, &replacements, |a, b| {
+        previous
+            .iter()
+            .enumerate()
+            .filter_map(|(rank, slot)| changed.contains(*slot).then_some(rank))
+            .collect()
+    };
+    previous.updated(&mut removed, &replacements, |a, b| {
         order.compare(&entries.at(a as usize), &entries.at(b as usize))
-    });
-    result
+    })
 }
 #[cfg(test)]
 pub(crate) fn linear_updated_order_reference(
@@ -1136,12 +1221,18 @@ pub(crate) fn linear_updated_order_reference(
     result
 }
 
-fn order_ranks(slot_count: usize, order: &[u32]) -> Vec<u32> {
-    let mut ranks = vec![u32::MAX; slot_count];
-    for (rank, slot) in order.iter().enumerate() {
-        ranks[*slot as usize] = rank as u32;
-    }
-    ranks
+fn path_position(order: &SlotOrder, entries: &EntryTable, slot: u32) -> Option<usize> {
+    let target = entries.get(slot as usize)?;
+    order
+        .binary_search_by(|candidate| {
+            let candidate = entries.at(*candidate as usize);
+            candidate
+                .folded_path()
+                .natural_cmp(target.folded_path())
+                .then_with(|| candidate.path().cmp(&target.path()))
+                .then_with(|| candidate.id().cmp(&target.id()))
+        })
+        .ok()
 }
 fn same_natural_path(entries: &EntryTable, first: u32, second: u32) -> bool {
     entries
@@ -1153,26 +1244,22 @@ fn same_natural_path(entries: &EntryTable, first: u32, second: u32) -> bool {
 fn include_order_neighbors(
     candidates: &mut RoaringBitmap,
     slot: u32,
-    order: &[u32],
-    ranks: &[u32],
+    order: &SlotOrder,
+    entries: &EntryTable,
 ) {
-    let Some(&rank) = ranks.get(slot as usize).filter(|rank| **rank != u32::MAX) else {
+    let Some(rank) = path_position(order, entries, slot) else {
         return;
     };
-    let rank = rank as usize;
-    candidates.extend(
-        order[rank.saturating_sub(1)..(rank + 2).min(order.len())]
-            .iter()
-            .copied(),
-    );
+    for position in rank.saturating_sub(1)..(rank + 2).min(order.len()) {
+        candidates.insert(order[position]);
+    }
 }
 fn updated_path_ties(
     previous: &SearchSnapshot,
     changed: &RoaringBitmap,
     live: &RoaringBitmap,
     entries: &EntryTable,
-    order: &[u32],
-    ranks: &[u32],
+    order: &SlotOrder,
 ) -> RoaringBitmap {
     let mut candidates = changed.clone();
     for slot in changed {
@@ -1180,9 +1267,9 @@ fn updated_path_ties(
             &mut candidates,
             slot,
             &previous.path_order,
-            &previous.path_rank,
+            &previous.entries,
         );
-        include_order_neighbors(&mut candidates, slot, order, ranks);
+        include_order_neighbors(&mut candidates, slot, order, entries);
     }
     let mut ties = previous.path_ties.as_ref().clone();
     for slot in candidates {
@@ -1190,7 +1277,7 @@ fn updated_path_ties(
         if !live.contains(slot) {
             continue;
         }
-        let rank = ranks[slot as usize] as usize;
+        let rank = path_position(order, entries, slot).expect("Live path entry");
         if (rank > 0 && same_natural_path(entries, slot, order[rank - 1]))
             || (rank + 1 < order.len() && same_natural_path(entries, slot, order[rank + 1]))
         {
@@ -1349,7 +1436,74 @@ pub struct IndexStore {
     pub connection: Connection,
     pub cache_path: std::path::PathBuf,
 }
+/// A pinned SQLite read view owns its connection instead of the engine's store
+/// mutex. The read transaction ends before CPU-only derived indexes are built.
+pub(crate) struct SnapshotRead {
+    connection: Connection,
+    pub revision: u64,
+    pub content_revision: u64,
+}
+impl SnapshotRead {
+    pub(crate) fn build(self, generation: u64) -> Result<SearchSnapshot, String> {
+        let entries = {
+            let sql = format!(
+                "SELECT f.id,{} FROM files f LEFT JOIN content c ON f.path=c.path WHERE f.accessible=1 ORDER BY f.id",
+                change_reader::COLUMNS
+            );
+            let mut statement = self.connection.prepare(&sql).map_err(|e| e.to_string())?;
+            let rows = statement
+                .query_map([], change_reader::decode_file)
+                .map_err(|e| e.to_string())?;
+            SearchSnapshot::prepare_rows(rows.map(|row| row.map_err(|e| e.to_string())))?
+        };
+        // Row packing above uses background admission while its private WAL
+        // view is pinned, but never holds the shared store mutex. Release the
+        // view before global postings/sorting to avoid retaining WAL frames
+        // through those later CPU stages as well.
+        self.connection
+            .execute_batch("ROLLBACK")
+            .map_err(|e| e.to_string())?;
+        drop(self.connection);
+        Ok(SearchSnapshot::build_compact_rows(
+            entries,
+            generation,
+            |_, _| {},
+        ))
+    }
+}
 impl IndexStore {
+    pub(crate) fn snapshot_read(&self) -> Result<SnapshotRead, String> {
+        let path = self.connection.path().ok_or("Index has no database path")?;
+        let connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(|e| e.to_string())?;
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|e| e.to_string())?;
+        connection
+            .execute_batch("BEGIN DEFERRED")
+            .map_err(|e| e.to_string())?;
+        let read_revision = |key: &str| -> Result<u64, String> {
+            let value: Option<String> = connection
+                .query_row("SELECT value FROM settings WHERE key=?1", [key], |row| {
+                    row.get(0)
+                })
+                .optional()
+                .map_err(|e| e.to_string())?;
+            value.map_or(Ok(0), |value| {
+                value.parse::<u64>().map_err(|e| e.to_string())
+            })
+        };
+        // The first SELECT establishes a WAL snapshot; both revisions and all
+        // streamed rows therefore describe the same committed database state.
+        let revision = read_revision("revision")?;
+        let content_revision = read_revision("content_revision")?;
+        Ok(SnapshotRead {
+            connection,
+            revision,
+            content_revision,
+        })
+    }
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?
@@ -2291,14 +2445,20 @@ impl IndexStore {
             return Ok(());
         }
         publish(&self.cache_path, snapshot, revision)?;
+        self.checkpoint_cache(snapshot.generation, revision)
+    }
+    /// Called only after successful atomic cache publication. A newer database
+    /// revision retains its dirty marker and complete replay journal.
+    pub(crate) fn checkpoint_cache(&self, generation: u64, revision: u64) -> Result<(), String> {
         // Publishing the file precedes one atomic journal checkpoint. A crash
         // between the two leaves mismatched cache metadata, which is rejected.
-        let transaction = self
-            .connection
-            .unchecked_transaction()
-            .map_err(|error| error.to_string())?;
+        let transaction = rusqlite::Transaction::new_unchecked(
+            &self.connection,
+            rusqlite::TransactionBehavior::Immediate,
+        )
+        .map_err(|error| error.to_string())?;
         if self.get("revision", json!(0)).as_u64().unwrap_or(0) == revision {
-            self.set("cache_base_generation", &json!(snapshot.generation))?;
+            self.set("cache_base_generation", &json!(generation))?;
             self.set("cache_base_revision", &json!(revision))?;
             self.set("cache_journal_overflow", &json!(false))?;
             self.set("cache_dirty", &json!(false))?;

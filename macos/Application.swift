@@ -539,7 +539,10 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         var buttonTitle = ""
         var buttonHidden = false
         var action = 1
-        if currentStatus["success"] as? Bool == false && offlineListID == nil {
+        if currentStatus["success"] as? Bool == false && offlineListID == nil && currentStatus["error_code"] as? String == "index_open_failed" {
+            title = L("index.open_failed_title"); detail = errorText(currentStatus)
+            buttonTitle = L("index.retry_open"); action = 4
+        } else if currentStatus["success"] as? Bool == false && offlineListID == nil {
             title = L("index.index_service_not_connected"); detail = errorText(currentStatus)
             if SearchClient.shared.requiresApproval {
                 buttonTitle = L("settings.open_background_service_settings"); action = 2
@@ -589,7 +592,32 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         }
     }
     @objc func emptyButtonPressed(_ sender: Any?) {
+        guard emptyButton.isEnabled else { return }
         if emptyAction == 2 { SMAppService.openSystemSettingsLoginItems() }
+        else if emptyAction == 4 {
+            // A database failure is distinct from XPC registration. Only this
+            // explicit action requests a new open attempt; status polling does
+            // not repeatedly touch a damaged or inaccessible database.
+            stopStatusObservation()
+            let epoch = statusEpoch
+            emptyButton.isEnabled = false
+            requestProgress(true, immediate: true)
+            SearchClient.shared.call(["op": "status", "retry_index": true]) { [weak self] reply in
+                guard let self else { return }
+                self.emptyButton.isEnabled = true
+                guard self.statusEpoch == epoch, self.offlineListID == nil else { return }
+                self.currentStatus = reply
+                self.statusObservationActive = true
+                self.statusRetryDelay = 1
+                self.requestProgress(false)
+                self.updateStatus()
+                if reply["success"] as? Bool == true {
+                    self.roots = self.stringList(reply["roots"])
+                    self.runQuery()
+                }
+                self.pollStatus()
+            }
+        }
         else if emptyAction == 3 {
             SearchClient.shared.retryConnection()
             pollStatus()
@@ -618,7 +646,9 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     @objc func focusSearch(_ sender: Any?) { searchToolbarItem?.beginSearchInteraction(); window?.makeFirstResponder(search); search.selectText(nil) }
     @objc func preferencesChanged(_ notification: Notification) { refreshShortcuts(); runQuery() }
     func cancelQueries() {
-        currentLease = nil
+        // Cancelling requests does not retire the results still on screen.
+        // Keep their lease until a successful replacement owns its snapshot;
+        // otherwise an offline index can be unloaded between keystrokes.
         selectionResolver?.cancel(); selectionResolver = nil; selectionResolution += 1
         for id in requestIDs {
             var request: [String: Any] = ["op": "cancel", "request_id": id]
@@ -1556,6 +1586,9 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         visibleIconUpdate?.cancel(); visibleIconUpdate = nil; iconLoader.updateDemand([])
         operationReviewPending = false
         stopStatusObservation(); cancelQueries(); cancelBackground(nil)
+        querySequence += 1
+        currentLease = nil
+        resultsAreCurrent = false
         let closing = duplicateWindows; duplicateWindows.removeAll()
         closing.forEach { $0.close() }
         if let delegate = NSApp.delegate as? AppDelegate { delegate.windows.removeAll { $0 === self } }

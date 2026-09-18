@@ -43,6 +43,21 @@ impl Default for SnapshotLeases {
     }
 }
 impl SnapshotLeases {
+    pub(crate) fn inventory_snapshots(&self) -> (Vec<Arc<SearchSnapshot>>, usize, usize) {
+        let records = self.records.lock().unwrap();
+        let windows = records
+            .values()
+            .filter(|record| record.owner == LeaseOwner::Window)
+            .count();
+        (
+            records
+                .values()
+                .map(|record| record.context.snapshot.clone())
+                .collect(),
+            windows,
+            records.len() - windows,
+        )
+    }
     fn new(lifetime: Duration, capacity: usize) -> Self {
         Self {
             records: Mutex::new(HashMap::new()),
@@ -79,8 +94,8 @@ impl SnapshotLeases {
         owner: LeaseOwner,
         now: Instant,
     ) -> Result<String, String> {
+        self.discard_expired_at(now);
         let mut records = self.records.lock().unwrap();
-        records.retain(|_, record| record.deadline > now);
         let capacity = match owner {
             LeaseOwner::Window => WINDOW_LEASE_CAPACITY,
             LeaseOwner::Operation => self.capacity,
@@ -118,8 +133,8 @@ impl SnapshotLeases {
         self.get_at(id, Instant::now())
     }
     fn get_at(&self, id: &str, now: Instant) -> Result<LeaseContext, String> {
+        self.discard_expired_at(now);
         let mut records = self.records.lock().unwrap();
-        records.retain(|_, record| record.deadline > now);
         let record = records
             .get_mut(id)
             .ok_or("SearchSnapshot lease expired or was released; restart the operation")?;
@@ -152,7 +167,8 @@ impl SnapshotLeases {
         count
     }
     pub fn release(&self, id: &str) -> bool {
-        self.records.lock().unwrap().remove(id).is_some()
+        let removed = { self.records.lock().unwrap().remove(id) };
+        removed.is_some()
     }
 }
 

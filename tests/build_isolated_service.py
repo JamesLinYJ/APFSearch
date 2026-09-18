@@ -41,6 +41,7 @@ command += ['-lc++', '-o', str(binary)]
 subprocess.run(command, check=True)
 app = work / 'FixtureService.app'
 binary = create_test_bundle(binary, app)
+subprocess.run(['xattr', '-cr', str(app)], check=True)
 subprocess.run(['codesign', '--force', '--options', 'runtime', '--timestamp=none', '--identifier', 'org.apfsearch.indexer', '--sign', args.identity, str(app)], check=True)
 subprocess.run(['codesign', '--verify', '--strict', str(app)], check=True)
 data = work / 'data'

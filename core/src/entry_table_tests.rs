@@ -74,6 +74,37 @@ fn repeated_renames_reclaim_unreferenced_text_without_mutating_readers() {
 }
 
 #[test]
+fn direct_compaction_preserves_overlapping_unicode_references_and_nontext_storage() {
+    let mut row = file(1);
+    row.properties = json!({"detail":["中文",u64::MAX]});
+    let original = EntryTable::from_rows([Ok(row)]).unwrap();
+    let mut updated = original.clone();
+    let mut row = original.at(0).to_owned_file();
+    row.name = "a".repeat(4096);
+    row.path = format!("/目录/{}", row.name);
+    row.prepare();
+    updated.set(0, row);
+    updated.finish_update();
+    let mut final_row = file(1);
+    // Imported display names and path tails need not agree.
+    final_row.path = "/目录/尾端.txt".into();
+    final_row.properties = original.at(0).properties().clone();
+    final_row.prepare();
+    updated.set(0, final_row.clone());
+    let before = updated.chunks[0].clone();
+    updated.finish_update();
+    let after = &updated.chunks[0];
+    assert!(after.text.text().len() < 512);
+    assert!(Arc::ptr_eq(&before.size.0, &after.size.0));
+    assert!(Arc::ptr_eq(&before.properties, &after.properties));
+    assert!(Arc::ptr_eq(&before.labels, &after.labels));
+    assert!(same_record(&final_row, &updated.at(0)));
+    assert_eq!(updated.at(0).folded_path(), final_row.folded_path.as_ref());
+    assert_eq!(updated.at(0).search_path(), final_row.search_path.as_ref());
+    assert_eq!(original.at(0).path(), "/fixture/目录/Café-1.txt");
+}
+
+#[test]
 fn mapped_columns_reject_unaligned_or_incomplete_ranges() {
     let mapping = Arc::new(
         memmap2::MmapMut::map_anon(128)
@@ -88,6 +119,54 @@ fn mapped_columns_reject_unaligned_or_incomplete_ranges() {
         Column::<u64>::mapped(mapping, 8..24).unwrap().values(),
         [0, 0]
     );
+}
+
+#[test]
+fn parent_and_descendant_prefixes_share_contiguous_storage_across_updates() {
+    let mut rows = Vec::new();
+    for (id, path) in [
+        "/目录/a.txt",
+        "/目录/子目录/b.txt",
+        "/目录/子目录/下一层/c.txt",
+        "/root.txt",
+        "relative.txt",
+        "/a//b///c/",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut row = file(id as i64);
+        row.path = path.into();
+        row.prepare();
+        rows.push(row);
+    }
+    let original = EntryTable::from_rows(rows.clone().into_iter().map(Ok)).unwrap();
+    let chunk = &original.chunks[0];
+    for (slot, row) in rows.iter().enumerate() {
+        assert!(same_record(row, &original.at(slot)));
+        let parent = chunk.parent.values()[slot];
+        let prefix = chunk.path.values()[slot].prefix;
+        if chunk.text_at(prefix).starts_with(row.parent()) {
+            assert_eq!(parent.offset, prefix.offset);
+        }
+    }
+    let mut updated = original.clone();
+    rows[0].path = "/新增目录/更深/a.txt".into();
+    rows[0].prepare();
+    updated.set(0, rows[0].clone());
+    updated.finish_update();
+    let chunk = &updated.chunks[0];
+    assert_eq!(
+        chunk.parent.values()[0].offset,
+        chunk.path.values()[0].prefix.offset
+    );
+    assert!(same_record(&rows[0], &updated.at(0)));
+    assert_eq!(original.at(0).path(), "/目录/a.txt");
+    // Supplied parent fields need not be derivable from imported paths.
+    rows[0].parent = "unrelated parent".into();
+    updated.set(0, rows[0].clone());
+    updated.finish_update();
+    assert_eq!(updated.at(0).parent(), "unrelated parent");
 }
 
 #[test]

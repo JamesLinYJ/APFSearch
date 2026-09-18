@@ -535,7 +535,7 @@ fn binary_cache_preserves_paths_properties_and_rejects_corruption() {
     assert_eq!(actual["rows"], expected["rows"]);
     let db = apfsearch_core::index_store::IndexStore::open(&dbpath).unwrap();
     let mut bytes = std::fs::read(&db.cache_path).unwrap();
-    assert_eq!(&bytes[..8], b"APFMAP03");
+    assert_eq!(&bytes[..8], b"APFMAP04");
     bytes[55] ^= 1;
     std::fs::write(&db.cache_path, &bytes).unwrap();
     assert!(db.cache_read().is_none());
@@ -646,6 +646,50 @@ fn seen_epochs_and_event_cursor_keep_valid_cache_and_generation() {
 #[test]
 fn incremental_snapshot_matches_full_rebuild_for_metadata_and_renames() {
     use apfsearch_core::index_store::SearchSnapshot;
+    let compare_candidates = |incremental: &SearchSnapshot, rebuilt: &SearchSnapshot| {
+        // Assert public candidate behavior rather than depending on the private
+        // posting directory representation (flat versus sharded storage).
+        for text in [
+            "报告",
+            "café",
+            "cafe",
+            "Straße",
+            "strasse",
+            "新文件",
+            "txt",
+            "absent",
+        ] {
+            let query = query::parse(text, &HashMap::new()).unwrap();
+            assert_eq!(
+                incremental.candidates(&query),
+                rebuilt.candidates(&query),
+                "{text}"
+            );
+        }
+    };
+    fn assert_candidates_match_reference(snapshot: &SearchSnapshot, rebuilt: &SearchSnapshot) {
+        use apfsearch_core::entry_table::FileEntry;
+        for text in ["", "报告", "cafe", "strasse", "新文件", "txt", "missing"] {
+            let query = query::parse(text, &HashMap::new()).unwrap();
+            let candidates = snapshot
+                .candidates(&query)
+                .unwrap_or_else(|| snapshot.live.clone());
+            let mut actual: Vec<_> = candidates
+                .iter()
+                .map(|slot| snapshot.entries.at(slot as usize))
+                .filter(|entry| query.matches(entry, None).unwrap())
+                .map(|entry| entry.id())
+                .collect();
+            let mut expected: Vec<_> = rebuilt
+                .visible_entries()
+                .filter(|entry| query.matches(entry, None).unwrap())
+                .map(|entry| entry.id())
+                .collect();
+            actual.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(actual, expected, "{text}");
+        }
+    }
     let mut entries = vec![
         entry("报告2.txt"),
         entry("café10.txt"),
@@ -658,8 +702,8 @@ fn incremental_snapshot_matches_full_rebuild_for_metadata_and_renames() {
     entries[1].size += 100;
     let reused = SearchSnapshot::from_previous(entries.clone(), 2, &previous);
     let rebuilt = SearchSnapshot::new(entries.clone(), 2);
-    assert_eq!(reused.trigrams, rebuilt.trigrams);
-    assert_eq!(reused.name_order, rebuilt.name_order);
+    compare_candidates(&reused, &rebuilt);
+    assert_candidates_match_reference(&reused, &rebuilt);
     for (a, b) in reused.entries.iter().zip(rebuilt.entries.iter()) {
         assert_eq!(a.folded_path(), b.folded_path());
         assert_eq!(a.folded_name(), b.folded_name());
@@ -674,8 +718,8 @@ fn incremental_snapshot_matches_full_rebuild_for_metadata_and_renames() {
     entries.push(added);
     let reused = SearchSnapshot::from_previous(entries.clone(), 3, &previous);
     let rebuilt = SearchSnapshot::new(entries, 3);
-    assert_eq!(reused.trigrams, rebuilt.trigrams);
-    assert_eq!(reused.name_order, rebuilt.name_order);
+    compare_candidates(&reused, &rebuilt);
+    assert_candidates_match_reference(&reused, &rebuilt);
 }
 
 #[test]

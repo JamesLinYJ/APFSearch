@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.6 Preview
+
+### 中文
+
+- 按完全相同的字节共享目录前缀，直接整理文本引用；保留连续名称区和查询语义，减少重复文本及临时对象。
+- 倒排目录分为共享分片，名称和路径排序使用共享叶块。增量更新计算新旧词项差集，仅复制变化部分；旧版本分页保持一致。
+- 修复窗口结果替换、取消、关闭和离线导出的快照所有权；有界后台回收与显式内存盘点跟踪退役版本。
+- 索引打开失败可明确重试，文本内容读取支持分块取消；不反复重试损坏数据库，也不引导到无关的系统权限页面。
+- 发布使用 macOS 26 或更新 SDK，并校验所有可执行架构的实际链接 SDK，修复 Liquid Glass 未出现在 GitHub 构建中的问题。最低系统版本仍为 macOS 14。
+- 保留 SQLite、配置和公开协议；派生缓存格式更新为 04，从已有数据库生成，不因缓存升级重新扫盘。内部构建号仍为 1。
+
+### English
+
+- Share exact directory-prefix bytes and compact text references directly, preserving contiguous name scans and query semantics while reducing repeated storage and temporary objects.
+- Share posting shards and ordered leaves; apply term-set differences and copy only changed sections. Older snapshot pages remain consistent.
+- Fix result replacement, cancellation, window closure and offline-export ownership. Bound background reclamation and expose explicit allocation inventory diagnostics.
+- Allow explicit index-open retry and cancellable chunked text reads, without retry loops or unrelated permission guidance.
+- Build releases with macOS SDK 26 or newer and check actual linked SDKs for every executable slice, restoring Liquid Glass on supported systems. Keep macOS 14 as the minimum runtime.
+- Preserve SQLite, settings and the public protocol. Derived cache format 04 rebuilds from the existing database without a cache-upgrade filesystem rescan. The build number remains 1.
+
+This is a staged checkpoint; the whole-process memory target is not claimed complete. See [snapshot sharing](docs/SNAPSHOT_SHARING.md) for validation boundaries and comparison tools, and the [release notes](docs/releases/0.1.6.md) for first-launch conversion details.
+
 ## 0.1.5 Preview
 
 ### 中文

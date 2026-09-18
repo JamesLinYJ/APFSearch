@@ -2,6 +2,30 @@
   "sourceLanguage": "en",
   "version": "1.0",
   "strings": {
+    "index.open_failed_title": {
+      "localizations": {
+        "en": {"stringUnit": {"state": "translated", "value": "Unable to Open Index"}},
+        "zh-Hans": {"stringUnit": {"state": "translated", "value": "无法打开索引"}},
+        "zh-Hant": {"stringUnit": {"state": "translated", "value": "無法開啟索引"}},
+        "ja": {"stringUnit": {"state": "translated", "value": "インデックスを開けませんでした"}},
+        "ko": {"stringUnit": {"state": "translated", "value": "색인을 열 수 없습니다"}},
+        "ru": {"stringUnit": {"state": "translated", "value": "Не удалось открыть индекс"}},
+        "es": {"stringUnit": {"state": "translated", "value": "No se pudo abrir el índice"}},
+        "pt": {"stringUnit": {"state": "translated", "value": "Não foi possível abrir o índice"}}
+      }
+    },
+    "index.retry_open": {
+      "localizations": {
+        "en": {"stringUnit": {"state": "translated", "value": "Retry"}},
+        "zh-Hans": {"stringUnit": {"state": "translated", "value": "重试"}},
+        "zh-Hant": {"stringUnit": {"state": "translated", "value": "重試"}},
+        "ja": {"stringUnit": {"state": "translated", "value": "再試行"}},
+        "ko": {"stringUnit": {"state": "translated", "value": "다시 시도"}},
+        "ru": {"stringUnit": {"state": "translated", "value": "Повторить"}},
+        "es": {"stringUnit": {"state": "translated", "value": "Reintentar"}},
+        "pt": {"stringUnit": {"state": "translated", "value": "Tentar novamente"}}
+      }
+    },
     "directory.logical_notice": {
       "localizations": {
         "en": {

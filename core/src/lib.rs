@@ -36,8 +36,11 @@ mod query_latency_tests;
 mod query_scratch;
 mod reconciliation_batch;
 use reconciliation_batch::PreparationError;
+mod memory_inventory;
 #[cfg(all(test, target_os = "macos"))]
 mod mount_recovery_tests;
+mod posting_changes;
+mod posting_map;
 mod relations;
 mod resource_metrics;
 #[cfg(all(test, target_os = "macos"))]
@@ -46,9 +49,12 @@ mod result_order;
 mod scan_resume;
 pub mod scanner;
 pub mod shared_text;
+mod slot_order;
 mod snapshot_cache;
 mod snapshot_leases;
+mod snapshot_reclaimer;
 mod status_signal;
+mod text_pool;
 pub mod text_view;
 use arc_swap::ArcSwap;
 #[cfg(test)]
@@ -67,6 +73,9 @@ use std::{
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;
+
+#[cfg(test)]
+mod architecture_recovery_tests;
 
 #[derive(Debug, PartialEq, Eq)]
 enum ReconciliationOutcome {
@@ -238,8 +247,10 @@ impl SearchEngine {
             let index_store = self.index_store.lock().unwrap();
             let revision = index_store.get("revision", json!(0)).as_u64().unwrap_or(0);
             if revision == self.published_revision.load(Ordering::Relaxed) {
-                if cache && index_store.cache_is_dirty() {
-                    self.persist_snapshot_cache(&index_store, &previous_snapshot, revision);
+                let checkpoint = cache && index_store.cache_is_dirty();
+                drop(index_store);
+                if checkpoint {
+                    self.persist_snapshot_cache(&previous_snapshot, revision);
                 }
                 return Ok(());
             }
@@ -302,13 +313,10 @@ impl SearchEngine {
                     state["last_refresh"]["mode"] = json!(mode);
                     state["last_refresh"]["reason"] = json!(reason);
                 }
-                let index_store = self.index_store.lock().unwrap();
-                revision = index_store.get("revision", json!(0)).as_u64().unwrap_or(0);
-                content_revision = index_store
-                    .get("content_revision", json!(0))
-                    .as_u64()
-                    .unwrap_or(0);
-                index_store.snapshot(generation)?
+                let read = self.index_store.lock().unwrap().snapshot_read()?;
+                revision = read.revision;
+                content_revision = read.content_revision;
+                read.build(generation)?
             }
         };
         snapshot.content_revision = content_revision;
@@ -339,8 +347,7 @@ impl SearchEngine {
         drop(retired);
         drop(previous_snapshot);
         if cache {
-            let index_store = self.index_store.lock().unwrap();
-            self.persist_snapshot_cache(&index_store, &snapshot, revision);
+            self.persist_snapshot_cache(&snapshot, revision);
         }
         Ok(())
     }
@@ -354,14 +361,31 @@ impl SearchEngine {
             .filter_map(|entry| entry.retained.take())
             .collect();
         drop(retained);
+        snapshot_reclaimer::wait_until_drained();
     }
-    fn persist_snapshot_cache(
+    fn persist_snapshot_cache(&self, snapshot: &SearchSnapshot, revision: u64) {
+        self.persist_snapshot_cache_with(snapshot, revision, snapshot_cache::write);
+    }
+    fn persist_snapshot_cache_with(
         &self,
-        index_store: &IndexStore,
         snapshot: &SearchSnapshot,
         revision: u64,
+        publish: impl FnOnce(&Path, &SearchSnapshot, u64) -> Result<(), String>,
     ) {
-        match index_store.cache_write(snapshot, revision) {
+        let path = {
+            let store = self.index_store.lock().unwrap();
+            if store.get("revision", json!(0)).as_u64().unwrap_or(0) != revision {
+                return;
+            }
+            store.cache_path.clone()
+        };
+        // CPU admission, encoding, fsync and atomic publication must not hold
+        // the database mutex: content queries need it while holding CPU permits.
+        let publication = publish(&path, snapshot, revision);
+        let index_store = self.index_store.lock().unwrap();
+        let result =
+            publication.and_then(|()| index_store.checkpoint_cache(snapshot.generation, revision));
+        match result {
             Ok(()) if !index_store.cache_is_dirty() => {
                 self.state
                     .lock()
@@ -411,6 +435,41 @@ impl SearchEngine {
         status["scope_token"] = json!(coverage_token(&self.relation_coverage(snapshot.generation)));
         status
     }
+    fn memory_inventory(&self) -> Value {
+        let current = self.snapshot.load_full();
+        let history: Vec<_> = self
+            .previous
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|entry| entry.snapshot.upgrade())
+            .collect();
+        let (leased, windows, operations) = self.leases.inventory_snapshots();
+        let retired = snapshot_reclaimer::pending();
+        let _cpu = cpu_executor::enter_background();
+        let mut snapshots = std::collections::HashSet::new();
+        let mut inventory = memory_inventory::Inventory::default();
+        inventory.owner(true);
+        current.inventory(&mut inventory);
+        snapshots.insert(Arc::as_ptr(&current) as usize);
+        inventory.owner(false);
+        for snapshot in history.iter().chain(&leased) {
+            if snapshots.insert(Arc::as_ptr(snapshot) as usize) {
+                snapshot.inventory(&mut inventory);
+            }
+        }
+        inventory.retired_owner();
+        for data in &retired {
+            data.inventory(&mut inventory);
+        }
+        let mut report = inventory.report();
+        report["snapshot_count"] = json!(snapshots.len());
+        report["generation_history_count"] = json!(history.len());
+        report["window_leases"] = json!(windows);
+        report["operation_leases"] = json!(operations);
+        report["reclamation_payload_count"] = json!(retired.len());
+        report
+    }
     fn wait_status(&self, request: &Value) -> Result<Value, String> {
         if let Some(token) = request["snapshot_lease"].as_str() {
             self.leases.get(token)?;
@@ -449,7 +508,13 @@ impl SearchEngine {
             .and_then(Value::as_str)
             .ok_or("Missing op")?
         {
-            "status" => Ok(self.status_reply()),
+            "status" => {
+                let mut status = self.status_reply();
+                if request["diagnostics"] == "memory" {
+                    status["memory_inventory"] = self.memory_inventory();
+                }
+                Ok(status)
+            }
             "wait_status" => self.wait_status(request),
             "query" => self.query(request),
             "directory_info" => self.directory_info(request),
@@ -748,7 +813,6 @@ impl SearchEngine {
             id: request_id,
             token: cancelled.clone(),
         };
-        let _cpu = cpu_executor::enter_query(&cancelled)?;
         let started = Instant::now();
         let text = request["text"].as_str().unwrap_or("");
         if text.len() > 16384 {
@@ -772,6 +836,9 @@ impl SearchEngine {
         } else {
             self.pin(request["generation"].as_u64())?
         };
+        // Drop the permit before reader ownership. Final snapshot retirement
+        // may apply backpressure while the reclaimer obtains a worker permit.
+        let _cpu = cpu_executor::enter_query(&cancelled)?;
         let preferences = lease
             .as_ref()
             .map(|context| context.preferences.clone())
@@ -1088,8 +1155,10 @@ impl SearchEngine {
                 );
                 if all_files {
                     let start = offset.min(order.len());
-                    matches.extend_from_slice(
-                        &order[start..start.saturating_add(limit).min(order.len())],
+                    order.extend_range(
+                        &mut matches,
+                        start,
+                        start.saturating_add(limit).min(order.len()),
                     );
                 } else {
                     let mut rank = 0;
@@ -2230,20 +2299,48 @@ impl Drop for RequestGuard<'_> {
 /// for this call. Close a returned non-null handle exactly once.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apfsearch_engine_open(path: *const c_char) -> *mut c_void {
-    if path.is_null() {
-        return std::ptr::null_mut();
+    // SAFETY: this forwards the caller's path contract; no error pointer is used.
+    unsafe { apfsearch_engine_open_with_error(path, std::ptr::null_mut()) }
+}
+/// Open an engine without discarding the reason for failure.
+///
+/// # Safety
+/// `path` must be null or a readable NUL-terminated string for this call.
+/// `error_out` must be null or point to writable, exclusively borrowed pointer
+/// storage. A returned error is JSON and must be released with
+/// `apfsearch_engine_free_string`; it is set to null on success.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn apfsearch_engine_open_with_error(
+    path: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_void {
+    if !error_out.is_null() {
+        // SAFETY: the caller provides exclusive writable pointer storage.
+        unsafe { *error_out = std::ptr::null_mut() };
     }
     let result = std::panic::catch_unwind(|| {
+        if path.is_null() {
+            return Err("Missing index path".to_owned());
+        }
         // SAFETY: the non-null caller-owned path is valid for this call.
         let path = unsafe { CStr::from_ptr(path) }
             .to_str()
             .map_err(|e| e.to_string())?;
         SearchEngine::open(Path::new(path))
     });
-    match result {
-        Ok(Ok(engine)) => Box::into_raw(Box::new(engine)) as *mut c_void,
-        _ => std::ptr::null_mut(),
+    let error = match result {
+        Ok(Ok(engine)) => return Box::into_raw(Box::new(engine)) as *mut c_void,
+        Ok(Err(error)) => error,
+        Err(_) => "Index initialization failed at the engine boundary".to_owned(),
+    };
+    if !error_out.is_null() {
+        let response = json!({"success":false,"error_code":"index_open_failed","error":error,"protocol_version":PROTOCOL_VERSION});
+        // JSON escapes embedded NULs, so the serialized response is a C string.
+        let response = CString::new(response.to_string()).expect("JSON contains no NUL bytes");
+        // SAFETY: transfer one owned allocation to the caller's output slot.
+        unsafe { *error_out = response.into_raw() };
     }
+    std::ptr::null_mut()
 }
 /// Execute one JSON operation and return a caller-owned response string.
 ///
@@ -2279,7 +2376,8 @@ pub unsafe extern "C" fn apfsearch_engine_call(
 ///
 /// # Safety
 /// `value` must be null or an unmodified, not-yet-freed pointer returned by
-/// `apfsearch_engine_call`. No other thread may read it during or after this call.
+/// `apfsearch_engine_call` or `apfsearch_engine_open_with_error`. No other thread
+/// may read it during or after this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn apfsearch_engine_free_string(value: *mut c_char) {
     if !value.is_null() {

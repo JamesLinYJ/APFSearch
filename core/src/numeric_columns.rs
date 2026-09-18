@@ -277,6 +277,24 @@ pub(crate) struct NumericColumns {
     created: Column,
 }
 impl NumericColumns {
+    pub(crate) fn inventory(&self, inventory: &mut crate::memory_inventory::Inventory) {
+        for column in [&self.size, &self.modified, &self.created] {
+            inventory.record(
+                "numeric_directory_capacity_bytes",
+                column as *const _ as usize,
+                column.blocks.capacity() * std::mem::size_of::<Arc<Block>>(),
+            );
+            for block in &column.blocks {
+                inventory.record(
+                    "numeric_bounds_bytes",
+                    Arc::as_ptr(block) as usize,
+                    std::mem::size_of::<Block>(),
+                );
+            }
+            inventory.bitmap(&column.known);
+            inventory.bitmap(&column.dirty_blocks);
+        }
+    }
     pub(crate) fn supports(term: &Term) -> bool {
         matches!(term, Term::Number { field, .. } | Term::Unknown { field, .. } if matches!(field.as_str(), "size" | "modified" | "created"))
     }

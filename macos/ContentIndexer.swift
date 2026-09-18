@@ -176,6 +176,10 @@ final class ContentIndexer {
   let engine: SearchEngine
   private let lock = NSLock()
   private var cancelled = false
+#if TEST_BUILD
+  // Test-only hook makes a cancellation between two bounded reads deterministic.
+  var testTextChunkObserver: (() -> Void)?
+#endif
   init(engine: SearchEngine) { self.engine = engine }
   func cancel() {
     lock.lock()
@@ -345,15 +349,23 @@ final class ContentIndexer {
       guard st.st_size <= 32 * 1024 * 1024 else {
         throw LT("error.text_file_size_limit")
       }
-      let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+      let data = try readTextData(url, expected: st)
       if let utf8 = String(data: data, encoding: .utf8) {
+        if isCancelled() { throw LT("status.cancelled") }
         text = utf8
-      } else if let utf16 = String(data: data, encoding: .utf16) {
-        text = utf16
       } else {
-        throw LT("error.unsupported_text_encoding")
+        if isCancelled() { throw LT("status.cancelled") }
+        guard let utf16 = String(data: data, encoding: .utf16) else {
+          if isCancelled() { throw LT("status.cancelled") }
+          throw LT("error.unsupported_text_encoding")
+        }
+        if isCancelled() { throw LT("status.cancelled") }
+        text = utf16
       }
-      guard !text.contains("\0") else { throw LT("error.binary_text_file") }
+      if isCancelled() { throw LT("status.cancelled") }
+      let containsNul = text.contains("\0")
+      if isCancelled() { throw LT("status.cancelled") }
+      guard !containsNul else { throw LT("error.binary_text_file") }
     } else if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
       let metadata = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
     {
@@ -415,6 +427,36 @@ final class ContentIndexer {
     parser.shouldResolveExternalEntities = false
     parser.delegate = delegate
     guard parser.parse() else { throw LT("error.xml_parse_or_limit") }
+  }
+  private func readTextData(_ url: URL, expected: stat) throws -> Data {
+    let handle = try FileHandle(forReadingFrom: url)
+    defer { try? handle.close() }
+
+    // Keep the descriptor tied to the identity checked before opening. The
+    // final path stat below still detects replacement, size and timestamp
+    // changes after the read.
+    var opened = stat()
+    guard fstat(handle.fileDescriptor, &opened) == 0,
+      opened.st_dev == expected.st_dev, opened.st_ino == expected.st_ino,
+      (opened.st_mode & S_IFMT) == S_IFREG
+    else {
+      throw LT("error.file_changed_during_extraction")
+    }
+
+    let chunkSize = 256 * 1024
+    var data = Data()
+    data.reserveCapacity(min(Int(expected.st_size), 32 * 1024 * 1024))
+    while true {
+      if isCancelled() { throw LT("status.cancelled") }
+      guard let chunk = try handle.read(upToCount: chunkSize), !chunk.isEmpty else { break }
+      data.append(chunk)
+      if data.count > 32 * 1024 * 1024 { throw LT("error.text_file_size_limit") }
+#if TEST_BUILD
+      testTextChunkObserver?()
+#endif
+    }
+    if isCancelled() { throw LT("status.cancelled") }
+    return data
   }
   func extractOffice(_ url: URL, ext: String) throws -> String {
     var ignored = [String: Any]()
@@ -555,6 +597,10 @@ final class ContentIndexer {
         if task.isRunning { task.terminate() }
         throw LT("error.extraction_limit_or_cancelled")
       }
+    }
+    if isCancelled() {
+      if task.isRunning { task.terminate() }
+      throw LT("status.cancelled")
     }
     task.waitUntilExit()
     guard task.terminationStatus == 0 else { throw LT("error.archive_read_or_timeout") }

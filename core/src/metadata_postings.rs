@@ -1,14 +1,17 @@
 //! Exact postings for common metadata predicates. Unknown predicates fall back
 //! to the full query evaluator; a missing supported key means an empty result.
 use crate::entry_table::FileEntry;
+use crate::posting_map::{PostingKey, PostingMap};
 use crate::query::{self, Field, Query, Term};
 use roaring::RoaringBitmap;
-use std::{borrow::Cow, collections::HashMap, hash::Hash, sync::Arc};
+#[cfg(test)]
+use std::collections::HashMap;
+use std::{borrow::Cow, sync::Arc};
 
 #[cfg(test)]
 use std::io::{self, Read, Write};
 
-type Postings<Key> = Arc<HashMap<Key, Arc<RoaringBitmap>>>;
+type Postings<Key> = Arc<PostingMap<Key>>;
 
 #[derive(Clone, Default)]
 pub(crate) struct MetadataPostings {
@@ -19,21 +22,46 @@ pub(crate) struct MetadataPostings {
     symlinks: Arc<RoaringBitmap>,
 }
 impl MetadataPostings {
-    pub(crate) fn visit_postings<'a>(
+    pub(crate) fn shares_partition(&self, other: &Self, shard: usize) -> bool {
+        use crate::posting_map::partition;
+        self.name_bytes.shares_partition(&other.name_bytes, shard)
+            && self.name_pairs.shares_partition(&other.name_pairs, shard)
+            && self.extensions.shares_partition(&other.extensions, shard)
+            && (partition(4, &[]) != shard || Arc::ptr_eq(&self.directories, &other.directories))
+            && (partition(5, &[]) != shard || Arc::ptr_eq(&self.symlinks, &other.symlinks))
+    }
+    pub(crate) fn visit_partition<'a>(
         &'a self,
+        shard: usize,
         mut visit: impl FnMut(u8, &'a [u8], &'a RoaringBitmap),
     ) {
-        for (key, bitmap) in self.name_bytes.iter() {
+        for (key, bitmap) in self.name_bytes.partition_entries(shard) {
             visit(1, std::slice::from_ref(key), bitmap);
         }
-        for (key, bitmap) in self.name_pairs.iter() {
+        for (key, bitmap) in self.name_pairs.partition_entries(shard) {
             visit(2, key, bitmap);
         }
-        for (key, bitmap) in self.extensions.iter() {
+        for (key, bitmap) in self.extensions.partition_entries(shard) {
             visit(3, key.as_bytes(), bitmap);
         }
-        visit(4, &[], &self.directories);
-        visit(5, &[], &self.symlinks);
+        if crate::posting_map::partition(4, &[]) == shard {
+            visit(4, &[], &self.directories);
+        }
+        if crate::posting_map::partition(5, &[]) == shard {
+            visit(5, &[], &self.symlinks);
+        }
+    }
+    pub(crate) fn reclaim(self, cpu: &mut crate::cpu_executor::BackgroundPermit) {
+        crate::posting_map::reclaim(self.name_bytes, cpu);
+        crate::posting_map::reclaim(self.name_pairs, cpu);
+        crate::posting_map::reclaim(self.extensions, cpu);
+    }
+    pub(crate) fn inventory(&self, inventory: &mut crate::memory_inventory::Inventory) {
+        self.name_bytes.inventory(inventory);
+        self.name_pairs.inventory(inventory);
+        self.extensions.inventory(inventory);
+        inventory.bitmap(&self.directories);
+        inventory.bitmap(&self.symlinks);
     }
     pub(crate) fn insert_restored(
         &mut self,
@@ -109,6 +137,75 @@ impl MetadataPostings {
         }
         if file.is_symlink() {
             Arc::make_mut(&mut self.symlinks).insert(slot);
+        }
+    }
+    pub(crate) fn update(
+        &mut self,
+        slot: u32,
+        previous: &impl FileEntry,
+        next: &impl FileEntry,
+        pairs: &mut crate::posting_changes::GramChanges<2>,
+    ) {
+        if previous.search_name() != next.search_name() {
+            let presence = |name: &str| {
+                let mut words = [0u64; 4];
+                for byte in name.bytes() {
+                    words[byte as usize / 64] |= 1u64 << (byte % 64);
+                }
+                words
+            };
+            let before = presence(previous.search_name());
+            let after = presence(next.search_name());
+            for word in 0..4 {
+                let mut removed = before[word] & !after[word];
+                let mut added = after[word] & !before[word];
+                while removed != 0 {
+                    let byte = (word * 64 + removed.trailing_zeros() as usize) as u8;
+                    remove(Arc::make_mut(&mut self.name_bytes), &byte, slot);
+                    removed &= removed - 1;
+                }
+                while added != 0 {
+                    let byte = (word * 64 + added.trailing_zeros() as usize) as u8;
+                    insert(Arc::make_mut(&mut self.name_bytes), byte, slot);
+                    added &= added - 1;
+                }
+            }
+            pairs.apply(
+                &mut self.name_pairs,
+                slot,
+                previous.search_name(),
+                next.search_name(),
+            );
+        }
+        let previous_extension = extension_key(previous);
+        let next_extension = extension_key(next);
+        if previous_extension != next_extension {
+            let extensions = Arc::make_mut(&mut self.extensions);
+            if let Some(bitmap) = extensions.get_mut(previous_extension.as_ref()) {
+                let bitmap = Arc::make_mut(bitmap);
+                bitmap.remove(slot);
+                if bitmap.is_empty() {
+                    extensions.remove(previous_extension.as_ref());
+                }
+            }
+            if let Some(bitmap) = extensions.get_mut(next_extension.as_ref()) {
+                Arc::make_mut(bitmap).insert(slot);
+            } else {
+                insert(extensions, next_extension.into_owned(), slot);
+            }
+        }
+        for (before, after, bitmap) in [
+            (previous.is_dir(), next.is_dir(), &mut self.directories),
+            (previous.is_symlink(), next.is_symlink(), &mut self.symlinks),
+        ] {
+            if before != after {
+                let bitmap = Arc::make_mut(bitmap);
+                if after {
+                    bitmap.insert(slot);
+                } else {
+                    bitmap.remove(slot);
+                }
+            }
         }
     }
     pub(crate) fn remove(&mut self, slot: u32, file: &impl FileEntry) {
@@ -327,8 +424,8 @@ fn read_bitmap(reader: &mut impl Read, entry_count: usize) -> io::Result<Roaring
     Ok(bitmap)
 }
 #[cfg(test)]
-fn write_map<Key: Ord>(
-    map: &HashMap<Key, Arc<RoaringBitmap>>,
+fn write_map<Key: Ord + PostingKey>(
+    map: &PostingMap<Key>,
     writer: &mut impl Write,
     mut write_key: impl FnMut(&Key, &mut dyn Write) -> io::Result<()>,
 ) -> io::Result<()> {
@@ -342,7 +439,7 @@ fn write_map<Key: Ord>(
     Ok(())
 }
 #[cfg(test)]
-fn read_map<Key: Eq + Hash>(
+fn read_map<Key: PostingKey>(
     reader: &mut impl Read,
     maximum_keys: usize,
     entry_count: usize,
@@ -361,12 +458,12 @@ fn read_map<Key: Eq + Hash>(
         }
         map.insert(key, Arc::new(bitmap));
     }
-    Ok(Arc::new(map))
+    Ok(Arc::new(map.into()))
 }
-fn insert<Key: Eq + Hash>(map: &mut HashMap<Key, Arc<RoaringBitmap>>, key: Key, slot: u32) {
+fn insert<Key: PostingKey>(map: &mut PostingMap<Key>, key: Key, slot: u32) {
     Arc::make_mut(map.entry(key).or_default()).insert(slot);
 }
-fn remove<Key: Eq + Hash>(map: &mut HashMap<Key, Arc<RoaringBitmap>>, key: &Key, slot: u32) {
+fn remove<Key: PostingKey>(map: &mut PostingMap<Key>, key: &Key, slot: u32) {
     if let Some(matches) = map.get_mut(key) {
         let matches = Arc::make_mut(matches);
         matches.remove(slot);
@@ -375,7 +472,7 @@ fn remove<Key: Eq + Hash>(map: &mut HashMap<Key, Arc<RoaringBitmap>>, key: &Key,
         }
     }
 }
-fn lookup<Key: Eq + Hash>(map: &HashMap<Key, Arc<RoaringBitmap>>, key: &Key) -> RoaringBitmap {
+fn lookup<Key: PostingKey>(map: &PostingMap<Key>, key: &Key) -> RoaringBitmap {
     map.get(key)
         .map(|matches| matches.as_ref().clone())
         .unwrap_or_default()
@@ -462,6 +559,70 @@ mod tests {
             "!<a content:x>",
         ] {
             assert!(postings.exact(&parsed(text), &live).is_none(), "{text}");
+        }
+    }
+    #[test]
+    fn membership_deltas_retain_unchanged_postings_and_match_a_full_rebuild() {
+        let mut current = file("report-old.txt", "txt", false);
+        let mut postings = MetadataPostings::build([(0, &current)]);
+        let mut pairs = crate::posting_changes::GramChanges::default();
+        let mut replacement = file("report-new.txt", "txt", false);
+        let retained = postings.clone();
+        postings.update(0, &current, &replacement, &mut pairs);
+        assert!(Arc::ptr_eq(
+            postings.name_bytes.get(&b'r').unwrap(),
+            retained.name_bytes.get(&b'r').unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            postings.name_pairs.get(b"re").unwrap(),
+            retained.name_pairs.get(b"re").unwrap()
+        ));
+        assert!(Arc::ptr_eq(&postings.extensions, &retained.extensions));
+        assert!(Arc::ptr_eq(&postings.directories, &retained.directories));
+        current = replacement;
+        let live = RoaringBitmap::from([0]);
+        for (name, extension, directory, symlink) in [
+            ("REPORT-NEW.TXT", "TXT", false, false),
+            ("报告.txt", "txt", false, true),
+            ("目录", "", true, false),
+            ("café.é", "é", false, false),
+            ("cafe.e", "e", false, false),
+            ("aaa", "", false, false),
+            ("aaaaa", "", false, false),
+        ] {
+            replacement = file(name, extension, directory);
+            replacement.is_symlink = symlink;
+            let previous = postings.clone();
+            postings.update(0, &current, &replacement, &mut pairs);
+            if current.search_name() == replacement.search_name()
+                && extension_key(&current) == extension_key(&replacement)
+            {
+                assert!(postings.shares_storage(&previous));
+            }
+            let rebuilt = MetadataPostings::build([(0, &replacement)]);
+            for text in [
+                "r", "re", "a", "aa", "报", "é", "ext:txt", "ext:e", "ext:é", "folder:", "file:",
+                "symlink:", "!a",
+            ] {
+                let query = parsed(text);
+                assert_eq!(
+                    postings.exact(&query, &live),
+                    rebuilt.exact(&query, &live),
+                    "{text}"
+                );
+            }
+            for shard in 0..crate::posting_map::SHARDS {
+                let keys = |postings: &MetadataPostings| {
+                    let mut values = Vec::new();
+                    postings.visit_partition(shard, |kind, key, bitmap| {
+                        values.push((kind, key.to_vec(), bitmap.clone()))
+                    });
+                    values.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+                    values
+                };
+                assert_eq!(keys(&postings), keys(&rebuilt));
+            }
+            current = replacement;
         }
     }
     #[test]

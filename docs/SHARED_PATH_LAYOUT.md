@@ -28,7 +28,8 @@ receive one contiguous subject through a reusable query-owned buffer. Natural
 sorting compares segmented bytes without permanently expanding all paths.
 Result pages construct complete paths and owned JSON only at the output boundary.
 
-The derived cache uses `APFMAP03` manifests and `APFSEC03` secondary-index roots.
+The subsequent [snapshot sharing](SNAPSHOT_SHARING.md) changes use `APFMAP04`
+manifests and `APFSEC04` secondary-index roots, replacing this stage's format 03.
 Metadata columns map directly. Secondary postings are partitioned into 256 stable
 shards; sorting arrays are persisted in blocks of 4,096 slots. Sorting arrays and
 Roaring containers still become owned memory during restoration. This is not a

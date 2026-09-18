@@ -6,6 +6,8 @@ import pathlib
 import platform
 
 MINIMUM_MACOS_VERSION = '14.0'
+# The linked SDK controls native AppKit appearance independently of deployment.
+MINIMUM_MACOS_SDK_VERSION = '26.0'
 RUST_TARGETS = {'arm64': 'aarch64-apple-darwin', 'x86_64': 'x86_64-apple-darwin'}
 
 

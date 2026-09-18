@@ -72,6 +72,15 @@ pub(crate) struct NameColumn {
     names: EntryTable,
 }
 impl NameColumn {
+    pub(crate) fn inventory_directory(&self, inventory: &mut crate::memory_inventory::Inventory) {
+        // The chunk payloads are the same allocations visited by EntryTable.
+        inventory.record(
+            "name_directory_capacity_bytes",
+            self as *const _ as usize,
+            self.names.chunks.capacity()
+                * std::mem::size_of::<std::sync::Arc<crate::entry_table::EntryChunk>>(),
+        );
+    }
     pub(crate) fn build(entries: &EntryTable) -> Self {
         Self {
             names: entries.clone(),
