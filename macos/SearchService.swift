@@ -6,10 +6,16 @@ import Darwin
 
 final class ExportJob {
   let engine: SearchEngine
+  // Keeps an offline registry reference alive for the complete export. The
+  // engine pointer alone is not an ownership boundary: an idle list may be
+  // evicted while an export is queued on the service work queue.
+  let lease: OfflineEngineLease?
   let requestID: String
   private let lock = NSLock()
   private var stopped = false
-  init(engine: SearchEngine, requestID: String) { self.engine = engine; self.requestID = requestID }
+  init(engine: SearchEngine, lease: OfflineEngineLease? = nil, requestID: String) {
+    self.engine = engine; self.lease = lease; self.requestID = requestID
+  }
   func cancel() {
     lock.lock(); stopped = true; lock.unlock()
     _ = engine.call(["op": "cancel", "request_id": requestID])
@@ -57,6 +63,9 @@ final class FileListOutput {
 
 @_silgen_name("apfsearch_engine_open") func engineOpen(_ path: UnsafePointer<CChar>)
   -> UnsafeMutableRawPointer?
+@_silgen_name("apfsearch_engine_open_with_error") func engineOpenWithError(
+  _ path: UnsafePointer<CChar>, _ errorOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+) -> UnsafeMutableRawPointer?
 @_silgen_name("apfsearch_engine_call") func engineCall(
   _ engine: UnsafeMutableRawPointer, _ request: UnsafePointer<CChar>
 ) -> UnsafeMutablePointer<CChar>?
@@ -65,8 +74,31 @@ final class FileListOutput {
 @_silgen_name("apfsearch_release_query_caches") func releaseQueryCaches()
 
 final class SearchEngine {
-  let pointer: UnsafeMutableRawPointer
+  private var pointer: UnsafeMutableRawPointer?
   let directory: URL
+  private var openError: [String: Any]?
+  private let pointerLock = NSLock()
+  private let retryLock = NSLock()
+  private var retryInFlight = false
+
+  private static let unavailableError = localizedErrorResponse(
+    LT("error.service_connection", .text(LT("error.unavailable").render())))
+
+  private static func open(_ path: URL) -> (UnsafeMutableRawPointer?, [String: Any]?) {
+    var errorString: UnsafeMutablePointer<CChar>?
+    let pointer = path.path.withCString { pathPointer in
+      withUnsafeMutablePointer(to: &errorString) { errorPointer in
+        engineOpenWithError(pathPointer, errorPointer)
+      }
+    }
+    guard let errorString else {
+      return (pointer, pointer == nil ? unavailableError : nil)
+    }
+    defer { engineFree(errorString) }
+    let response = jsonObject(Data(String(cString: errorString).utf8))
+    return (pointer, pointer == nil ? response : nil)
+  }
+
   init(directory: URL? = nil, applicationSupportDirectory: URL? = nil) {
     if let directory { self.directory = directory }
     else if let applicationSupportDirectory {
@@ -77,23 +109,83 @@ final class SearchEngine {
       self.directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         .appendingPathComponent(ApplicationIdentity.dataDirectoryName, isDirectory: true)
     }
-    try? FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
-    guard
-      let ptr = self.directory.appendingPathComponent("index.sqlite").path.withCString({
-        engineOpen($0)
-      })
-    else { fatalError("Could not open index") }
+    // The core creates the parent directory and reports filesystem/SQLite
+    // failures through the same recoverable index_open_failed contract.
+    let (ptr, error) = Self.open(self.directory.appendingPathComponent("index.sqlite"))
+    guard let ptr else {
+      pointer = nil
+      openError = error ?? Self.unavailableError
+      return
+    }
     pointer = ptr
+    openError = nil
   }
   init(importDirectory: URL) throws {
     directory = importDirectory
-    guard let ptr = directory.appendingPathComponent("index.sqlite").path.withCString({ engineOpen($0) }) else {
-      throw LT("error.file_list_import_failed")
+    let (ptr, error) = Self.open(directory.appendingPathComponent("index.sqlite"))
+    guard let ptr else {
+      throw SearchEngineOpenFailure(response: error ?? localizedErrorResponse(LT("error.file_list_import_failed")))
     }
     pointer = ptr
+    openError = nil
   }
-  deinit { engineClose(pointer) }
+  deinit {
+    pointerLock.lock()
+    let pointer = self.pointer
+    self.pointer = nil
+    pointerLock.unlock()
+    if let pointer { engineClose(pointer) }
+  }
+  /// Retry the same immutable index path after a transient startup failure.
+  /// Explicit recovery operations provide a retry without changing the XPC
+  /// protocol. Ordinary status polling must never repeatedly reopen the index.
+  @discardableResult
+  func retryOpen() -> Bool {
+    pointerLock.lock()
+    if pointer != nil { pointerLock.unlock(); return true }
+    pointerLock.unlock()
+    retryLock.lock()
+    guard !retryInFlight else {
+      retryLock.unlock()
+      return false
+    }
+    retryInFlight = true
+    retryLock.unlock()
+    defer {
+      retryLock.lock(); retryInFlight = false; retryLock.unlock()
+    }
+    pointerLock.lock()
+    if pointer != nil { pointerLock.unlock(); return true }
+    pointerLock.unlock()
+    let (candidate, error) = Self.open(directory.appendingPathComponent("index.sqlite"))
+    pointerLock.lock()
+    guard pointer == nil else {
+      pointerLock.unlock()
+      if let candidate { engineClose(candidate) }
+      return true
+    }
+    if let candidate {
+      pointer = candidate
+      openError = nil
+      pointerLock.unlock()
+      return true
+    }
+    openError = error ?? Self.unavailableError
+    pointerLock.unlock()
+    return false
+  }
   func call(_ request: [String: Any]) -> [String: Any] {
+    let op = request["op"] as? String ?? ""
+    if op == "scan" || op == "watch" || (op == "status" && request["retry_index"] as? Bool == true) {
+      _ = retryOpen()
+    }
+    pointerLock.lock()
+    let pointer = self.pointer
+    let error = self.openError
+    pointerLock.unlock()
+    guard let pointer else {
+      return error ?? Self.unavailableError
+    }
     let data = jsonData(request)
     guard let s = String(data: data, encoding: .utf8),
       let result = s.withCString({ engineCall(pointer, $0) })
@@ -103,13 +195,190 @@ final class SearchEngine {
   }
 }
 
+struct SearchEngineOpenFailure: Error {
+  let response: [String: Any]
+}
+
+/// Keeps an imported list alive for a request, snapshot or export. The registry
+/// also retains at most one idle engine to avoid reopening on every query.
+final class OfflineEngineLease {
+  let id: String
+  let engine: SearchEngine
+  private let release: () -> Void
+
+  init(id: String, engine: SearchEngine, release: @escaping () -> Void) {
+    self.id = id
+    self.engine = engine
+    self.release = release
+  }
+
+  deinit { release() }
+}
+
+/// Loads imported engines outside the registry lock and evicts them only when
+/// their active request/snapshot/export references have all gone away.
+final class OfflineEngineRegistry {
+  private final class Entry {
+    var engine: SearchEngine?
+    var references = 0
+    var lastUsed = ProcessInfo.processInfo.systemUptime
+    var loading = true
+    var result: Result<SearchEngine, Error>?
+    var waiters = 0
+    let ready = DispatchSemaphore(value: 0)
+  }
+
+  private let lock = NSLock()
+  private var entries = [String: Entry]()
+
+  #if TEST_BUILD
+  var beforeLoad: ((String) -> Void)?
+  func waitingCount(for id: String) -> Int {
+    lock.lock(); defer { lock.unlock() }
+    return entries[id]?.waiters ?? 0
+  }
+  var residentCount: Int {
+    lock.lock(); defer { lock.unlock() }
+    return entries.count
+  }
+  #endif
+
+  func acquire(id: String, directory: URL) throws -> OfflineEngineLease {
+    guard UUID(uuidString: id) != nil else { throw LT("error.offline_list_not_found") }
+    let index = directory.appendingPathComponent("index.sqlite")
+    guard FileManager.default.fileExists(atPath: index.path) else {
+      throw LT("error.offline_list_not_found")
+    }
+
+    while true {
+      lock.lock()
+      if let entry = entries[id] {
+        if let engine = entry.engine {
+          entry.references += 1
+          entry.lastUsed = ProcessInfo.processInfo.systemUptime
+          lock.unlock()
+          return makeLease(id: id, engine: engine)
+        }
+        if entry.loading {
+          entry.waiters += 1
+          let ready = entry.ready
+          lock.unlock()
+          ready.wait()
+          lock.lock()
+          let result = entry.result
+          let loadedEngine = entry.engine
+          lock.unlock()
+          switch result {
+          case .success:
+            guard let loadedEngine else { throw LT("error.file_list_import_failed") }
+            return makeLease(id: id, engine: loadedEngine)
+          case .failure(let error): throw error
+          case .none: throw LT("error.file_list_import_failed")
+          }
+        }
+      } else {
+        let entry = Entry()
+        entries[id] = entry
+        lock.unlock()
+
+        // This is deliberately outside `lock`: restoring a large imported
+        // index must not serialize unrelated offline requests.
+        let result: Result<SearchEngine, Error>
+        do {
+          #if TEST_BUILD
+          beforeLoad?(id)
+          #endif
+          result = .success(try SearchEngine(importDirectory: directory))
+        } catch {
+          result = .failure(error)
+        }
+
+        lock.lock()
+        entry.loading = false
+        entry.result = result
+        let waiters = entry.waiters
+        entry.waiters = 0
+        switch result {
+        case .success(let engine):
+          entry.engine = engine
+          // Reserve one reference for every waiter before publishing the
+          // result. The loader may finish before a waiter wakes up, but the
+          // shared engine cannot become idle and get evicted in that gap.
+          entry.references = 1 + waiters
+          entry.lastUsed = ProcessInfo.processInfo.systemUptime
+          let evicted = evictIdleLocked(excluding: id)
+          lock.unlock()
+          for _ in 0..<waiters { entry.ready.signal() }
+          withExtendedLifetime(evicted) {}
+          return makeLease(id: id, engine: engine)
+        case .failure(let error):
+          if entries[id] === entry { entries.removeValue(forKey: id) }
+          lock.unlock()
+          for _ in 0..<waiters { entry.ready.signal() }
+          throw error
+        }
+      }
+    }
+  }
+
+  private func makeLease(id: String, engine: SearchEngine) -> OfflineEngineLease {
+    OfflineEngineLease(id: id, engine: engine) { [weak self, weak engine] in
+      guard let self, let engine else { return }
+      self.release(id: id, engine: engine)
+    }
+  }
+
+  private func release(id: String, engine: SearchEngine) {
+    var evicted = [Entry]()
+    lock.lock()
+    guard let entry = entries[id], entry.engine === engine else {
+      lock.unlock()
+      return
+    }
+    entry.references -= 1
+    entry.lastUsed = ProcessInfo.processInfo.systemUptime
+    if entry.references == 0 { evicted = evictIdleLocked(excluding: nil) }
+    lock.unlock()
+    withExtendedLifetime(evicted) {}
+  }
+
+  /// Keep one recently used idle engine hot. All additional idle engines are
+  /// removed while holding the table lock but destroyed after unlocking.
+  private func evictIdleLocked(excluding: String?) -> [Entry] {
+    let idle = entries.filter { key, value in
+      key != excluding && value.references == 0 && value.engine != nil
+    }.sorted { $0.value.lastUsed < $1.value.lastUsed }
+    guard idle.count > 1 else { return [] }
+    var evicted = [Entry]()
+    for (id, _) in idle.dropLast() {
+      if let entry = entries.removeValue(forKey: id) { evicted.append(entry) }
+    }
+    return evicted
+  }
+}
+
 final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtocol {
+  private static let offlineSnapshotLifetime: TimeInterval = 300
+
+  private final class OfflineSnapshotReference {
+    let token: String
+    let id: String
+    let lease: OfflineEngineLease
+    var deadline: TimeInterval
+    var activeUsers = 0
+    init(token: String, id: String, lease: OfflineEngineLease, deadline: TimeInterval) {
+      self.token = token; self.id = id; self.lease = lease; self.deadline = deadline
+    }
+  }
+
   let engine = SearchEngine()
   private(set) var files: FileOperations!
   var daSession: DASession?
   private let work = DispatchQueue(label: ApplicationIdentity.serviceIdentifier + ".auxiliary", qos: .utility)
-  private let listLock = NSLock()
-  private var lists = [String: SearchEngine]()
+  private let offlineRegistry = OfflineEngineRegistry()
+  private let offlineSnapshotLock = NSLock()
+  private var offlineSnapshotLeases = [String: OfflineSnapshotReference]()
+  private var offlineSnapshotCleanupTimer: DispatchSourceTimer?
   private let contentWork = DispatchQueue(label: ApplicationIdentity.serviceIdentifier + ".content", qos: .utility)
   private let jobLock = NSLock()
   private var contentJobs = [String: ContentIndexer]()
@@ -119,6 +388,10 @@ final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtoco
     super.init()
     files = FileOperations(directory: engine.directory)
     watchVolumes()
+  }
+  deinit {
+    offlineSnapshotCleanupTimer?.cancel()
+    if let daSession { DASessionSetDispatchQueue(daSession, nil) }
   }
   func watchVolumes() {
     guard let session = DASessionCreate(kCFAllocatorDefault) else { return }
@@ -186,18 +459,49 @@ final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtoco
       // Opening an imported index can restore millions of records. Keep that
       // work off the XPC request handler and in the same QoS as its query.
       DispatchQueue.global(qos: .userInitiated).async {
-        guard let list = self.offlineEngine(id) else {
-          reply(jsonData(localizedErrorResponse(LT("error.offline_list_not_found"))))
+        self.cleanupExpiredOfflineSnapshotLeases()
+        if op == "release_snapshot", let token = req["snapshot_lease"] as? String,
+           let id = req["list_id"] as? String,
+           let retained = self.borrowOfflineSnapshotLease(token, id: id) {
+          let result = retained.lease.engine.call(req)
+          self.finishOfflineSnapshotLease(retained, forceRemove: true)
+          reply(jsonData(result))
           return
         }
+        let requestedToken = req["snapshot_lease"] as? String
+        let retained = requestedToken.flatMap { self.borrowOfflineSnapshotLease($0, id: id) }
+        defer {
+          if let retained { self.finishOfflineSnapshotLease(retained, forceRemove: false) }
+        }
+        let listLease: OfflineEngineLease
+        do {
+          if let retained { listLease = retained.lease }
+          else { listLease = try self.offlineEngine(id) }
+        } catch {
+          if let openFailure = error as? SearchEngineOpenFailure {
+            reply(jsonData(openFailure.response))
+          } else {
+            reply(jsonData(localizedErrorResponse(error)))
+          }
+          return
+        }
+        let list = listLease.engine
         if op == "export_list" {
-          self.scheduleExport(req, source: list, reply: reply)
+          self.scheduleExport(req, source: list, lease: listLease, reply: reply)
           return
         }
         if (op == "query" || op == "retain_snapshot") && req["generation"] == nil && req["snapshot_lease"] == nil {
           self.syncOfflinePreferences(list)
         }
-        reply(jsonData(list.call(req)))
+        let result = list.call(req)
+        if result["success"] as? Bool == true, let requestedToken {
+          self.touchOfflineSnapshotLease(requestedToken, id: id)
+        }
+        if result["success"] as? Bool == true,
+           let token = result["snapshot_lease"] as? String {
+          self.retainOfflineSnapshotLease(token, id: id, lease: listLease)
+        }
+        reply(jsonData(result))
       }
       return
     }
@@ -239,7 +543,7 @@ final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtoco
       return
     }
     if op == "export_list" {
-      scheduleExport(req, source: engine, reply: reply)
+      scheduleExport(req, source: engine, lease: nil, reply: reply)
       return
     }
     if op == "import_list" {
@@ -305,19 +609,107 @@ final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtoco
     }
     DispatchQueue.global(qos: .userInitiated).async { reply(jsonData(self.engine.call(req))) }
   }
-  func offlineEngine(_ id: String) -> SearchEngine? {
-    guard UUID(uuidString: id) != nil else { return nil }
-    listLock.lock()
-    defer { listLock.unlock() }
-    if let existing = lists[id] { return existing }
+  func offlineEngine(_ id: String) throws -> OfflineEngineLease {
     let directory = engine.directory.appendingPathComponent("Imported Lists", isDirectory: true)
       .appendingPathComponent(id, isDirectory: true)
-    guard
-      FileManager.default.fileExists(atPath: directory.appendingPathComponent("index.sqlite").path)
-    else { return nil }
-    let value = SearchEngine(directory: directory)
-    lists[id] = value
-    return value
+    return try offlineRegistry.acquire(id: id, directory: directory)
+  }
+  private func retainOfflineSnapshotLease(_ token: String, id: String, lease: OfflineEngineLease) {
+    let deadline = ProcessInfo.processInfo.systemUptime + Self.offlineSnapshotLifetime
+    var old: OfflineSnapshotReference?
+    offlineSnapshotLock.lock()
+    if let existing = offlineSnapshotLeases[token], existing.id == id {
+      existing.deadline = deadline
+    } else {
+      old = offlineSnapshotLeases.updateValue(
+        OfflineSnapshotReference(token: token, id: id, lease: lease, deadline: deadline), forKey: token)
+    }
+    offlineSnapshotLock.unlock()
+    withExtendedLifetime(old) {}
+    scheduleOfflineSnapshotCleanup()
+  }
+  private func borrowOfflineSnapshotLease(_ token: String, id: String) -> OfflineSnapshotReference? {
+    offlineSnapshotLock.lock(); defer { offlineSnapshotLock.unlock() }
+    guard let reference = offlineSnapshotLeases[token], reference.id == id else { return nil }
+    reference.activeUsers += 1
+    return reference
+  }
+  private func touchOfflineSnapshotLease(_ token: String, id: String) {
+    offlineSnapshotLock.lock()
+    if let reference = offlineSnapshotLeases[token], reference.id == id {
+      reference.deadline = ProcessInfo.processInfo.systemUptime + Self.offlineSnapshotLifetime
+    }
+    offlineSnapshotLock.unlock()
+    scheduleOfflineSnapshotCleanup()
+  }
+  private func finishOfflineSnapshotLease(_ reference: OfflineSnapshotReference, forceRemove: Bool) {
+    var removed: OfflineSnapshotReference?
+    offlineSnapshotLock.lock()
+    assert(reference.activeUsers > 0)
+    reference.activeUsers -= 1
+    let expired = reference.deadline <= ProcessInfo.processInfo.systemUptime
+    if (forceRemove || (expired && reference.activeUsers == 0)), offlineSnapshotLeases[reference.token] === reference {
+      removed = offlineSnapshotLeases.removeValue(forKey: reference.token)
+    }
+    offlineSnapshotLock.unlock()
+    if let removed, forceRemove == false || expired {
+      _ = removed.lease.engine.call(["op": "release_snapshot", "snapshot_lease": removed.token])
+    }
+    withExtendedLifetime(removed) {}
+    scheduleOfflineSnapshotCleanup()
+  }
+  private func cleanupExpiredOfflineSnapshotLeases() {
+    let now = ProcessInfo.processInfo.systemUptime
+    var expired = [OfflineSnapshotReference]()
+    offlineSnapshotLock.lock()
+    let expiredTokens = offlineSnapshotLeases.compactMap { token, reference in
+      reference.deadline <= now && reference.activeUsers == 0 ? token : nil
+    }
+    for token in expiredTokens {
+      if let removed = offlineSnapshotLeases.removeValue(forKey: token) { expired.append(removed) }
+    }
+    offlineSnapshotLock.unlock()
+    for reference in expired {
+      _ = reference.lease.engine.call(["op": "release_snapshot", "snapshot_lease": reference.token])
+    }
+    withExtendedLifetime(expired) {}
+    scheduleOfflineSnapshotCleanup()
+  }
+#if TEST_BUILD
+  func holdOfflineSnapshotLeaseForTesting(_ token: String, id: String) -> (() -> Void)? {
+    guard let reference = borrowOfflineSnapshotLease(token, id: id) else { return nil }
+    return { [weak self] in self?.finishOfflineSnapshotLease(reference, forceRemove: false) }
+  }
+  func expireOfflineSnapshotLeaseForTesting(_ token: String, id: String) {
+    offlineSnapshotLock.lock()
+    if let reference = offlineSnapshotLeases[token], reference.id == id {
+      reference.deadline = ProcessInfo.processInfo.systemUptime - 1
+    }
+    offlineSnapshotLock.unlock()
+    scheduleOfflineSnapshotCleanup()
+  }
+  func hasOfflineSnapshotLeaseForTesting(_ token: String, id: String) -> Bool {
+    offlineSnapshotLock.lock(); defer { offlineSnapshotLock.unlock() }
+    return offlineSnapshotLeases[token]?.id == id
+  }
+#endif
+  private func scheduleOfflineSnapshotCleanup() {
+    let now = ProcessInfo.processInfo.systemUptime
+    offlineSnapshotLock.lock(); defer { offlineSnapshotLock.unlock() }
+    let next = offlineSnapshotLeases.values
+      .lazy.filter { $0.activeUsers == 0 }
+      .map(\.deadline)
+      .min()
+    // Reschedule one source instead of accumulating cancelled asyncAfter work
+    // items for the entire five-minute lease lifetime during rapid pagination.
+    if offlineSnapshotCleanupTimer == nil, next != nil {
+      let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+      timer.setEventHandler { [weak self] in self?.cleanupExpiredOfflineSnapshotLeases() }
+      offlineSnapshotCleanupTimer = timer
+      timer.resume()
+    }
+    let deadline: DispatchTime = next.map { .now() + max(0, $0 - now) } ?? .distantFuture
+    offlineSnapshotCleanupTimer?.schedule(deadline: deadline)
   }
   func volumes() -> [[String: Any]] {
     let keys: Set<URLResourceKey> = [
@@ -354,9 +746,9 @@ final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtoco
       "values": ["macros": preferences["macros"] ?? [:], "exclusions": preferences["exclusions"] ?? []],
     ])
   }
-  func scheduleExport(_ request: [String: Any], source: SearchEngine, reply: @escaping (Data) -> Void) {
+  func scheduleExport(_ request: [String: Any], source: SearchEngine, lease: OfflineEngineLease?, reply: @escaping (Data) -> Void) {
     let id = request["request_id"] as? String ?? UUID().uuidString
-    let job = ExportJob(engine: source, requestID: id)
+    let job = ExportJob(engine: source, lease: lease, requestID: id)
     jobLock.lock()
     let previous = exportJobs.updateValue(job, forKey: id)
     jobLock.unlock()
@@ -427,7 +819,8 @@ final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtoco
         return LT("export.completed_count", .integer(count)).adding(to: ["success": true, "count": count])
       }
       return try importList(path: path, job: importing ?? ImportJob())
-    } catch { return localizedErrorResponse(error) }
+    } catch let error as SearchEngineOpenFailure { return error.response }
+    catch { return localizedErrorResponse(error) }
   }
   private func importList(path: String, job: ImportJob) throws -> [String: Any] {
     let saved = engine.directory.appendingPathComponent("Imported Lists", isDirectory: true)
@@ -500,8 +893,9 @@ final class SearchService: NSObject, NSXPCListenerDelegate, SearchServiceProtoco
       }
       guard result == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
       do {
-        let published = try SearchEngine(importDirectory: destination)
-        listLock.lock(); lists[id] = published; listLock.unlock()
+        // Validate the published immutable SQLite before acknowledging import,
+        // but leave residency to OfflineEngineRegistry's active leases.
+        _ = try SearchEngine(importDirectory: destination)
       } catch { try? FileManager.default.removeItem(at: destination); throw error }
       return LT("import.completed_count", .integer(count)).adding(to: [
         "success": true, "list_id": id, "rows": page["rows"] ?? [], "count": count,

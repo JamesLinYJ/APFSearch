@@ -1,18 +1,12 @@
 //! Stable secondary-index partitions. A changed posting does not rewrite all
 //! other postings or both complete ordering arrays.
 use super::*;
-const MAGIC: &[u8; 8] = b"APFSEC03";
+const MAGIC: &[u8; 8] = b"APFSEC04";
 const SHARDS: usize = 256;
-const ORDER_BLOCK: usize = 4096;
-fn partition(kind: u8, key: &[u8]) -> usize {
-    // Stable format-level partitioning, independent of HashMap's random seed.
-    let hash = key
-        .iter()
-        .fold(2_166_136_261u32 ^ kind as u32, |hash, byte| {
-            (hash ^ *byte as u32).wrapping_mul(16_777_619)
-        });
-    (hash >> 24) as usize
-}
+const ORDER_BLOCK: usize = crate::slot_order::LEAF_LENGTH;
+use crate::posting_map::partition;
+#[path = "order_validation.rs"]
+mod order_validation;
 fn descriptor(output: &mut Vec<u8>, section: &Section) {
     output.extend_from_slice(&section.hash);
     output.extend_from_slice(&section.bytes.to_le_bytes());
@@ -49,27 +43,41 @@ pub(super) fn write(
     snapshot.path_ties.serialize_into(&mut bytes)?;
     parts.push(publish_bytes(directory, publications, &bytes)?);
     for order in [&snapshot.name_order, &snapshot.path_order] {
-        for block in order.chunks(ORDER_BLOCK) {
+        for block in &order.blocks {
             cpu.checkpoint();
             bytes.clear();
-            for slot in block {
-                bytes.extend_from_slice(&slot.to_le_bytes());
-            }
-            parts.push(publish_bytes(directory, publications, &bytes)?);
+            let section = if let Some(section) = block
+                .section
+                .get()
+                .filter(|section| reusable(section, directory))
+            {
+                section.clone()
+            } else {
+                bytes.extend_from_slice(block.slots.bytes());
+                let section = publish_bytes(directory, publications, &bytes)?;
+                let _ = block.section.set(section.clone());
+                section
+            };
+            parts.push(section);
         }
     }
-    let mut groups: Vec<Vec<(u8, &[u8], &RoaringBitmap)>> =
-        (0..SHARDS).map(|_| Vec::new()).collect();
-    for (key, bitmap) in snapshot.trigrams.iter() {
-        groups[partition(0, key)].push((0, key, bitmap));
-    }
-    snapshot
-        .metadata_postings
-        .visit_postings(|kind, key, bitmap| {
-            groups[partition(kind, key)].push((kind, key, bitmap));
-        });
-    for group in &mut groups {
+    for shard in 0..SHARDS {
         cpu.checkpoint();
+        if let Some(section) = snapshot.posting_sections[shard]
+            .get()
+            .filter(|section| reusable(section, directory))
+        {
+            parts.push(section.clone());
+            continue;
+        }
+        let mut group: Vec<(u8, &[u8], &RoaringBitmap)> = snapshot
+            .trigrams
+            .partition_entries(shard)
+            .map(|(key, bitmap)| (0, key.as_slice(), bitmap.as_ref()))
+            .collect();
+        snapshot
+            .metadata_postings
+            .visit_partition(shard, |kind, key, bitmap| group.push((kind, key, bitmap)));
         group.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
         bytes.clear();
         bytes.extend_from_slice(&(group.len() as u32).to_le_bytes());
@@ -79,12 +87,16 @@ pub(super) fn write(
             bytes.extend_from_slice(key);
             bitmap.serialize_into(&mut bytes)?;
         }
-        parts.push(publish_bytes(directory, publications, &bytes)?);
+        let section = publish_bytes(directory, publications, &bytes)?;
+        let _ = snapshot.posting_sections[shard].set(section.clone());
+        parts.push(section);
     }
     bytes.clear();
     bytes.extend_from_slice(MAGIC);
     bytes.extend_from_slice(&(snapshot.entries.len() as u64).to_le_bytes());
     bytes.extend_from_slice(&snapshot.live.len().to_le_bytes());
+    bytes.extend_from_slice(&(snapshot.name_order.blocks.len() as u64).to_le_bytes());
+    bytes.extend_from_slice(&(snapshot.path_order.blocks.len() as u64).to_le_bytes());
     for part in &parts {
         descriptor(&mut bytes, part);
     }
@@ -109,9 +121,16 @@ pub(super) fn read(
     if count != entries.len() || order_count > count {
         return None;
     }
-    let order_blocks = order_count.div_ceil(ORDER_BLOCK);
+    let name_blocks = usize::try_from(get64(mapping, &mut position)?).ok()?;
+    let path_blocks = usize::try_from(get64(mapping, &mut position)?).ok()?;
+    for count in [name_blocks, path_blocks] {
+        if count < order_count.div_ceil(ORDER_BLOCK) || count > order_count {
+            return None;
+        }
+    }
     let part_count = 1usize
-        .checked_add(order_blocks.checked_mul(2)?)?
+        .checked_add(name_blocks)?
+        .checked_add(path_blocks)?
         .checked_add(SHARDS)?;
     if mapping.len() != position.checked_add(part_count.checked_mul(DESCRIPTOR_BYTES)?)? {
         return None;
@@ -135,32 +154,48 @@ pub(super) fn read(
     {
         return None;
     }
+    #[cfg(test)]
+    crate::compact_acceptance_tests::restore_phase("index_manifest");
     let mut cpu = crate::cpu_executor::enter_background();
     let mut orders = Vec::with_capacity(2);
-    for first in [1, 1 + order_blocks] {
-        let mut order = Vec::with_capacity(order_count);
-        let mut seen = RoaringBitmap::new();
-        for (index, part) in parts[first..first + order_blocks].iter().enumerate() {
+    for (first, blocks) in [(1, name_blocks), (1 + name_blocks, path_blocks)] {
+        let mut order = Vec::with_capacity(blocks);
+        let mut remaining = order_validation::RemainingSlots::new(&live);
+        let mut total = 0;
+        for part in &parts[first..first + blocks] {
             cpu.checkpoint();
             let mapping = map_section(part)?;
-            let length = (order_count - index * ORDER_BLOCK).min(ORDER_BLOCK);
-            if mapping.len() != length * 4 {
+            if mapping.is_empty()
+                || mapping.len() > ORDER_BLOCK * 4
+                || !mapping.len().is_multiple_of(4)
+            {
                 return None;
             }
             for bytes in mapping.as_chunks::<4>().0 {
                 let slot = u32::from_le_bytes(*bytes);
-                if !live.contains(slot) || !seen.insert(slot) {
+                if !remaining.consume(slot) {
                     return None;
                 }
-                order.push(slot);
             }
+            total += mapping.len() / 4;
+            let block = crate::slot_order::OrderBlock {
+                slots: crate::entry_table::Column::mapped(mapping.clone(), 0..mapping.len())?,
+                section: std::sync::OnceLock::new(),
+            };
+            let _ = block.section.set(part.clone());
+            order.push(Arc::new(block));
         }
-        orders.push(Arc::new(order));
+        if total != order_count {
+            return None;
+        }
+        orders.push(Arc::new(crate::slot_order::SlotOrder::from_blocks(order)));
     }
-    let mut trigrams = HashMap::new();
+    #[cfg(test)]
+    crate::compact_acceptance_tests::restore_phase("orders");
+    let mut trigrams = crate::posting_map::PostingMap::default();
     let mut metadata_postings = MetadataPostings::default();
     let mut flags = 0u8;
-    for (shard, part) in parts[1 + 2 * order_blocks..].iter().enumerate() {
+    for (shard, part) in parts[1 + name_blocks + path_blocks..].iter().enumerate() {
         cpu.checkpoint();
         let mapping = map_section(part)?;
         let mut reader = Cursor::new(mapping.as_ref());
@@ -206,7 +241,11 @@ pub(super) fn read(
     if flags != (1 << 4) | (1 << 5) {
         return None;
     }
+    #[cfg(test)]
+    crate::compact_acceptance_tests::restore_phase("postings");
     let file_slots = FileSlots::from_entries(&entries).ok()?;
+    #[cfg(test)]
+    crate::compact_acceptance_tests::restore_phase("file_slots");
     let path_order = orders.pop()?;
     let name_order = orders.pop()?;
     let snapshot = SearchSnapshot::from_prepared_cache(PreparedSnapshot {
@@ -222,6 +261,9 @@ pub(super) fn read(
         generation,
         content_revision,
     });
+    for (shard, part) in parts[1 + name_blocks + path_blocks..].iter().enumerate() {
+        let _ = snapshot.posting_sections[shard].set(part.clone());
+    }
     let _ = root.dependencies.set(parts);
     Some(snapshot)
 }

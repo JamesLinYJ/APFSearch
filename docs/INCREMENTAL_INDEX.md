@@ -1,6 +1,16 @@
 # Bounded incremental indexing
 
-SQLite remains authoritative. This change does not scan filesystem roots, read file contents, change event-cursor commits, disable durability settings, or alter the prepared-cache file format.
+SQLite remains authoritative. Incremental publication does not scan filesystem roots, read file contents, change event-cursor commits or disable durability settings. The subsequent [snapshot sharing](SNAPSHOT_SHARING.md) layout uses an `APFMAP04` manifest plus immutable section files; `APFSEC04` identifies the secondary-index root descriptor/payload, not every section. Historical benchmark results and superseded experiments remain below as evidence; they do not override the current source behavior.
+
+## Current publication consistency and resource boundaries
+
+An immutable snapshot is published only after its metadata rows have been read from one consistent SQLite view. A dedicated read-only connection and an explicit read transaction pin `revision` and `content_revision`, then stream the ordered rows into the current entry-table column/block storage without a full intermediate `Vec<IndexedFile>`. The shared `IndexStore` mutex is released before CPU-heavy derived-index construction; otherwise a foreground content query can hold CPU admission while waiting for the store and a publisher can hold the store while waiting for background admission.
+
+Cache encoding and section publication are also outside the shared store lock. A writer first creates and syncs temporary sections and the manifest, atomically renames the manifest, and syncs its parent directory. It then takes a short `BEGIN IMMEDIATE` SQLite transaction and conditionally advances `cache_base_generation`, `cache_base_revision`, clears `cache_changes`, and marks `cache_dirty=false` only when the current SQLite `revision` still equals the encoded target. A consistent snapshot that is slightly older than the newest revision remains valid; if the writer observes a newer revision, it leaves the journal and dirty flag unchanged so later reconciliation can catch up. The stale manifest is disposable: startup validates the manifest generation/revision against SQLite metadata and falls back to authoritative recovery when they disagree.
+
+Under WAL, the explicit read transaction gives the full snapshot a stable view while writers continue, but WAL frames may remain until that read view closes. Row streaming and packing use background CPU admission while this private read view remains open; they never hold the shared store mutex. Close the read transaction before global postings and sorting. A later short checkpoint transaction is the authority for whether the encoded snapshot is still current; a file rename alone never makes a cache authoritative.
+
+Resource limits have separate scopes. The changed-ID journal is bounded to 65,536 distinct IDs, the CPU pool is bounded by the process-wide worker admission budget, and the derived query cache has its own sharded entry/byte estimate. Those bounds do not cap snapshot payloads retained by history or leases, active query scratch, result-selection vectors, mapped-file residency, SQLite WAL growth during a read view, allocator slack, or thread stacks. Count/time lease limits must not be described as byte limits, and synthetic or cache-restore measurements must not be presented as whole-service physical-memory causes.
 
 ## Changed-ID journal
 
@@ -28,11 +38,11 @@ This does **not** make total publication independent of index size. Visibility f
 
 ## Copy-on-write entry blocks
 
-Full SQLite recovery streams rows from one ordered SELECT directly into their final reference-counted record allocations. It no longer retains a complete `Vec<IndexedFile>` while allocating those objects. The cursor provides a consistent SQLite read view and is exhausted before normalization and secondary-index construction, so that CPU work does not extend the read transaction. Decoding errors abort construction before a snapshot can be published. Both startup recovery and a required full publication use this path, with the same SELECT and no additional scans or writes.
+Full refresh uses `SnapshotRead`: one ordered SELECT streams rows from a consistent read view into the current entry-table column/block storage. It does not retain a complete `Vec<IndexedFile>` or a full per-file object array. Normalization happens while each row is packed; after the stream completes, the read transaction is rolled back and its connection closed. `build_compact_rows` then creates postings, order arrays, numeric summaries, and name accessors without extending the WAL read view. Startup recovery uses the same streaming preparation and derived-index builders before the engine becomes available. Decoding errors abort construction before a snapshot can be published; neither path traverses the filesystem.
 
-The entry table stores stable slots in shared blocks of 4,096 record references. Cloning a snapshot copies the block directory rather than incrementing a reference count for every file. Replacing an entry copies only its shared block; further replacements in that block reuse the private copy. Appending at a block boundary leaves every existing block shared. Readers retain their original immutable snapshot and slot identities.
+The entry table stores stable slots in shared column blocks of 4,096 entries. A block owns packed text, compact integer columns and sparse properties; rows use borrowed views instead of separately allocated reference-counted file objects. Cloning a snapshot copies the block directory. Updates detach changed columns and text storage as required; subsequent writes in the same batch reuse those private allocations. Readers retain their original immutable snapshot and slot identities.
 
-For n entries, block capacity B, and k affected blocks, entry-table cloning and mutation require O(n/B + kB) reference operations. This is not constant-time publication: other indexes and order arrays have their own costs. Numeric columns already use separate copy-on-write blocks; the entry table complements that layout without duplicating text or numerical data. The flat serialized representation and format version 1 are unchanged.
+For n entries, block capacity B, and k affected blocks, the block directory requires O(n/B) references; modified column work depends on the affected blocks and variable-sized text. This is not constant-time publication: other indexes and ordered leaves have their own costs. Numeric filters use summaries and the same compact record columns rather than a second full numeric copy. The entry-slot and section payload representations remain versioned; the current outer cache format is the segmented `APFMAP04` manifest and immutable section files described above, with `APFSEC04` reserved for the secondary-index root descriptor/payload.
 
 `core/examples/query_candidates_benchmark.rs` constructs up to one million synthetic records entirely in memory. Run the same source in release mode against the baseline and candidate revisions. It measures candidate filtering, full matching, and a single size change against a retained snapshot, and compares every query result against an exhaustive matcher. It creates no fixture files or filesystem scans.
 
@@ -102,7 +112,7 @@ This measures dispatch, matching and bitmap merging, excluding one-time pool ini
 
 The core already delegates substring search to `memchr`, regular expressions to PCRE2, case folding to ICU, Unicode normalization to `unicode-normalization`, compressed sets to `roaring`, atomic snapshot publication to `arc-swap`, mapped files to `memmap2`, hashing to BLAKE3, and persistence to SQLite through `rusqlite`. Rayon now owns CPU worker reuse and scheduling. Adding another implementation of these primitives would duplicate existing dependencies.
 
-Keep application-specific behavior explicit. The APFS traversal layer must preserve bulk metadata reads, directory-entry identity and coverage semantics. Snapshot storage must preserve stable slots and block-level copy-on-write. Sorting uses the standard library within bounded runs plus a cancellable merge, because replacing it wholesale with an uninterruptible parallel sort would lose the cancellation contract. The tiny bounded query caches currently retain at most 8 match sets and 32 pages; adopting a general concurrent cache is not justified solely to replace a few `VecDeque` operations. Reconsider these choices when measured workload or requirements justify a different abstraction.
+Keep application-specific behavior explicit. The APFS traversal layer must preserve bulk metadata reads, directory-entry identity and coverage semantics. Snapshot storage must preserve stable slots and block-level copy-on-write. Sorting uses the standard library within bounded runs plus a cancellable merge, because replacing it wholesale with an uninterruptible parallel sort would lose the cancellation contract. The current derived cache is an eight-shard, entry-capped cache with a machine-size-derived byte estimate; active scratch and result-selection vectors remain outside that cache estimate. The earlier eight-match-set/32-page `VecDeque` description is historical and must not be used as the current resource contract. Reconsider these choices when measured workload or requirements justify a different abstraction.
 
 ## Compact cache string restoration
 
@@ -112,7 +122,8 @@ checked range; records and the hot name column share these blocks. This removes
 per-string allocations and the temporary offset-to-string hash table from cache
 restoration. Strings crossing block boundaries own their bytes separately.
 Dropping the arena releases unreferenced blocks; a retained result does not pin
-all character data. Cache files remain disposable and use the same format.
+all character data. Cache files remain disposable and use the current segmented
+manifest/section format.
 
 On 64-bit targets a reference occupies 24 bytes and stores an `Arc<str>` directly.
 An experimental 16-byte reference through `Arc<String>` saved slightly more
@@ -344,8 +355,9 @@ Extensions, folded extensions and volume identifiers now share `Arc<str>` values
 through a snapshot-owned label pool. Cache decoding interns borrowed validated
 strings before allocating repeated values. Incremental publication reuses old
 labels and copies the pool only when adding a new value; slot compaction retains
-only labels referenced by retained records. There is no global interning table,
-and the serialized strings and format version remain unchanged.
+only labels referenced by retained records. There is no global interning table.
+The section payload remains versioned under the current segmented manifest
+format.
 
 On the existing million-row fixture, record size fell from 352 to 328 bytes.
 Three alternating cache-restoration measurements put physical footprint near
@@ -428,7 +440,7 @@ text bytes stayed identical. Construction measured 2.24–2.25 seconds before an
 improvement. Common first-page query timings stayed close, and all checked totals
 and ordered page IDs matched. Full-volume and foreground acceptance remain open.
 
-## Current signed-window regression check
+## Historical validation record: signed-window regression check
 
 The current core was linked into a private signed service with the same Swift
 service sources and production client authentication. Three alternating pairs
@@ -457,7 +469,8 @@ name/path packing savings must not be added to their memory measurements.
 
 The encoder now interns search names before writing per-record references. This
 places the hot name text together in the existing globally deduplicated pool,
-without adding a second text column or changing the format. Remaining strings
+without adding a second text column or changing the current section payload
+format. Remaining strings
 still use the same interning table. Checksum verification, atomic publication,
 and cache rebuild scheduling are unchanged; existing caches are not proactively
 rewritten for this layout change.
@@ -493,7 +506,7 @@ stopped. The encoder change passed Rust regression tests, Clippy and universal
 compilation. The installed app has not been replaced; the new layout is produced
 on a normal subsequent cache publication, not by an extra rewrite on startup.
 
-## Adaptive membership during ordered paging
+## Historical experiment: adaptive membership during ordered paging (test-only, not production)
 
 A test-only ordered-paging experiment begins with Roaring membership checks. If a page
 requires a long scan, it can convert the matching set to a temporary dense bit

@@ -5,7 +5,7 @@ use std::cmp::Ordering;
 /// items with equal keys. Galloping searches visit only logarithmically many
 /// keys per intervening run; reverse bulk copies move each old slot at most
 /// once. Additional workspace is O(k) insertion offsets, not another O(n) array.
-pub(super) fn insert_sorted(
+pub(crate) fn insert_sorted(
     slots: &mut Vec<u32>,
     replacements: &[u32],
     mut compare: impl FnMut(u32, u32) -> Ordering,

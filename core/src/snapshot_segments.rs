@@ -7,7 +7,7 @@ use std::sync::{Mutex, OnceLock, Weak};
 #[path = "index_sections.rs"]
 mod index_sections;
 
-const MANIFEST_MAGIC: &[u8; 8] = b"APFMAP03";
+const MANIFEST_MAGIC: &[u8; 8] = b"APFMAP04";
 const DESCRIPTOR_BYTES: usize = 40;
 
 pub(crate) struct Section {
@@ -325,6 +325,8 @@ pub(super) fn read(path: &Path, generation: u64, revision: u64) -> Option<Search
             &mut publications,
         )?);
     }
+    #[cfg(test)]
+    crate::compact_acceptance_tests::restore_phase("manifest");
     // At most two filesystem workers. Each block's CPU admission is released
     // before the next block, so pending foreground work can take precedence.
     let blocks = std::thread::scope(|scope| {
@@ -355,6 +357,8 @@ pub(super) fn read(path: &Path, generation: u64, revision: u64) -> Option<Search
     if entries.len() != count {
         return None;
     }
+    #[cfg(test)]
+    crate::compact_acceptance_tests::restore_phase("metadata");
     let section = read_descriptor(&manifest, &mut position, &directory, &mut publications)?;
     let mapping = map_section(&section)?;
     let snapshot = index_sections::read(
@@ -512,6 +516,123 @@ mod tests {
         assert!(read(&path, 1, 1).is_some());
     }
     #[test]
+    fn checksummed_order_sections_must_be_permutations_of_live_slots() {
+        for malformed in 0..4 {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("cache.bin");
+            let mut snapshot = fixture();
+            // Create well-formed sections and checksums with invalid order
+            // contents, so this exercises semantic validation after mapping.
+            let mut slots = snapshot.name_order.to_vec();
+            match malformed {
+                0 => slots[4096] = slots[0], // Duplicate across leaf boundaries.
+                1 => slots[0] = snapshot.entries.len() as u32,
+                2 => slots[0] = u32::MAX,
+                _ => {
+                    slots.pop();
+                }
+            }
+            snapshot.name_order = Arc::new(slots.into());
+            write(&path, &snapshot, 1).unwrap();
+            assert!(read(&path, 1, 1).is_none());
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("cache.bin");
+        let mut snapshot = fixture();
+        // The lengths agree, but a dead slot replaces a live slot in the path
+        // order. Cardinality alone cannot detect this corruption.
+        let dead = snapshot.name_order[0];
+        snapshot.live.remove(dead);
+        snapshot.name_order = Arc::new(
+            snapshot
+                .name_order
+                .iter()
+                .copied()
+                .filter(|slot| *slot != dead)
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        let mut slots = snapshot.path_order.to_vec();
+        let other = slots.iter().position(|slot| *slot != dead).unwrap();
+        slots.remove(other);
+        snapshot.path_order = Arc::new(slots.into());
+        write(&path, &snapshot, 1).unwrap();
+        assert!(read(&path, 1, 1).is_none());
+    }
+    #[test]
+    fn every_distinct_reference_column_is_validated_even_beside_aliases() {
+        use crate::entry_table::{PathRef, TextRef};
+        let snapshot = fixture();
+        let source = snapshot.entries.chunks[0].as_ref();
+        let decode = |chunk: &crate::entry_table::EntryChunk| {
+            let bytes = encode_chunk(chunk).unwrap();
+            let mut mapping = memmap2::MmapMut::map_anon(bytes.len()).unwrap();
+            mapping.copy_from_slice(&bytes);
+            let mapping = Arc::new(mapping.make_read_only().unwrap());
+            decode_chunk(&mapping, 0, mapping.len())
+        };
+        let restored = decode(source).unwrap();
+        assert!(std::ptr::eq(
+            restored.name.values(),
+            restored.folded_name.values()
+        ));
+        assert!(std::ptr::eq(
+            restored.path.values(),
+            restored.search_path.values()
+        ));
+        let invalid = TextRef {
+            offset: u32::MAX,
+            length: 1,
+        };
+        for column in 0..7 {
+            let mut chunk = source.clone();
+            match column {
+                0 => chunk.name.set(0, invalid),
+                1 => chunk.folded_name.set(0, invalid),
+                2 => chunk.search_name.set(0, invalid),
+                3 => chunk.parent.set(0, invalid),
+                4 => chunk.path.set(
+                    0,
+                    PathRef {
+                        prefix: invalid,
+                        suffix: invalid,
+                    },
+                ),
+                5 => chunk.folded_path.set(
+                    0,
+                    PathRef {
+                        prefix: invalid,
+                        suffix: invalid,
+                    },
+                ),
+                _ => chunk.search_path.set(
+                    0,
+                    PathRef {
+                        prefix: invalid,
+                        suffix: invalid,
+                    },
+                ),
+            }
+            assert!(decode(&chunk).is_none(), "column {column}");
+        }
+        for column in 0..3 {
+            let mut chunk = source.clone();
+            let mut invalid_split = chunk.path.values()[0];
+            std::mem::swap(&mut invalid_split.prefix, &mut invalid_split.suffix);
+            match column {
+                0 => chunk.path.set(0, invalid_split),
+                1 => chunk.folded_path.set(0, invalid_split),
+                _ => chunk.search_path.set(0, invalid_split),
+            }
+            assert!(decode(&chunk).is_none(), "path column {column}");
+        }
+        let mut chunk = source.clone();
+        chunk.name.set(0, invalid);
+        chunk.folded_name = chunk.name.clone();
+        chunk.search_name = chunk.name.clone();
+        assert!(decode(&chunk).is_none());
+    }
+    #[test]
     fn mapped_text_checks_utf8_and_reference_ranges_before_exposing_views() {
         let row = fixture().entries.at(0).to_owned_file();
         let snapshot = SearchSnapshot::new(vec![row], 1);
@@ -547,8 +668,67 @@ mod tests {
 #[cfg(test)]
 mod secondary_tests {
     use super::*;
+    #[test]
+    fn default_empty_snapshot_roundtrips_with_all_posting_partitions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("empty.snapshot.bin");
+        write(&path, &SearchSnapshot::default(), 0).unwrap();
+        let restored = read(&path, 0, 0).unwrap();
+        assert!(restored.is_empty());
+        assert_eq!(restored.posting_sections.len(), crate::posting_map::SHARDS);
+    }
     fn row(id: i64, name: &str) -> IndexedFile {
         serde_json::from_value(json!({"id":id,"path":format!("/fixture/{name}"),"name":name,"extension":"txt","volume_id":"fixture","size":10,"modified":1,"created":1,"changed":1,"file_id":id,"parent_id":0,"flags":0,"is_dir":false,"is_symlink":false,"content_indexed":false,"properties":{}})).unwrap()
+    }
+    #[test]
+    fn restored_order_update_reuses_other_leaves_even_when_ranks_shift() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("index.snapshot.bin");
+        let original = SearchSnapshot::new(
+            (1..=13000)
+                .map(|id| row(id, &format!("item-{id:05}.txt")))
+                .collect(),
+            1,
+        );
+        write(&path, &original, 1).unwrap();
+        let reader = read(&path, 1, 1).unwrap();
+        let changed =
+            SearchSnapshot::from_changes(vec![(7, Some(row(7, "first.txt")))], 2, &reader).unwrap();
+        for index in 1..reader.name_order.blocks.len() {
+            assert!(Arc::ptr_eq(
+                &reader.name_order.blocks[index],
+                &changed.name_order.blocks[index]
+            ));
+        }
+        write(&path, &changed, 2).unwrap();
+        for index in 1..reader.name_order.blocks.len() {
+            assert!(Arc::ptr_eq(
+                reader.name_order.blocks[index].section.get().unwrap(),
+                changed.name_order.blocks[index].section.get().unwrap()
+            ));
+        }
+        let restored = read(&path, 2, 2).unwrap();
+        assert_eq!(restored.name_order, changed.name_order);
+        assert_eq!(restored.path_order, changed.path_order);
+        assert_eq!(reader.entries.at(6).name(), "item-00007.txt");
+        assert_eq!(
+            restored.entries.at(restored.name_order[0] as usize).name(),
+            "first.txt"
+        );
+        let cached_parts = restored
+            .posting_sections
+            .iter()
+            .filter(|section| section.get().is_some())
+            .count();
+        assert_eq!(cached_parts, crate::posting_map::SHARDS);
+        let metadata_only = SearchSnapshot::from_changes(vec![], 3, &restored).unwrap();
+        assert!(
+            metadata_only
+                .posting_sections
+                .iter()
+                .zip(&restored.posting_sections)
+                .all(|(a, b)| Arc::ptr_eq(a, b))
+        );
     }
     #[test]
     fn changed_postings_publish_only_changed_shards_and_pin_old_readers() {

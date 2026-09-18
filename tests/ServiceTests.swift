@@ -55,6 +55,29 @@ final class ReplyBox: @unchecked Sendable {
         func paths(_ response: [String: Any]) -> [String] { rows(response).compactMap { $0["path"] as? String } }
         func contains(_ response: [String: Any], _ filename: String) -> Bool { paths(response).contains { URL(fileURLWithPath: $0).lastPathComponent == filename } }
 
+        // A corrupt primary index must leave the helper able to answer a
+        // structured status error; it must not abort during SearchService init.
+        let corruptSupport = run.appendingPathComponent("corrupt-support")
+        let corruptIndex = corruptSupport.appendingPathComponent("APFSearch/index.sqlite")
+        try FileManager.default.createDirectory(at: corruptIndex.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("not a sqlite database".utf8).write(to: corruptIndex)
+        setenv("APFSEARCH_DATA_DIR", corruptSupport.appendingPathComponent("APFSearch").path, 1)
+        let unavailableService = SearchService()
+        setenv("APFSEARCH_DATA_DIR", db.path, 1)
+        let unavailableBox = ReplyBox()
+        unavailableService.request(jsonData(["protocol_version": protocolVersion, "op": "status"]), withReply: { unavailableBox.set(jsonObject($0)) })
+        let unavailableStatus = try wait(unavailableBox)
+        check("corrupt primary index keeps service alive with a structured error", unavailableStatus["success"] as? Bool == false && unavailableStatus["error_code"] as? String == "index_open_failed" && unavailableStatus["protocol_version"] as? Int == 1, unavailableStatus)
+        try FileManager.default.removeItem(at: corruptIndex)
+        let stableErrorBox = ReplyBox()
+        unavailableService.request(jsonData(["protocol_version": protocolVersion, "op": "status"]), withReply: { stableErrorBox.set(jsonObject($0)) })
+        let stableError = try wait(stableErrorBox)
+        check("ordinary status does not repeatedly reopen a failed primary index", stableError["success"] as? Bool == false && stableError["error_code"] as? String == "index_open_failed", stableError)
+        let retryBox = ReplyBox()
+        unavailableService.request(jsonData(["protocol_version": protocolVersion, "op": "status", "retry_index": true]), withReply: { retryBox.set(jsonObject($0)) })
+        let retryResult = try wait(retryBox)
+        check("explicit status retry recovers a repaired primary index", retryResult["success"] as? Bool == true && retryResult["count"] as? Int == 0, retryResult)
+
         check("wrong protocol version rejected", try request(["op": "status"], version: 999)["success"] as? Bool == false)
         check("protocol error carries an explicit catalog key", try request(["op": "status"], version: 999)["error_key"] as? String == "error.unsupported_protocol")
         check("missing protocol version rejected", try request(["op": "status"], version: nil)["success"] as? Bool == false)
@@ -216,7 +239,39 @@ final class ReplyBox: @unchecked Sendable {
         let exportImport = try request(["op": "import_list", "path": exportSource.path])
         let exportListID = exportImport["list_id"] as? String ?? ""
         check("multipage export fixture imports", exportImport["success"] as? Bool == true && exportImport["count"] as? Int == exportRows + 1, exportImport)
+        let retainedFirstPage = try request(["op": "query", "list_id": listID, "text": "docs:", "limit": 2, "retain_snapshot": true, "snapshot_owner": "window"])
+        let retainedToken = retainedFirstPage["snapshot_lease"] as? String ?? ""
+        _ = try request(["op": "status", "list_id": exportListID])
+        let retainedSecondPage = try request(["op": "query", "list_id": listID, "text": "docs:", "limit": 2, "offset": 2, "snapshot_lease": retainedToken])
+        check("query retain_snapshot lease survives another list request and pagination", !retainedToken.isEmpty && retainedFirstPage["success"] as? Bool == true && retainedSecondPage["success"] as? Bool == true && (retainedSecondPage["snapshot_lease"] as? String ?? retainedToken) == retainedToken, [retainedFirstPage, retainedSecondPage])
+        if let releaseHold1 = service.holdOfflineSnapshotLeaseForTesting(retainedToken, id: listID),
+           let releaseHold2 = service.holdOfflineSnapshotLeaseForTesting(retainedToken, id: listID) {
+            service.expireOfflineSnapshotLeaseForTesting(retainedToken, id: listID)
+            releaseHold1()
+            let concurrentLeasePage = try request(["op": "query", "list_id": listID, "text": "docs:", "limit": 1, "snapshot_lease": retainedToken])
+            check("expired snapshot bridge lease waits for all concurrent borrowers", concurrentLeasePage["success"] as? Bool == true, concurrentLeasePage)
+            releaseHold2()
+        } else {
+            check("expired snapshot bridge lease waits for all concurrent borrowers", false)
+        }
+        _ = try request(["op": "release_snapshot", "list_id": listID, "snapshot_lease": retainedToken])
         let importDirectory = db.appendingPathComponent("Imported Lists", isDirectory: true)
+        let registry = OfflineEngineRegistry()
+        var activeLease: OfflineEngineLease? = try registry.acquire(id: listID, directory: importDirectory.appendingPathComponent(listID, isDirectory: true))
+        var secondLease: OfflineEngineLease? = try registry.acquire(id: listID, directory: importDirectory.appendingPathComponent(listID, isDirectory: true))
+        check("offline registry shares one resident engine across active leases", registry.residentCount == 1 && activeLease != nil && secondLease != nil, registry.residentCount)
+        secondLease = nil
+        check("offline registry keeps engine while one lease remains", registry.residentCount == 1 && activeLease != nil, registry.residentCount)
+        activeLease = nil
+        check("offline registry retains one bounded idle hot engine after final lease", registry.residentCount == 1, registry.residentCount)
+        var activeFirstList: OfflineEngineLease? = try registry.acquire(id: listID, directory: importDirectory.appendingPathComponent(listID, isDirectory: true))
+        let firstEngine = activeFirstList?.engine
+        var activeSecondList: OfflineEngineLease? = try registry.acquire(id: exportListID, directory: importDirectory.appendingPathComponent(exportListID, isDirectory: true))
+        check("offline registry keeps an active engine while another list is resident", registry.residentCount == 2 && activeSecondList != nil, registry.residentCount)
+        activeSecondList = nil
+        check("offline registry does not evict an active lease when trimming idle engines", registry.residentCount == 2 && activeFirstList?.engine === firstEngine, registry.residentCount)
+        activeFirstList = nil
+        check("offline registry evicts excess idle engines", registry.residentCount == 1, registry.residentCount)
         func importedNames() -> Set<String> {
             Set((try? FileManager.default.contentsOfDirectory(atPath: importDirectory.path)) ?? [])
         }

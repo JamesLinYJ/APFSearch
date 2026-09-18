@@ -334,7 +334,42 @@ enum SearchWindowTests {
         loader.updateDemand([])
     }
 
+    static func snapshotHandoffRegression() async {
+        let c = await controller([row(0)])
+        c.currentLease = SearchSnapshotLease(token: "displayed", listID: c.offlineListID)
+        c.search.stringValue = "replacement"; c.runQuery()
+        var replacing = SearchClient.shared.takeQuery()
+        check("replacement_keeps_displayed_snapshot_alive", c.snapshotLease == "displayed" && SearchClient.shared.take("release_snapshot") == nil)
+        check("replacement_requests_new_snapshot_without_old_generation", replacing?.request["retain_snapshot"] as? Bool == true && replacing?.request["snapshot_lease"] == nil && replacing?.request["generation"] == nil)
+        replacing?.completion(["success": false, "error": "fixture failure"])
+        replacing = nil
+        check("failed_replacement_preserves_displayed_snapshot", c.snapshotLease == "displayed" && SearchClient.shared.take("release_snapshot") == nil && !c.resultsAreCurrent)
+
+        c.runQuery()
+        var superseded = SearchClient.shared.takeQuery()
+        c.search.stringValue = "latest"; c.runQuery()
+        var latest = SearchClient.shared.takeQuery()
+        var discarded = reply([row(1)])
+        discarded["snapshot_lease"] = "superseded"
+        superseded?.completion(discarded); superseded = nil
+        check("discarded_reply_releases_only_its_own_snapshot", SearchClient.shared.take("release_snapshot")?.request["snapshot_lease"] as? String == "superseded" && c.snapshotLease == "displayed")
+        var accepted = reply([row(2)], generation: 2)
+        accepted["snapshot_lease"] = "replacement"
+        latest?.completion(accepted); latest = nil
+        check("successful_handoff_releases_previous_snapshot", c.snapshotLease == "replacement" && c.resultsAreCurrent && SearchClient.shared.take("release_snapshot")?.request["snapshot_lease"] as? String == "displayed")
+
+        c.search.stringValue = "after-close"; c.runQuery()
+        var closing = SearchClient.shared.takeQuery()
+        c.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: c.window))
+        check("window_close_releases_displayed_snapshot", c.currentLease == nil && SearchClient.shared.take("release_snapshot")?.request["snapshot_lease"] as? String == "replacement")
+        var late = reply([row(3)], generation: 3)
+        late["snapshot_lease"] = "late"
+        closing?.completion(late); closing = nil
+        check("late_reply_cannot_retain_snapshot_after_window_close", c.currentLease == nil && !c.resultsAreCurrent && SearchClient.shared.take("release_snapshot")?.request["snapshot_lease"] as? String == "late")
+        c.window?.orderOut(nil); SearchClient.shared.clear()
+    }
     static func runTests() async {
+        await snapshotHandoffRegression()
         await iconDemandRegression()
         let statusController = SearchWindowController()
         let uncovered = (0..<10_000).map { "/CoverageFixture/未覆盖文件夹/\($0)" } as NSArray
@@ -617,6 +652,21 @@ enum SearchWindowTests {
         layout.updateEmptyState()
         check("only_approval_failure_opens_system_settings", layout.emptyAction == 2)
         SearchClient.shared.requiresApproval = false
+
+        layout.currentStatus = ["success": false, "error_code": "index_open_failed", "error": "Fixture database failure"]
+        layout.updateEmptyState()
+        check("database_failure_offers_explicit_index_retry", layout.emptyAction == 4 && layout.emptyTitle.stringValue == L("index.open_failed_title") && layout.emptyButton.title == L("index.retry_open"))
+        SearchClient.shared.clear()
+        layout.emptyButtonPressed(nil)
+        let recovery = SearchClient.shared.take("status")
+        check("index_retry_is_explicit_and_single_flight", recovery?.request["retry_index"] as? Bool == true && !layout.emptyButton.isEnabled)
+        layout.emptyButtonPressed(nil)
+        check("repeated_retry_click_does_not_duplicate_open", SearchClient.shared.take("status") == nil)
+        recovery?.completion(["success": false, "error_code": "index_open_failed", "error": "Fixture database failure"])
+        let observation = SearchClient.shared.take("status")
+        check("subsequent_status_observation_does_not_reopen_database", observation?.request["retry_index"] == nil && layout.emptyButton.isEnabled)
+        layout.stopStatusObservation()
+        SearchClient.shared.clear()
 
         let setup = InitialSetupController()
         setup.showWindow(nil)

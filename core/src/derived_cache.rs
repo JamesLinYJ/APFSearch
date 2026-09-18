@@ -76,13 +76,13 @@ impl Hash for OwnedKey {
 enum Product {
     Page(Arc<ResultPage>),
     Matches(Arc<RoaringBitmap>),
-    Order(Arc<Vec<u32>>),
+    Order(Arc<crate::slot_order::SlotOrder>),
     Hierarchy(Arc<crate::relations::Hierarchy>),
 }
 impl Product {
-    fn allocation(&self) -> ((u8, usize), usize) {
+    fn allocations(&self) -> Vec<((u8, usize), usize)> {
         let arc_counters = 2 * std::mem::size_of::<AtomicUsize>();
-        match self {
+        let single = match self {
             Self::Hierarchy(value) => (
                 (3, Arc::as_ptr(value) as usize),
                 value.heap_bytes() + arc_counters,
@@ -93,12 +93,7 @@ impl Product {
                     + value.slots.capacity() * std::mem::size_of::<u32>()
                     + arc_counters,
             ),
-            Self::Order(value) => (
-                (1, Arc::as_ptr(value) as usize),
-                std::mem::size_of::<Vec<u32>>()
-                    + value.capacity() * std::mem::size_of::<u32>()
-                    + arc_counters,
-            ),
+            Self::Order(value) => return value.allocations(),
             Self::Matches(value) => {
                 let stats = value.statistics();
                 // Roaring exposes payload statistics, not allocator capacity.
@@ -115,12 +110,13 @@ impl Product {
                             + stats.n_bytes_bitset_containers) as usize,
                 )
             }
-        }
+        };
+        vec![single]
     }
 }
 struct Entry {
     product: Product,
-    allocation: (u8, usize),
+    allocations: Vec<((u8, usize), usize)>,
     overhead: usize,
     touched: Instant,
 }
@@ -132,29 +128,31 @@ struct Ledger {
     entries: usize,
 }
 impl Ledger {
-    fn add(&mut self, entry: &Entry, bytes: usize) {
-        let allocation = self
-            .allocations
-            .entry(entry.allocation)
-            .or_insert((bytes, 0));
-        if allocation.1 == 0 {
-            self.bytes += bytes;
+    fn add(&mut self, entry: &Entry) {
+        for &(identity, bytes) in &entry.allocations {
+            let allocation = self.allocations.entry(identity).or_insert((bytes, 0));
+            if allocation.1 == 0 {
+                self.bytes += bytes;
+            }
+            allocation.1 += 1;
         }
-        allocation.1 += 1;
         self.bytes += entry.overhead;
         self.entries += 1;
     }
     fn remove(&mut self, entry: &Entry) {
         self.bytes -= entry.overhead;
         self.entries -= 1;
-        let (bytes, references) = self.allocations.get_mut(&entry.allocation).unwrap();
-        *references -= 1;
-        if *references == 0 {
-            self.bytes -= *bytes;
-            self.allocations.remove(&entry.allocation);
+        for &(identity, _) in &entry.allocations {
+            let (bytes, references) = self.allocations.get_mut(&identity).unwrap();
+            *references -= 1;
+            if *references == 0 {
+                self.bytes -= *bytes;
+                self.allocations.remove(&identity);
+            }
         }
     }
 }
+
 struct Cache {
     shards: [Mutex<Shard>; SHARDS],
     hasher: RandomState,
@@ -199,14 +197,17 @@ impl Cache {
     }
     fn insert(&self, owner: u64, key: Key, product: Product) {
         // Measure outside all locks: bitmap statistics can walk many containers.
-        let (allocation, bytes) = product.allocation();
+        let allocations = product.allocations();
+        let bytes = allocations.iter().map(|(_, bytes)| *bytes).sum::<usize>();
         // Include linked nodes, hash-table slack and ledger bookkeeping. The
         // allocator's own size classes and resident pages remain unmeasured.
         let bookkeeping = 2
             * (std::mem::size_of::<OwnedKey>()
                 + std::mem::size_of::<Entry>()
                 + 4 * std::mem::size_of::<usize>());
-        let overhead = bookkeeping + key.heap_bytes();
+        let overhead = bookkeeping
+            + key.heap_bytes()
+            + allocations.capacity() * std::mem::size_of::<((u8, usize), usize)>();
         if bytes.saturating_add(overhead) > self.limit {
             return;
         }
@@ -224,11 +225,11 @@ impl Cache {
                 }
                 let entry = Entry {
                     product,
-                    allocation,
+                    allocations,
                     overhead,
                     touched: Instant::now(),
                 };
-                ledger.add(&entry, bytes);
+                ledger.add(&entry);
                 shard.insert(key, entry);
             }
             while ledger
@@ -288,7 +289,7 @@ impl Cache {
         }
         drop(retired);
     }
-    fn orders(&self, owner: u64) -> VecDeque<(ResultOrder, Arc<Vec<u32>>)> {
+    fn orders(&self, owner: u64) -> VecDeque<(ResultOrder, Arc<crate::slot_order::SlotOrder>)> {
         let mut result = VecDeque::new();
         for shard in &self.shards {
             let shard = shard.lock().unwrap();
@@ -389,19 +390,21 @@ impl DerivedCache {
     pub(crate) fn insert_matches(&self, key: String, value: Arc<RoaringBitmap>) {
         global().insert(self.owner, Key::Matches(key), Product::Matches(value));
     }
-    pub(crate) fn order(&self, key: &ResultOrder) -> Option<Arc<Vec<u32>>> {
+    pub(crate) fn order(&self, key: &ResultOrder) -> Option<Arc<crate::slot_order::SlotOrder>> {
         match global().get(self.owner, KeyRef::Order(key))? {
             Product::Order(value) => Some(value),
             _ => unreachable!(),
         }
     }
-    pub(crate) fn insert_order(&self, key: ResultOrder, value: Arc<Vec<u32>>) {
+    pub(crate) fn insert_order(&self, key: ResultOrder, value: Arc<crate::slot_order::SlotOrder>) {
         global().insert(self.owner, Key::Order(key), Product::Order(value));
     }
-    pub(crate) fn orders(&self) -> VecDeque<(ResultOrder, Arc<Vec<u32>>)> {
+    pub(crate) fn orders(&self) -> VecDeque<(ResultOrder, Arc<crate::slot_order::SlotOrder>)> {
         global().orders(self.owner)
     }
-    pub(crate) fn from_orders(orders: VecDeque<(ResultOrder, Arc<Vec<u32>>)>) -> Self {
+    pub(crate) fn from_orders(
+        orders: VecDeque<(ResultOrder, Arc<crate::slot_order::SlotOrder>)>,
+    ) -> Self {
         let cache = Self::default();
         for (key, value) in orders {
             cache.insert_order(key, value);
@@ -488,7 +491,7 @@ mod tests {
         cache.insert(
             1,
             Key::Order(order.clone()),
-            Product::Order(Arc::new(vec![1, 2])),
+            Product::Order(Arc::new(vec![1, 2].into())),
         );
         cache.insert(
             1,
@@ -544,7 +547,11 @@ mod tests {
     fn shared_allocations_are_counted_once_across_generations() {
         let cache = Cache::new(4096);
         let product = Product::Matches(Arc::new((0..128).collect()));
-        let (_, allocation_bytes) = product.allocation();
+        let allocation_bytes = product
+            .allocations()
+            .iter()
+            .map(|(_, bytes)| *bytes)
+            .sum::<usize>();
         cache.insert(1, Key::Matches(String::new()), product.clone());
         let single = cache.estimated_bytes.load(Ordering::Relaxed);
         cache.insert(2, Key::Matches(String::new()), product);
@@ -555,6 +562,45 @@ mod tests {
         cache.remove_owner(1);
         assert_eq!(cache.estimated_bytes.load(Ordering::Relaxed), single);
         cache.remove_owner(2);
+        assert_eq!(cache.estimated_bytes.load(Ordering::Relaxed), 0);
+    }
+    #[test]
+    fn order_budget_counts_shared_leaves_once_and_releases_each_owner() {
+        let first: crate::slot_order::SlotOrder = (0..16000).collect::<Vec<_>>().into();
+        let second = first.updated(&mut vec![6000], &[16001], |a, b| a.cmp(&b));
+        let products = [
+            Product::Order(Arc::new(first)),
+            Product::Order(Arc::new(second)),
+        ];
+        let mut unique = std::collections::HashMap::new();
+        let sum: usize = products
+            .iter()
+            .flat_map(Product::allocations)
+            .map(|(key, bytes)| {
+                unique.insert(key, bytes);
+                bytes
+            })
+            .sum();
+        let unique_bytes: usize = unique.values().sum();
+        assert!(unique_bytes < sum);
+        let cache = Cache::new(1024 * 1024);
+        for (owner, product) in products.into_iter().enumerate() {
+            cache.insert(owner as u64, Key::Order(ResultOrder::name()), product);
+        }
+        assert_eq!(
+            cache
+                .ledger
+                .lock()
+                .unwrap()
+                .allocations
+                .values()
+                .map(|(bytes, _)| bytes)
+                .sum::<usize>(),
+            unique_bytes
+        );
+        cache.remove_owner(0);
+        assert!(cache.get(1, KeyRef::Order(&ResultOrder::name())).is_some());
+        cache.remove_owner(1);
         assert_eq!(cache.estimated_bytes.load(Ordering::Relaxed), 0);
     }
     #[test]
@@ -590,7 +636,7 @@ mod tests {
         cache.insert(
             2,
             Key::Order(ResultOrder::name()),
-            Product::Order(Arc::new(vec![0; 1024])),
+            Product::Order(Arc::new(vec![0; 1024].into())),
         );
         assert_eq!(cache.estimated_bytes.load(Ordering::Relaxed), before);
         assert!(cache.get(1, KeyRef::Matches("")).is_some());
@@ -602,7 +648,7 @@ mod tests {
         cache.insert(
             1,
             Key::Order(order.clone()),
-            Product::Order(Arc::new(vec![1, 2])),
+            Product::Order(Arc::new(vec![1, 2].into())),
         );
         cache.insert(
             2,

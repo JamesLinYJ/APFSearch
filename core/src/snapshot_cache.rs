@@ -28,7 +28,7 @@ use std::{
 };
 // Slot order remains stable when an older SQLite ID becomes visible again.
 #[cfg(test)]
-const MAGIC: &[u8; 8] = b"APFIDX03";
+const MAGIC: &[u8; 8] = b"APFIDX04";
 const HEADER: usize = 56;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -37,9 +37,9 @@ pub(crate) struct PreparedSnapshot {
     pub labels: Arc<LabelPool>,
     pub file_slots: FileSlots,
     pub live: RoaringBitmap,
-    pub trigrams: Arc<HashMap<[u8; 3], Arc<RoaringBitmap>>>,
-    pub name_order: Arc<Vec<u32>>,
-    pub path_order: Arc<Vec<u32>>,
+    pub trigrams: Arc<crate::posting_map::PostingMap<[u8; 3]>>,
+    pub name_order: Arc<crate::slot_order::SlotOrder>,
+    pub path_order: Arc<crate::slot_order::SlotOrder>,
     pub path_ties: Arc<RoaringBitmap>,
     pub metadata_postings: MetadataPostings,
     pub generation: u64,
@@ -317,39 +317,36 @@ fn decode_chunk(
         return None;
     }
     let text = std::str::from_utf8(mapping.get(properties_end..text_end)?).ok()?;
-    let references = [
-        name.values(),
-        folded_name.values(),
-        search_name.values(),
-        parent.values(),
-    ]
-    .into_iter()
-    .flatten()
-    .copied()
-    .chain(
-        [path.values(), folded_path.values(), search_path.values()]
-            .into_iter()
-            .flatten()
-            .flat_map(|path| [path.prefix, path.suffix]),
-    );
-    {
-        for reference in references {
-            let start = reference.offset as usize;
-            let end = start.checked_add(reference.length as usize)?;
-            text.get(start..end)?;
+    let fragment = |reference: TextRef| {
+        let start = reference.offset as usize;
+        text.get(start..start.checked_add(reference.length as usize)?)
+    };
+    // Aliases reference the exact same immutable column, so validate each
+    // physical range once. Equal-looking but distinct columns are still checked.
+    for (index, column) in texts.iter().enumerate() {
+        if texts[..index]
+            .iter()
+            .any(|previous| std::ptr::eq(previous.values(), column.values()))
+        {
+            continue;
+        }
+        for &reference in column.values() {
+            fragment(reference)?;
         }
     }
     // Matchers rely on the writer's last-separator split. Check it before
     // publishing borrowed views, even for a checksummed but malformed section.
-    for column in [&path, &folded_path, &search_path] {
+    for (index, column) in paths.iter().enumerate() {
+        if paths[..index]
+            .iter()
+            .any(|previous| std::ptr::eq(previous.values(), column.values()))
+        {
+            continue;
+        }
         for path in column.values() {
-            let fragment = |reference: TextRef| {
-                &text[reference.offset as usize
-                    ..(reference.offset as usize + reference.length as usize)]
-            };
-            let prefix = fragment(path.prefix);
-            if (!prefix.is_empty() && !prefix.ends_with('/')) || fragment(path.suffix).contains('/')
-            {
+            let prefix = fragment(path.prefix)?;
+            let suffix = fragment(path.suffix)?;
+            if (!prefix.is_empty() && !prefix.ends_with('/')) || suffix.contains('/') {
                 return None;
             }
         }
@@ -587,9 +584,9 @@ fn restore_indexes(
         labels,
         file_slots,
         live,
-        trigrams: Arc::new(trigrams),
-        name_order: Arc::new(name_order),
-        path_order: Arc::new(path_order),
+        trigrams: Arc::new(trigrams.into()),
+        name_order: Arc::new(name_order.into()),
+        path_order: Arc::new(path_order.into()),
         path_ties: Arc::new(path_ties),
         metadata_postings,
         generation,
@@ -745,7 +742,7 @@ mod tests {
         );
         write(&path, &original, 19).unwrap();
         let bytes = std::fs::read(&path).unwrap();
-        assert_eq!(&bytes[..8], b"APFMAP03");
+        assert_eq!(&bytes[..8], b"APFMAP04");
         let (restored, _) = read(&path, 8, 19).unwrap();
         assert_eq!(restored.live, original.live);
         assert_eq!(restored.name_order, original.name_order);

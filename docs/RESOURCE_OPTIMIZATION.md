@@ -4,6 +4,10 @@ This is the historical reconciliation/column-refactor checkpoint. The subsequent
 path layout, cache format and scheduling work is documented in
 [Shared paths and compact query layout](SHARED_PATH_LAYOUT.md).
 
+The subsequent candidate for shared posting directories, ordered leaves and
+snapshot ownership is described in [Snapshot sharing](SNAPSHOT_SHARING.md).
+Its validation status does not supersede the measurement boundaries below.
+
 This work preserves the SQLite schema and public query protocol. The changes
 below are implementation progress, not evidence that the full resource targets
 have been met on a six-million-entry installation.

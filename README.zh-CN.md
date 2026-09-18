@@ -23,19 +23,19 @@ APFSearch 通过 AppKit 界面和共享服务的命令行客户端，提供文�
 
 ## 下载
 
-**[v0.1.5 预发布](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.5)** · macOS 14 及以上
+**[v0.1.6 预发布](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.6)** · macOS 14 及以上
 
 | 你的 Mac | 下载 |
 | :--- | :--- |
-| 通用版（两种芯片） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.5/APFSearch-0.1.5-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.5/APFSearch-0.1.5-Universal.zip) |
-| Apple Silicon（M 系列） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.5/APFSearch-0.1.5-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.5/APFSearch-0.1.5-AppleSilicon.zip) |
-| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.5/APFSearch-0.1.5-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.5/APFSearch-0.1.5-Intel.zip) |
+| 通用版（两种芯片） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Universal.zip) |
+| Apple Silicon（M 系列） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-AppleSilicon.zip) |
+| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Intel.zip) |
 
-不确定芯片类型时选通用版。打开 DMG 后，将 APFSearch 拖入 Applications 文件夹；ZIP 适合手动部署。应用与 DMG 均通过 Developer ID 签名和 Apple 公证，ZIP 内含已装订公证票据的应用。[SHA-256 校验值](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.5/SHA256SUMS.txt)。
+不确定芯片类型时选通用版。打开 DMG 后，将 APFSearch 拖入 Applications 文件夹；ZIP 适合手动部署。应用与 DMG 均通过 Developer ID 签名和 Apple 公证，ZIP 内含已装订公证票据的应用。[SHA-256 校验值](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/SHA256SUMS.txt)。
 
 这是开发预览版。Intel 代码已通过 Rosetta 运行检查；真实 Intel 硬件及 macOS 14 仍需实机验证。
 
-0.1.5 Preview 修复了反复核验未变化硬链接组导致的长时间恢复，并让索引服务能从临时挂载变化中继续工作。保留现有 SQLite 数据、设置及派生缓存格式。详见[更新记录](CHANGELOG.md)和[核对机制](docs/INCREMENTAL_INDEX.md#hard-link-discovery-without-repeated-peer-verification)。
+0.1.6 Preview 在索引快照之间共享文本、倒排和排序块，改进结果生命周期，并使用新 SDK 让支持的 macOS 采用原生 Liquid Glass。保留现有 SQLite 数据和设置；新版派生缓存在首次启动时从数据库生成，不因缓存升级重新扫描文件系统。详见[版本说明](docs/releases/0.1.6.md)和[快照设计](docs/SNAPSHOT_SHARING.md)。
 
 继续沿用 0.1.4 引入的紧凑布局。此前同一份约 569 万条索引的五轮对照中，驻留内存比上一阶段紧凑候选版少 49.5%；这不是与 0.1.3 的对比，也不代表所有机器的表现。详见[实测与限制](docs/SHARED_PATH_LAYOUT.md#acceptance-results)。
 
@@ -43,7 +43,7 @@ APFSearch 通过 AppKit 界面和共享服务的命令行客户端，提供文�
 
 ### 从源码构建
 
-请使用 **Rust 稳定版工具链**与包含 macOS SDK、Swift 编译器和 `xcstringstool` 的 **Xcode** 从源码构建，默认生成适用于 macOS 14 及以上的通用应用（`arm64` + `x86_64`）。
+请使用 **Rust 稳定版工具链**与包含 **macOS 26 或更新 SDK**、Swift 编译器和 `xcstringstool` 的 **Xcode** 从源码构建，默认生成适用于 macOS 14 及以上的通用应用（`arm64` + `x86_64`）。新 SDK 让原生控件在支持的系统上采用 Liquid Glass，最低运行版本仍为 macOS 14；详见[构建工具链检查](docs/BUILD_TOOLCHAIN.md)。
 
 ```sh
 # 首次构建前安装两种 macOS 编译目标。

@@ -106,6 +106,7 @@ receipt = {
     'compiler_command': command,
 }
 (app / 'Contents/Resources/build-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+subprocess.run(['xattr', '-cr', str(app)], check=True)
 subprocess.run(['codesign', '--force', '--options', 'runtime', '--timestamp=none', '--identifier', signature_identifier, '--sign', args.identity, str(app)], check=True)
 subprocess.run(['codesign', '--verify', '--strict', str(app)], check=True)
 print(json.dumps({'app': str(app), 'executable': str(bundled_executable), 'app_source_sha256': source_hash, 'launched': False}, indent=2))

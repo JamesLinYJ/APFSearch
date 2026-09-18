@@ -403,4 +403,15 @@ impl<T: Scalar> IntegerColumn<T> {
             },
         }
     }
+    pub(crate) fn inventory(&self, inventory: &mut crate::memory_inventory::Inventory) {
+        match self.0.as_ref() {
+            IntegerData::Raw(values) => values.inventory(inventory),
+            IntegerData::Packed { offsets, .. } => match offsets {
+                Offsets::Constant(_) => (),
+                Offsets::Byte(values) => values.inventory(inventory),
+                Offsets::Short(values) => values.inventory(inventory),
+                Offsets::Word(values) => values.inventory(inventory),
+            },
+        }
+    }
 }

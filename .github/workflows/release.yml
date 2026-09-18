@@ -6,7 +6,7 @@ on:
         description: Full 40-character main commit SHA to release
         required: true
       tag:
-        description: New release tag matching the source version (for example v0.1.5)
+        description: New release tag matching the source version (for example v0.1.6)
         required: true
 permissions:
   contents: read
@@ -19,9 +19,10 @@ jobs:
     environment: release
     permissions:
       contents: write
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
       RELEASE_COMMIT: ${{ inputs.ref }}
       RELEASE_TAG: ${{ inputs.tag }}
       PCRE2_SYS_STATIC: "1"
@@ -58,6 +59,7 @@ jobs:
           fi
       - name: Prepare build tools
         run: |
+          python3 scripts/build_toolchain.py
           rustup update stable --no-self-update
           rustup default stable
           rustup component add rustfmt clippy
@@ -71,6 +73,8 @@ jobs:
           python3 tests/check_application_identity.py
           python3 tests/test_release_and_audit.py
           python3 tests/test_release_downloads.py
+          python3 tests/test_build_toolchain.py
+          python3 tests/test_memory_comparison.py
           bash tests/run.sh
       - name: Import temporary signing and notarization credentials
         env:

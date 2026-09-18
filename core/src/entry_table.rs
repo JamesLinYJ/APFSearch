@@ -416,11 +416,39 @@ impl<T: ColumnValue> Default for Column<T> {
     }
 }
 impl<T: ColumnValue> Column<T> {
+    pub(crate) fn owned_allocation(&self) -> Option<(usize, usize)> {
+        match self.0.as_ref() {
+            ColumnData::Owned(values) => Some((
+                Arc::as_ptr(&self.0) as usize,
+                std::mem::size_of::<ColumnData<T>>() + values.capacity() * std::mem::size_of::<T>(),
+            )),
+            ColumnData::Mapped { .. } => None,
+        }
+    }
+    pub(crate) fn make_mut(&mut self) -> &mut Vec<T> {
+        if self.is_mapped() {
+            self.0 = Arc::new(ColumnData::Owned(self.values().to_vec()));
+        }
+        let ColumnData::Owned(values) = Arc::make_mut(&mut self.0) else {
+            unreachable!()
+        };
+        values
+    }
     pub(crate) fn owned(values: Vec<T>) -> Self {
         Self(Arc::new(ColumnData::Owned(values)))
     }
     pub(crate) fn is_mapped(&self) -> bool {
         matches!(self.0.as_ref(), ColumnData::Mapped { .. })
+    }
+    pub(crate) fn inventory(&self, inventory: &mut crate::memory_inventory::Inventory) {
+        match self.0.as_ref() {
+            ColumnData::Owned(values) => inventory.record(
+                "column_capacity_bytes",
+                Arc::as_ptr(&self.0) as usize,
+                values.capacity() * std::mem::size_of::<T>(),
+            ),
+            ColumnData::Mapped { mapping, .. } => inventory.mapping(mapping),
+        }
     }
     pub(crate) fn account(
         &self,
@@ -600,6 +628,53 @@ impl Default for EntryChunk {
     }
 }
 impl EntryChunk {
+    /// Copy live byte ranges directly. Rows, numeric columns, labels and sparse
+    /// properties remain borrowed/shared throughout text reclamation.
+    fn compact_text(&mut self, ranges: &[(usize, usize)], live_bytes: usize) {
+        let previous = self.text.clone();
+        let mut text = String::with_capacity(live_bytes);
+        let mut relocated = Vec::with_capacity(ranges.len());
+        for &(start, end) in ranges {
+            relocated.push((start, text.len()));
+            text.push_str(&previous.text()[start..end]);
+        }
+        let relocate = |reference: TextRef| {
+            if reference.length == 0 {
+                return TextRef::default();
+            }
+            let index =
+                relocated.partition_point(|&(start, _)| start <= reference.offset as usize) - 1;
+            let (start, destination) = relocated[index];
+            TextRef {
+                offset: u32::try_from(destination + reference.offset as usize - start)
+                    .expect("Compaction cannot grow a text block"),
+                length: reference.length,
+            }
+        };
+        for column in [
+            &mut self.name,
+            &mut self.folded_name,
+            &mut self.search_name,
+            &mut self.parent,
+        ] {
+            *column = Column::owned(column.values().iter().copied().map(relocate).collect());
+        }
+        for column in [&mut self.path, &mut self.folded_path, &mut self.search_path] {
+            *column = Column::owned(
+                column
+                    .values()
+                    .iter()
+                    .map(|path| PathRef {
+                        prefix: relocate(path.prefix),
+                        suffix: relocate(path.suffix),
+                    })
+                    .collect(),
+            );
+        }
+        self.text = Arc::new(TextData::Owned(text));
+        self.pending_text = None;
+        self.section.take();
+    }
     pub(crate) fn len(&self) -> usize {
         self.id.len()
     }
@@ -625,24 +700,23 @@ impl EntryChunk {
     }
     fn from_rows(rows: &[IndexedFile]) -> Self {
         let mut chunk = Self::default();
-        let mut interned = HashMap::new();
-        let mut pool = String::new();
-        let intern = |text: &str, pool: &mut String, interned: &mut HashMap<String, TextRef>| {
-            if let Some(reference) = interned.get(text) {
-                return *reference;
-            }
-            let reference = TextRef {
-                offset: u32::try_from(pool.len()).expect("Chunk text fits u32"),
-                length: u32::try_from(text.len()).expect("Text fits u32"),
-            };
-            pool.push_str(text);
-            interned.insert(text.into(), reference);
-            reference
-        };
+        let mut pool = crate::text_pool::TextPoolBuilder::default();
         // The hottest names occupy the first contiguous region of each block.
         for row in rows {
-            intern(row.search_name(), &mut pool, &mut interned);
+            pool.intern(row.search_name());
         }
+        // A parent, its trailing-slash path prefix and a descendant directory
+        // often contain the same bytes. Store maximal prefixes once while all
+        // readers retain the existing direct TextRef access.
+        pool.intern_prefixes(rows.iter().flat_map(|row| {
+            let prefix = |path: &str| path.rfind('/').map_or(0, |index| index + 1);
+            [
+                &row.path[..prefix(&row.path)],
+                &row.folded_path[..prefix(&row.folded_path)],
+                &row.search_path[..prefix(&row.search_path)],
+                row.parent(),
+            ]
+        }));
         for (slot, row) in rows.iter().enumerate() {
             chunk.id.set(slot, row.id());
             chunk.size.set(slot, row.size());
@@ -657,25 +731,17 @@ impl EntryChunk {
             let mut intern_path = |value: &str| {
                 let split = value.rfind('/').map_or(0, |index| index + 1);
                 PathRef {
-                    prefix: intern(&value[..split], &mut pool, &mut interned),
-                    suffix: intern(&value[split..], &mut pool, &mut interned),
+                    prefix: pool.intern(&value[..split]),
+                    suffix: pool.intern(&value[split..]),
                 }
             };
             chunk.path.set(slot, intern_path(&row.path));
             chunk.folded_path.set(slot, intern_path(&row.folded_path));
             chunk.search_path.set(slot, intern_path(&row.search_path));
-            chunk
-                .name
-                .set(slot, intern(row.name(), &mut pool, &mut interned));
-            chunk
-                .folded_name
-                .set(slot, intern(row.folded_name(), &mut pool, &mut interned));
-            chunk
-                .search_name
-                .set(slot, intern(row.search_name(), &mut pool, &mut interned));
-            chunk
-                .parent
-                .set(slot, intern(row.parent(), &mut pool, &mut interned));
+            chunk.name.set(slot, pool.intern(row.name()));
+            chunk.folded_name.set(slot, pool.intern(row.folded_name()));
+            chunk.search_name.set(slot, pool.intern(row.search_name()));
+            chunk.parent.set(slot, pool.intern(row.parent()));
             let label = chunk.label(row.extension());
             chunk.extension.set(slot, label);
             let label = chunk.label(row.folded_extension());
@@ -686,8 +752,7 @@ impl EntryChunk {
         }
         // Immutable blocks do not need growth headroom. Reclaim construction
         // capacity now instead of carrying it through every shared snapshot.
-        pool.shrink_to_fit();
-        chunk.text = Arc::new(TextData::Owned(pool));
+        chunk.text = Arc::new(TextData::Owned(pool.finish()));
         chunk.compact_integers();
         chunk
     }
@@ -816,15 +881,6 @@ impl EntryChunk {
             self.folded_name.set(slot, reference);
         }
         if self
-            .parent
-            .values()
-            .get(slot)
-            .is_none_or(|reference| self.text_at(*reference) != row.parent())
-        {
-            let reference = self.intern_update(row.parent());
-            self.parent.set(slot, reference);
-        }
-        if self
             .path
             .values()
             .get(slot)
@@ -838,6 +894,24 @@ impl EntryChunk {
                 }
             });
             self.path.set(slot, reference);
+        }
+        if self
+            .parent
+            .values()
+            .get(slot)
+            .is_none_or(|reference| self.text_at(*reference) != row.parent())
+        {
+            let prefix = self.path.values()[slot].prefix;
+            let reference = if self.text_at(prefix).starts_with(row.parent()) {
+                TextRef {
+                    offset: prefix.offset,
+                    length: u32::try_from(row.parent().len()).expect("Parent fits its path prefix"),
+                }
+            } else {
+                // Imported metadata may supply an unrelated parent string.
+                self.intern_update(row.parent())
+            };
+            self.parent.set(slot, reference);
         }
         if self
             .folded_path
@@ -1173,29 +1247,25 @@ impl EntryTable {
             .map(|r| (r.offset as usize, r.offset as usize + r.length as usize))
             .collect();
             references.sort_unstable();
-            let (mut live_bytes, mut covered_end) = (0usize, 0usize);
+            let mut ranges: Vec<(usize, usize)> = Vec::new();
             for (start, end) in references {
-                if end > covered_end {
-                    live_bytes += end - start.max(covered_end);
-                    covered_end = end;
+                if start == end {
+                    continue;
+                }
+                if let Some(last) = ranges.last_mut()
+                    && start <= last.1
+                {
+                    last.1 = last.1.max(end);
+                } else {
+                    ranges.push((start, end));
                 }
             }
+            let live_bytes = ranges.iter().map(|(start, end)| end - start).sum::<usize>();
             // Reclaim a text block when at least half of its bytes are dead.
             // This is an ownership bound, not a periodic idle rewrite.
             if chunk.text.text().len().saturating_sub(live_bytes) > live_bytes {
-                let rows: Vec<_> = (0..chunk.len())
-                    .map(|slot| EntryView { chunk, slot }.to_owned_file())
-                    .collect();
-                let packed = EntryChunk::from_rows(&rows);
                 let chunk = Arc::make_mut(&mut self.chunks[index as usize]);
-                chunk.text = packed.text;
-                chunk.path = packed.path;
-                chunk.name = packed.name;
-                chunk.folded_name = packed.folded_name;
-                chunk.folded_path = packed.folded_path;
-                chunk.search_name = packed.search_name;
-                chunk.search_path = packed.search_path;
-                chunk.parent = packed.parent;
+                chunk.compact_text(&ranges, live_bytes);
             }
         }
         self.text_changes.clear();
@@ -1283,6 +1353,69 @@ mod tests;
 
 impl EntryTable {
     /// Payload inventory, not physical footprint or allocator accounting.
+    pub(crate) fn inventory(&self, inventory: &mut crate::memory_inventory::Inventory) {
+        inventory.record(
+            "entry_directory_capacity_bytes",
+            self as *const _ as usize,
+            self.chunks.capacity() * std::mem::size_of::<Arc<EntryChunk>>(),
+        );
+        for chunk in &self.chunks {
+            inventory.record(
+                "entry_block_bytes",
+                Arc::as_ptr(chunk) as usize,
+                std::mem::size_of::<EntryChunk>(),
+            );
+            chunk.id.inventory(inventory);
+            chunk.size.inventory(inventory);
+            chunk.modified.inventory(inventory);
+            chunk.created.inventory(inventory);
+            chunk.changed.inventory(inventory);
+            chunk.modified_ns.inventory(inventory);
+            chunk.changed_ns.inventory(inventory);
+            chunk.file_id.inventory(inventory);
+            chunk.parent_id.inventory(inventory);
+            chunk.flags.inventory(inventory);
+            chunk.extension.inventory(inventory);
+            chunk.folded_extension.inventory(inventory);
+            chunk.volume_id.inventory(inventory);
+            chunk.path.inventory(inventory);
+            chunk.name.inventory(inventory);
+            chunk.folded_name.inventory(inventory);
+            chunk.folded_path.inventory(inventory);
+            chunk.search_name.inventory(inventory);
+            chunk.search_path.inventory(inventory);
+            chunk.parent.inventory(inventory);
+            chunk.states.inventory(inventory);
+            match chunk.text.as_ref() {
+                TextData::Owned(text) => inventory.record(
+                    "text_capacity_bytes",
+                    Arc::as_ptr(&chunk.text) as usize,
+                    text.capacity(),
+                ),
+                TextData::Mapped { mapping, .. } => inventory.mapping(mapping),
+            }
+            inventory.record(
+                "label_capacity_bytes",
+                Arc::as_ptr(&chunk.labels) as usize,
+                chunk.labels.capacity() * std::mem::size_of::<String>()
+                    + chunk
+                        .labels
+                        .iter()
+                        .map(|label| label.capacity())
+                        .sum::<usize>(),
+            );
+            inventory.record(
+                "property_payload_estimated_bytes",
+                Arc::as_ptr(&chunk.properties) as usize,
+                chunk.properties.capacity() * std::mem::size_of::<(usize, Value)>()
+                    + chunk
+                        .properties
+                        .values()
+                        .map(crate::memory_inventory::json_heap)
+                        .sum::<usize>(),
+            );
+        }
+    }
     pub fn storage_metrics(&self) -> serde_json::Value {
         let mut owned_columns = 0usize;
         let mut owned_text = 0usize;

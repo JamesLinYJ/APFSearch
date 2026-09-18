@@ -50,7 +50,7 @@ fn rows(snapshot: &SearchSnapshot) -> Value {
     serde_json::to_value(entries).unwrap()
 }
 
-fn paths(snapshot: &SearchSnapshot, order: &[u32]) -> Vec<String> {
+fn paths(snapshot: &SearchSnapshot, order: &crate::slot_order::SlotOrder) -> Vec<String> {
     order
         .iter()
         .map(|slot| snapshot.entries.at(*slot as usize).path().to_string())

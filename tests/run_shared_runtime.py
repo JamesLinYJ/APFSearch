@@ -20,6 +20,10 @@ def main():
                  'window-app', 'application-bundle', 'probe', 'output'):
         parser.add_argument('--' + name, type=Path, required=True)
     args = parser.parse_args()
+    # LaunchServices does not preserve this driver's working directory.
+    # Both configuration and report arguments must reach the GUI as absolute paths.
+    for name, value in vars(args).items():
+        setattr(args, name, value.resolve())
     args.output.mkdir(parents=True, exist_ok=False, mode=0o700)
     updates = {'baseline': [], 'candidate': []}
     for run in range(5):

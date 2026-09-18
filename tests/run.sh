@@ -14,12 +14,14 @@ fi
 cargo build --locked --release --manifest-path "$APFSEARCH_PROJECT/core/Cargo.toml"
 APFSEARCH_SOURCES=("$APFSEARCH_PROJECT/macos/ApplicationIdentity.swift" "$APFSEARCH_PROJECT/macos/SearchProtocol.swift" "$APFSEARCH_PROJECT/macos/Localization.swift" "$APFSEARCH_PROJECT/macos/SearchService.swift" "$APFSEARCH_PROJECT/macos/ContentIndexer.swift" "$APFSEARCH_PROJECT/macos/FileOperations.swift")
 APFSEARCH_LINK=("$APFSEARCH_PROJECT/core/target/release/libapfsearch_core.a" -framework AppKit -framework PDFKit -framework AVFoundation -framework ImageIO -framework Security -framework DiskArbitration -framework CoreServices -framework CoreFoundation -lc++)
-for APFSEARCH_TEST_NAME in ContentAndFileTests ServiceTests; do
+for APFSEARCH_TEST_NAME in ContentAndFileTests ServiceTests ContentCancellationTests ServiceLifetimeTests; do
   swiftc -module-cache-path "$APFSEARCH_TEST_WORK/ModuleCache" -D TEST_BUILD -swift-version 5 -O -target "$APFSEARCH_SWIFT_TARGET" "${APFSEARCH_SOURCES[@]}" "$APFSEARCH_PROJECT/tests/$APFSEARCH_TEST_NAME.swift" "${APFSEARCH_LINK[@]}" -o "$APFSEARCH_TEST_WORK/$APFSEARCH_TEST_NAME"
   python3 "$APFSEARCH_PROJECT/tests/test_bundle.py" "$APFSEARCH_TEST_WORK/$APFSEARCH_TEST_NAME" "$APFSEARCH_TEST_WORK/$APFSEARCH_TEST_NAME.app"
 done
 "$APFSEARCH_TEST_WORK/ContentAndFileTests.app/Contents/MacOS/ContentAndFileTests" "$APFSEARCH_TEST_WORK/content-file-fixture" -AppleLanguages '(zh-Hans)' > "$APFSEARCH_PROJECT/validation/content-and-files.json"
 "$APFSEARCH_TEST_WORK/ServiceTests.app/Contents/MacOS/ServiceTests" "$APFSEARCH_PROJECT" "$APFSEARCH_TEST_WORK/content-file-fixture" "$APFSEARCH_TEST_WORK/service" -AppleLanguages '(zh-Hans)' > "$APFSEARCH_TEST_WORK/service-output.json"
+"$APFSEARCH_TEST_WORK/ContentCancellationTests.app/Contents/MacOS/ContentCancellationTests" "$APFSEARCH_TEST_WORK/content-cancellation-fixture" > "$APFSEARCH_PROJECT/validation/content-cancellation.json"
+"$APFSEARCH_TEST_WORK/ServiceLifetimeTests.app/Contents/MacOS/ServiceLifetimeTests" "$APFSEARCH_TEST_WORK/service-lifetime-fixture" > "$APFSEARCH_PROJECT/validation/service-lifetime.json"
 python3 "$APFSEARCH_PROJECT/tests/check_localization.py" --report "$APFSEARCH_PROJECT/validation/localization.json"
 python3 "$APFSEARCH_PROJECT/tests/check_localization_protocol.py"
 printf 'Tests passed. Fixtures and executables: %s\n' "$APFSEARCH_TEST_WORK"

@@ -66,6 +66,9 @@ fn dense_page_reference(
 #[ignore = "Same-process first-page selection profile on an existing disposable cache"]
 fn prepared_cache_page_selection_profile() {
     let (snapshot, _) = load_profile_snapshot();
+    // The slice-only reference algorithms must not time conversion of the
+    // production leaf representation as part of page selection.
+    let reference_order = snapshot.name_order.to_vec();
     let mut ranks = vec![0u32; snapshot.entries.len()];
     for (rank, &slot) in snapshot.name_order.iter().enumerate() {
         ranks[slot as usize] = rank as u32;
@@ -104,7 +107,7 @@ fn prepared_cache_page_selection_profile() {
                             .collect::<Vec<_>>()
                     } else if method == 4 {
                         crate::ordered_page::select(
-                            &snapshot.name_order,
+                            &reference_order,
                             snapshot.entries.len(),
                             &matched,
                             offset,
@@ -114,7 +117,7 @@ fn prepared_cache_page_selection_profile() {
                         .unwrap()
                     } else if method == 3 {
                         dense_page_reference(
-                            &snapshot.name_order,
+                            &reference_order,
                             snapshot.entries.len(),
                             &matched,
                             offset,
@@ -285,7 +288,31 @@ fn prepared_cache_memory_profile() {
 #[ignore = "Read-only allocation inventory of an explicitly supplied disposable cache"]
 fn prepared_cache_string_layout_profile() {
     let (snapshot, _) = load_profile_snapshot();
-    println!("{}", snapshot.entries.storage_metrics());
+    let mut inventory = crate::memory_inventory::Inventory::default();
+    inventory.owner(true);
+    snapshot.inventory(&mut inventory);
+    let mut prefixes = std::collections::HashSet::new();
+    let mut block_prefix_bytes = 0;
+    let mut block_prefix_count = 0;
+    for chunk in &snapshot.entries.chunks {
+        let references: std::collections::HashSet<_> =
+            [&chunk.path, &chunk.folded_path, &chunk.search_path]
+                .into_iter()
+                .flat_map(|column| column.values().iter().map(|path| path.prefix))
+                .collect();
+        block_prefix_count += references.len();
+        for reference in references {
+            let prefix = chunk.text_at(reference);
+            block_prefix_bytes += prefix.len();
+            prefixes.insert(prefix);
+        }
+    }
+    println!(
+        "{}",
+        json!({"storage":snapshot.entries.storage_metrics(),"inventory":inventory.report(),
+        "block_prefix_bytes":block_prefix_bytes,"block_prefix_count":block_prefix_count,
+        "unique_prefix_bytes":prefixes.iter().map(|prefix| prefix.len()).sum::<usize>(),"unique_prefix_count":prefixes.len()})
+    );
 }
 
 #[test]
@@ -392,6 +419,7 @@ fn prepared_cache_posting_update_profile() {
 fn prepared_cache_order_update_profile() {
     let (original, _) = load_profile_snapshot();
     let order = crate::result_order::ResultOrder::name();
+    let original_order = original.name_order.to_vec();
     let mut reports = Vec::new();
     for count in [1usize, 16, 256, 1024, 2048, 4096, 16_384] {
         if count > original.len() {
@@ -413,27 +441,30 @@ fn prepared_cache_order_update_profile() {
             let mut outputs = Vec::new();
             for candidate in [run % 2 == 0, run % 2 != 0] {
                 let start = Instant::now();
-                let result = if candidate {
-                    crate::index_store::updated_order(
+                let elapsed_ms = if candidate {
+                    let result = crate::index_store::updated_order(
                         &original.name_order,
                         &original.entries,
                         &changed,
                         &original.live,
                         &entries,
                         &order,
-                    )
+                    );
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.;
+                    outputs.push(result.to_vec());
+                    elapsed
                 } else {
-                    crate::index_store::linear_updated_order_reference(
-                        &original.name_order,
+                    let result = crate::index_store::linear_updated_order_reference(
+                        &original_order,
                         &changed,
                         &entries,
                         &order,
-                    )
+                    );
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.;
+                    outputs.push(result);
+                    elapsed
                 };
-                samples.push(
-                    json!({"candidate":candidate,"elapsed_ms":start.elapsed().as_secs_f64()*1000.}),
-                );
-                outputs.push(result);
+                samples.push(json!({"candidate":candidate,"elapsed_ms":elapsed_ms}));
             }
             assert_eq!(outputs[0], outputs[1]);
         }
