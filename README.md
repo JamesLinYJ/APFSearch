@@ -11,7 +11,7 @@
 
 APFSearch brings filename, path, and metadata search to an AppKit interface with a shared command-line client. It builds its own APFS-aware index independently of Spotlight.
 
-> **In development.** This is not a complete Everything replacement and is not affiliated with voidtools. Full-volume correctness, real-world latency, advanced query compatibility, and minimum-OS hardware compatibility still need validation. See [current limitations](#current-limitations).
+> **Scope.** This is not a complete Everything replacement and is not affiliated with voidtools. Full-volume correctness, real-world latency, advanced query compatibility, and minimum-OS hardware compatibility still need validation. See [current limitations](#current-limitations).
 
 ## Features
 
@@ -23,19 +23,19 @@ APFSearch brings filename, path, and metadata search to an AppKit interface with
 
 ## Download
 
-**[v0.1.6 pre-release](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.6)** · macOS 14 or later
+**[v1.0.0 stable](https://github.com/JamesLinYJ/APFSearch/releases/tag/v1.0.0)** · macOS 14 or later
 
 | Your Mac | Download |
 | :--- | :--- |
-| Universal (both architectures) | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Universal.zip) |
-| Apple Silicon (M series) | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-AppleSilicon.zip) |
-| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Intel.zip) |
+| Universal (both architectures) | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-Universal.zip) |
+| Apple Silicon (M series) | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-AppleSilicon.zip) |
+| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-Intel.zip) |
 
-Choose Universal if you are unsure. Open the DMG and drag APFSearch into Applications, or use the ZIP for manual deployment. Applications and DMGs are Developer ID signed and Apple notarized; ZIPs carry the stapled application. [SHA-256 checksums](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/SHA256SUMS.txt).
+Choose Universal if you are unsure. Open the DMG and drag APFSearch into Applications, or use the ZIP for manual deployment. Applications and DMGs are Developer ID signed and Apple notarized; ZIPs carry the stapled application. [SHA-256 checksums](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/SHA256SUMS.txt).
 
-This is a development preview. Intel code has been exercised under Rosetta; physical Intel hardware and macOS 14 still need validation.
+Intel code has been exercised under Rosetta; physical Intel hardware and macOS 14 still need validation.
 
-The 0.1.6 Preview shares text, postings and ordered blocks across index snapshots, improves result ownership and builds with the newer SDK for native Liquid Glass on supported macOS versions. Existing SQLite data and settings are retained; the updated derived cache is generated from the database on first launch without a cache-upgrade filesystem rescan. See the [release notes](docs/releases/0.1.6.md) and [snapshot design](docs/SNAPSHOT_SHARING.md).
+Version 1.0.0 adds bounded recovery when an authorized background service has been unloaded. It retains the compact shared index and native Liquid Glass on supported macOS versions. Upgrading from 0.1.6 preserves existing SQLite data, settings and derived caches. See the [release notes](docs/releases/1.0.0.md) and [snapshot design](docs/SNAPSHOT_SHARING.md).
 
 The compact layout introduced in 0.1.4 remains in place. Its five-round, 5.69-million-entry comparison used 49.5% less resident memory than the preceding compact candidate; this is not a comparison with 0.1.3 or a whole-machine guarantee. See the [measurements and remaining limits](docs/SHARED_PATH_LAYOUT.md#acceptance-results).
 
@@ -117,7 +117,7 @@ Substring candidates, Roaring bitmaps, numeric columns, Unicode normalization an
 
 Bundle identifiers are `org.apfsearch.app`, `org.apfsearch.indexer`, and `org.apfsearch.cli`; the Rust package is `apfsearch-core`.
 
-This preview starts with format-1 preferences and a fresh index in `~/Library/Application Support/APFSearch/v1`. Earlier development settings and indexes are neither imported, migrated, nor deleted.
+APFSearch stores format-1 preferences and its index in `~/Library/Application Support/APFSearch/v1`. Upgrading from 0.1.6 preserves this data. Earlier development settings and indexes outside this location are neither imported, migrated, nor deleted.
 
 </details>
 

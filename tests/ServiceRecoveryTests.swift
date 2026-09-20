@@ -35,13 +35,14 @@ final class NSXPCInterface {
 final class NSXPCConnection {
   static var requests: [([String: Any], (Data) -> Void)] = []
   static var transportError = false
+  static var connectionError = NSError(domain: "Fixture", code: 1)
   var remoteObjectInterface: NSXPCInterface?
   var invalidationHandler: (() -> Void)?
   init(machServiceName: String, options: [Int]) {}
   func resume() {}
   func invalidate() { invalidationHandler?() }
   func remoteObjectProxyWithErrorHandler(_ handler: @escaping (Error) -> Void) -> Any {
-    if Self.transportError { handler(NSError(domain: "Fixture", code: 1)) }
+    if Self.transportError { handler(Self.connectionError) }
     return Proxy()
   }
   final class Proxy: NSObject, SearchServiceProtocol {
@@ -120,5 +121,69 @@ final class NSXPCConnection {
     drain()
     require(agent.unregisterCount == 2 && agent.registerCount == 1 && replies == 6, "manual retry is bounded and failed removal never registers over live service")
     require(DecoderProbe.allOffMain, "all production response decoding runs outside the main thread")
+    testUnloadedService()
+  }
+
+  static func testUnloadedService() {
+    let agent = SMAppService.instance
+    agent.status = .enabled
+    agent.registerCount = 0
+    agent.unregisterCount = 0
+    agent.completion = nil
+    NSXPCConnection.requests.removeAll()
+    NSXPCConnection.transportError = true
+    NSXPCConnection.connectionError = NSError(domain: NSCocoaErrorDomain, code: NSXPCConnectionInvalid)
+    let client = SearchClient()
+    client.registerService()
+    var failedReplies = 0
+    for operation in ["status", "move"] {
+      client.call(["op": operation]) { response in
+        require(response["success"] as? Bool == false, "failed transport reports an error without replaying \(operation)")
+        failedReplies += 1
+      }
+    }
+    drain()
+    require(agent.unregisterCount == 1 && agent.registerCount == 0,
+      "enabled but unloaded agent is repaired once and waits for removal")
+    client.call(["op": "query"]) { _ in }
+    require(NSXPCConnection.requests.isEmpty, "new queries wait for unavailable service repair")
+    agent.status = .notRegistered
+    NSXPCConnection.transportError = false
+    agent.completion?(nil)
+    drain()
+    require(agent.registerCount == 1 && failedReplies == 2, "repair registers agent and completes each failed request once")
+    require(NSXPCConnection.requests.count == 1 && NSXPCConnection.requests[0].0["op"] as? String == "query",
+      "only unsent requests run after repair; interrupted file operations are never replayed")
+    NSXPCConnection.requests.removeFirst().1(jsonData(["success": true]))
+    drain()
+    NSXPCConnection.transportError = true
+    client.call(["op": "status"]) { _ in failedReplies += 1 }
+    drain()
+    require(agent.unregisterCount == 1 && failedReplies == 3, "persistent invalid connection does not restart indefinitely")
+
+    let cli = SearchClient()
+    cli.call(["op": "status"]) { _ in }
+    drain()
+    require(agent.unregisterCount == 1, "CLI cannot repair another application's registration")
+
+    let disabledClient = SearchClient()
+    NSXPCConnection.transportError = false
+    disabledClient.registerService()
+    disabledClient.call(["op": "status"]) { _ in }
+    // User approval may be revoked after a request was sent.
+    agent.status = .requiresApproval
+    NSXPCConnection.transportError = true
+    disabledClient.call(["op": "status"]) { _ in }
+    drain()
+    require(agent.unregisterCount == 1, "connection recovery respects revoked background approval")
+    NSXPCConnection.requests.removeAll()
+    agent.status = .enabled
+    client.retryConnection()
+    client.call(["op": "status"]) { _ in }
+    drain()
+    require(agent.unregisterCount == 2, "explicit retry permits a fresh bounded registration repair")
+    agent.completion?(NSError(domain: "Fixture", code: 2))
+    drain()
+    require(agent.registerCount == 1, "failed removal cannot register over a possibly running service")
   }
 }

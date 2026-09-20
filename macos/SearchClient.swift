@@ -33,9 +33,8 @@ final class SearchClient {
     previous?.invalidate()
   }
 
-  // A protocol rejection happens before dispatch, so these requests have not
-  // executed. Transport failures are deliberately never replayed: a file
-  // operation may already have completed before its reply was interrupted.
+  // Repair registration through ServiceManagement, waiting for removal before
+  // registering again. Callers decide whether their request may be replayed.
   private func replaceService(completion: @escaping () -> Void) {
     waitingRequests.append(completion)
     guard !replacingService else { return }
@@ -79,6 +78,29 @@ final class SearchClient {
       }
     } catch { registrationError = L("error.service_registration", error.localizedDescription) }
   }
+  private func connectionFailed(_ error: Error, completion: @escaping ([String: Any]) -> Void) {
+    let failure = { [self] in
+      completion([
+        "success": false,
+        "error": registrationError ?? L("error.service_connection", error.localizedDescription),
+      ])
+    }
+    let transportError = error as NSError
+    // Enabled describes the user's authorization, not whether the launchd job
+    // is still loaded. For example, bootout removes that job without clearing
+    // ServiceManagement's registration. Reconnecting alone cannot restore it.
+    guard managesService, !replacementAttempted,
+          transportError.domain == NSCocoaErrorDomain,
+          transportError.code == NSXPCConnectionInvalid,
+          SMAppService.agent(plistName: serviceName + ".plist").status == .enabled else {
+      failure()
+      return
+    }
+    // One repair per client (or explicit retry), never a restart loop. Unlike
+    // protocol rejection, a transport failure does not prove non-execution:
+    // report the original failure, even after repair, without replaying it.
+    replaceService(completion: failure)
+  }
   private func connect() -> NSXPCConnection {
     lock.lock()
     defer { lock.unlock() }
@@ -111,10 +133,11 @@ final class SearchClient {
     let proxy =
       c.remoteObjectProxyWithErrorHandler { [weak self] e in
         DispatchQueue.main.async {
-          completion([
-            "success": false,
-            "error": self?.registrationError ?? L("error.service_connection", e.localizedDescription),
-          ])
+          guard let self else {
+            completion(["success": false, "error": L("error.service_connection", e.localizedDescription)])
+            return
+          }
+          self.connectionFailed(e, completion: completion)
         }
       } as? SearchServiceProtocol
     proxy?.request(jsonData(body)) { data in
@@ -125,6 +148,7 @@ final class SearchClient {
         DispatchQueue.main.async { [self] in
           if managesService, response["error_key"] as? String == "error.unsupported_protocol",
              replacingService || !replacementAttempted {
+            // Protocol rejection happens before dispatch, so replay is safe.
             replaceService { [self] in call(request, completion: completion) }
           } else {
             completion(response)

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.0
+
+- Publish the first stable release, with matching app and core versions and Apple Silicon, Intel and Universal downloads.
+- Restore an authorized background indexer when its launchd job has been unloaded but ServiceManagement still reports it enabled. Wait for asynchronous unregistration before registering again.
+- Bound automatic recovery to one attempt per client or explicit retry, respect background permission changes, and never replay a file operation after a transport failure.
+- Preserve the SQLite index, preferences, protocol, derived-cache format and internal build number from 0.1.6. This release does not require an index rebuild.
+- Keep the current compatibility and validation limits documented; the stable designation does not claim complete Everything parity or new performance gains.
+
+See the [release notes](docs/releases/1.0.0.md).
+
 ## 0.1.6 Preview
 
 ### 中文

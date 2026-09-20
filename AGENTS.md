@@ -46,4 +46,4 @@ Preserve the MIT license and third-party notices. Do not publish credentials or 
 
 ## Delivery status
 
-This is a development application, not a completed Everything clone. Keep the README's limitations accurate. Document any behavior change, relevant validation, and remaining risks without claiming unmeasured results.
+APFSearch uses stable releases starting at 1.0.0; it is not a completed Everything clone. Keep the README's limitations accurate. Document any behavior change, relevant validation, and remaining risks without claiming unmeasured results.

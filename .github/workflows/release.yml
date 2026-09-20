@@ -6,7 +6,7 @@ on:
         description: Full 40-character main commit SHA to release
         required: true
       tag:
-        description: New release tag matching the source version (for example v0.1.6)
+        description: New stable release tag matching the source version (for example v1.0.0)
         required: true
 permissions:
   contents: read
@@ -71,6 +71,7 @@ jobs:
           cargo fmt --manifest-path core/Cargo.toml --check
           cargo clippy --locked --manifest-path core/Cargo.toml --all-targets -- -D warnings
           python3 tests/check_application_identity.py
+          python3 tests/run_service_recovery_tests.py
           python3 tests/test_release_and_audit.py
           python3 tests/test_release_downloads.py
           python3 tests/test_build_toolchain.py
@@ -119,13 +120,13 @@ jobs:
           python3 scripts/validate_release.py "$RELEASE_TAG" --downloads "$RUNNER_TEMP/release/downloads"
           gh api "repos/$GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$RELEASE_COMMIT" >/dev/null
           gh release create "$RELEASE_TAG" "$RUNNER_TEMP/release/downloads/"* \
-            --verify-tag --draft --prerelease --title "APFSearch ${RELEASE_TAG#v} Preview" \
+            --verify-tag --draft --title "APFSearch ${RELEASE_TAG#v}" \
             --notes-file "docs/releases/${RELEASE_TAG#v}.md"
           mkdir "$RUNNER_TEMP/download-readback"
           gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/download-readback"
           python3 scripts/validate_release.py "$RELEASE_TAG" --downloads "$RUNNER_TEMP/download-readback"
           diff -r "$RUNNER_TEMP/release/downloads" "$RUNNER_TEMP/download-readback"
-          gh release edit "$RELEASE_TAG" --draft=false --prerelease
+          gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
       - name: Remove temporary signing credentials
         if: ${{ always() }}
         run: |

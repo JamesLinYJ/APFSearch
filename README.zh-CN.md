@@ -11,7 +11,7 @@
 
 APFSearch 通过 AppKit 界面和共享服务的命令行客户端，提供文件名、路径和元数据搜索。它针对 APFS 独立建立索引，不依赖 Spotlight。
 
-> **开发中。** 当前版本尚不能完整替代 Everything，也与 voidtools 无关联。整卷正确性、实际使用延迟、高级语法兼容性和最低系统版本的实机兼容性仍需验证，详见[当前限制](#当前限制)。
+> **功能范围。** 当前版本尚不能完整替代 Everything，也与 voidtools 无关联。整卷正确性、实际使用延迟、高级语法兼容性和最低系统版本的实机兼容性仍需验证，详见[当前限制](#当前限制)。
 
 ## 功能
 
@@ -23,19 +23,19 @@ APFSearch 通过 AppKit 界面和共享服务的命令行客户端，提供文�
 
 ## 下载
 
-**[v0.1.6 预发布](https://github.com/JamesLinYJ/APFSearch/releases/tag/v0.1.6)** · macOS 14 及以上
+**[v1.0.0 正式版](https://github.com/JamesLinYJ/APFSearch/releases/tag/v1.0.0)** · macOS 14 及以上
 
 | 你的 Mac | 下载 |
 | :--- | :--- |
-| 通用版（两种芯片） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Universal.zip) |
-| Apple Silicon（M 系列） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-AppleSilicon.zip) |
-| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/APFSearch-0.1.6-Intel.zip) |
+| 通用版（两种芯片） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-Universal.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-Universal.zip) |
+| Apple Silicon（M 系列） | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-AppleSilicon.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-AppleSilicon.zip) |
+| Intel Mac | [DMG](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-Intel.dmg) · [ZIP](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/APFSearch-1.0.0-Intel.zip) |
 
-不确定芯片类型时选通用版。打开 DMG 后，将 APFSearch 拖入 Applications 文件夹；ZIP 适合手动部署。应用与 DMG 均通过 Developer ID 签名和 Apple 公证，ZIP 内含已装订公证票据的应用。[SHA-256 校验值](https://github.com/JamesLinYJ/APFSearch/releases/download/v0.1.6/SHA256SUMS.txt)。
+不确定芯片类型时选通用版。打开 DMG 后，将 APFSearch 拖入 Applications 文件夹；ZIP 适合手动部署。应用与 DMG 均通过 Developer ID 签名和 Apple 公证，ZIP 内含已装订公证票据的应用。[SHA-256 校验值](https://github.com/JamesLinYJ/APFSearch/releases/download/v1.0.0/SHA256SUMS.txt)。
 
-这是开发预览版。Intel 代码已通过 Rosetta 运行检查；真实 Intel 硬件及 macOS 14 仍需实机验证。
+Intel 代码已通过 Rosetta 运行检查；真实 Intel 硬件及 macOS 14 仍需实机验证。
 
-0.1.6 Preview 在索引快照之间共享文本、倒排和排序块，改进结果生命周期，并使用新 SDK 让支持的 macOS 采用原生 Liquid Glass。保留现有 SQLite 数据和设置；新版派生缓存在首次启动时从数据库生成，不因缓存升级重新扫描文件系统。详见[版本说明](docs/releases/0.1.6.md)和[快照设计](docs/SNAPSHOT_SHARING.md)。
+1.0.0 修复已授权的后台服务被卸载后无法重新连接的问题，沿用紧凑共享索引，并在支持的 macOS 上采用原生 Liquid Glass。从 0.1.6 升级保留现有 SQLite 数据、设置和派生缓存。详见[版本说明](docs/releases/1.0.0.md)和[快照设计](docs/SNAPSHOT_SHARING.md)。
 
 继续沿用 0.1.4 引入的紧凑布局。此前同一份约 569 万条索引的五轮对照中，驻留内存比上一阶段紧凑候选版少 49.5%；这不是与 0.1.3 的对比，也不代表所有机器的表现。详见[实测与限制](docs/SHARED_PATH_LAYOUT.md#acceptance-results)。
 
@@ -117,7 +117,7 @@ APFS 遍历使用 `getattrlistbulk`。FSEvents 在首次遍历前启动，收到
 
 Bundle 标识为 `org.apfsearch.app`、`org.apfsearch.indexer` 和 `org.apfsearch.cli`；Rust 包名为 `apfsearch-core`。
 
-本预览版使用格式 1 的全新配置与索引，数据位于 `~/Library/Application Support/APFSearch/v1`。不导入、迁移或删除早期开发版本的数据。
+APFSearch 的格式 1 配置与索引位于 `~/Library/Application Support/APFSearch/v1`。从 0.1.6 升级会保留这些数据；不导入、迁移或删除此位置以外的早期开发版本数据。
 
 </details>
 
