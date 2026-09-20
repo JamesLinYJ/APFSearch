@@ -137,7 +137,7 @@ a private local location; Apple allows downloading it only once. An API key can
 be revoked independently of the Developer ID certificate.
 
 Update the app and Cargo version together and add `docs/releases/VERSION.md`.
-Commit and push to `main`, then run **Actions → Signed macOS release → Run
+Open a pull request, pass the required checks and squash-merge into `main`, then run **Actions → Signed macOS release → Run
 workflow** on `main`, supplying its full commit SHA and a new matching `vX.Y.Z`
 tag. The workflow checks version consistency and requires the selected commit
 to equal the current `main` checkout. Tags and published releases cannot be
@@ -149,7 +149,7 @@ even when a later step fails. Notarization must return `Accepted`; signature,
 stapled ticket and Gatekeeper checks are required for every architecture and
 every mounted DMG. Only the eight allowlisted download files are published.
 The workflow downloads its draft assets and compares them before making the
-preview release public. Failures leave any draft unpublished for inspection.
+stable release public and marking it as latest. Failures leave any draft unpublished for inspection.
 No local index, runtime report or credentials are uploaded as workflow artifacts.
 
 GitHub repository administrators and trusted code on `main` control release
