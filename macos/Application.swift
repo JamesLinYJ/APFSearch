@@ -2,6 +2,7 @@ import AppKit
 import QuickLookUI
 import Carbon
 import ServiceManagement
+import UniformTypeIdentifiers
 
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -192,6 +193,16 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     let resultsHeading = NSTextField(labelWithString: L("search.all_files"))
     let pathControl = NSPathControl()
     var pathComponentURLs = [URL]()
+    // Shared type icons have standard square bounds and never inspect a path.
+    // Copy before sizing: NSWorkspace owns and may reuse its original images.
+    private static func pathIcon(for type: UTType) -> NSImage {
+        let image = NSWorkspace.shared.icon(for: type).copy() as! NSImage
+        image.size = NSSize(width: 16, height: 16)
+        return image
+    }
+    private static let volumePathIcon = pathIcon(for: .volume)
+    private static let directoryPathIcon = pathIcon(for: .folder)
+    private static let filePathIcon = pathIcon(for: .data)
     var searchToolbarItem: NSSearchToolbarItem?
     var emptyStateVisible = false
     let coverageButton = NSButton(title: "", target: nil, action: nil)
@@ -1013,8 +1024,6 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
             // already has the path and kind: supply native items directly.
             let isDirectory = boolValue(record["is_dir"])
             let components = URL(fileURLWithPath: path, isDirectory: isDirectory).pathComponents
-            let symbolConfiguration = NSImage.SymbolConfiguration(
-                pointSize: NSFont.systemFontSize(for: pathControl.controlSize), weight: .regular)
             var prefix = ""
             // NSPathControlItem.url is read-only. Keep navigation targets in
             // the model and supply them through the public action/drag APIs.
@@ -1025,7 +1034,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
                 let item = NSPathControlItem()
                 item.title = component
                 pathComponentURLs.append(URL(fileURLWithPath: prefix, isDirectory: directory))
-                item.image = NSImage(systemSymbolName: index == 0 ? "internaldrive" : (directory ? "folder" : "doc"), accessibilityDescription: nil)?.withSymbolConfiguration(symbolConfiguration)
+                item.image = index == 0 ? Self.volumePathIcon : (directory ? Self.directoryPathIcon : Self.filePathIcon)
                 return item
             }
         } else {
