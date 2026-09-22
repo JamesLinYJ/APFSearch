@@ -1,5 +1,16 @@
 import AppKit
 
+// Setting NSPathControl.url asks AppKit to synchronously resolve filesystem
+// attributes and icons. Observe the public API boundary, without mocking the
+// indexed-path presentation or the native pathItems implementation.
+final class ObservedPathControl: NSPathControl {
+    var automaticResolutionRequests = 0
+    override var url: URL? {
+        get { super.url }
+        set { automaticResolutionRequests += 1; super.url = newValue }
+    }
+}
+
 // Only the transport is substituted. AppKit table, views, animations, and the
 // controller's production methods run unchanged in a separate AppKit window.
 final class SearchClient {
@@ -334,6 +345,43 @@ enum SearchWindowTests {
         loader.updateDemand([])
     }
 
+    static func selectionPathRegression() async {
+        let paths = ["/", "/SelectionFixture/云端/报告 #1%.txt", "/SelectionFixture/folder/",
+                     "/SelectionFixture/e\u{301}/different-name.txt"]
+        let records: [[String: Any]] = paths.enumerated().map { index, path in
+            ["id": index, "path": path, "name": "Imported display name", "is_dir": index == 0 || index == 2]
+        }
+        let c = await controller(records)
+        c.offlineListID = nil
+        var preservedPaths = true, preservedTitles = true, explicitKinds = true
+        let started = ProcessInfo.processInfo.systemUptime
+        for _ in 0..<25 {
+            for (index, path) in paths.enumerated() {
+                c.table.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+                c.synchronizeSelection()
+                let items = c.pathControl.pathItems
+                let expected = URL(fileURLWithPath: path, isDirectory: index == 0 || index == 2)
+                preservedPaths = preservedPaths && items.last.flatMap { c.pathComponentURL(for: $0) } == expected
+                preservedTitles = preservedTitles && items.map(\.title) == expected.pathComponents
+                explicitKinds = explicitKinds && items.dropLast().allSatisfy { c.pathComponentURL(for: $0)?.hasDirectoryPath == true }
+                    && items.last.flatMap { c.pathComponentURL(for: $0) }?.hasDirectoryPath == (index == 0 || index == 2)
+            }
+        }
+        check("selection_never_requests_automatic_filesystem_path_resolution", c.pathControl.automaticResolutionRequests == 0,
+              ["automatic_resolution_requests": c.pathControl.automaticResolutionRequests,
+               "hundred_selections_ms": (ProcessInfo.processInfo.systemUptime - started) * 1000])
+        check("indexed_path_items_preserve_unicode_escaping_and_navigation_targets", preservedPaths && preservedTitles && explicitKinds)
+        let oldItem = c.pathControl.pathItems.last!
+        let board = NSPasteboard.withUniqueName()
+        let dragged = c.pathControl(c.pathControl, shouldDrag: oldItem, with: board)
+        check("indexed_path_item_drag_preserves_file_url", dragged && (board.readObjects(forClasses: [NSURL.self]) as? [URL])?.first == c.pathComponentURL(for: oldItem))
+        board.releaseGlobally()
+        c.table.deselectAll(nil); c.synchronizeSelection()
+        check("deselection_clears_native_path_items", c.pathControl.isHidden && c.pathControl.pathItems.isEmpty)
+        check("obsolete_path_items_cannot_resolve_to_new_selection", c.pathComponentURL(for: oldItem) == nil)
+        c.window?.orderOut(nil)
+    }
+
     static func snapshotHandoffRegression() async {
         let c = await controller([row(0)])
         c.currentLease = SearchSnapshotLease(token: "displayed", listID: c.offlineListID)
@@ -369,6 +417,7 @@ enum SearchWindowTests {
         c.window?.orderOut(nil); SearchClient.shared.clear()
     }
     static func runTests() async {
+        await selectionPathRegression()
         await snapshotHandoffRegression()
         await iconDemandRegression()
         let statusController = SearchWindowController()
