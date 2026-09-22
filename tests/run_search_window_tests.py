@@ -56,6 +56,10 @@ instrumentation = """
 if source.count(table_class) != 1:
     raise SystemExit("Table class changed; update test instrumentation")
 source = source.replace(table_class, table_class + instrumentation, 1)
+path_control = "    let pathControl = NSPathControl()"
+if source.count(path_control) != 1:
+    raise SystemExit("Path control changed; update the selection I/O instrumentation")
+source = source.replace(path_control, "    let pathControl = ObservedPathControl()", 1)
 (work / "ApplicationUnderTest.swift").write_text(source)
 command = ["swiftc", "-module-cache-path", str(work / "ModuleCache"), "-swift-version", "5", "-O", "-target", swift_target()]
 command += [str(project / "macos" / name) for name in ["ApplicationIdentity.swift", "SearchProtocol.swift", "Localization.swift", "SettingsWindow.swift", "SelectionResolver.swift", "FileOperationReview.swift", "DuplicateResultsWindow.swift", "UpdateManager.swift", "UpdateUI.swift", "ResultIconLoader.swift"]]

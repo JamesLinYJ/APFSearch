@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1
+
+- Build the native selection path bar from indexed metadata instead of asking AppKit to synchronously resolve filesystem attributes and icons. Preserve path navigation and dragging without blocking selection on FileProvider or iCloud access.
+- Use shared system file-type icons with standard 16-point bounds in the path bar, keeping folder, document and volume icons proportional without per-path lookups.
+- Index removed paths when retiring reconciliation diagnostics, eliminating repeated string allocation and quadratic comparisons during large deletion or rename bursts. Preserve diagnostic matching and event progress semantics.
+
+See the [release notes](docs/releases/1.0.1.md).
+
 ## 1.0.0
 
 - Publish the first stable release, with matching app and core versions and Apple Silicon, Intel and Universal downloads.

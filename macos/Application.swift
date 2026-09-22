@@ -2,6 +2,7 @@ import AppKit
 import QuickLookUI
 import Carbon
 import ServiceManagement
+import UniformTypeIdentifiers
 
 @main
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -182,7 +183,7 @@ final class SearchResultsTable: NSTableView {
     @objc func undo(_ sender: Any?) { owner?.undoFileOperation(sender) }
 }
 
-final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, QLPreviewPanelDataSource, QLPreviewPanelDelegate, NSMenuItemValidation, NSWindowDelegate, NSToolbarDelegate, NSToolbarItemValidation {
+final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate, NSPathControlDelegate, QLPreviewPanelDataSource, QLPreviewPanelDelegate, NSMenuItemValidation, NSWindowDelegate, NSToolbarDelegate, NSToolbarItemValidation {
     let search = NSSearchField()
     let table = SearchResultsTable()
     let statusLabel = NSTextField(labelWithString: L("status.connecting_service"))
@@ -191,6 +192,17 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     let shortcuts = NSPopUpButton()
     let resultsHeading = NSTextField(labelWithString: L("search.all_files"))
     let pathControl = NSPathControl()
+    var pathComponentURLs = [URL]()
+    // Shared type icons have standard square bounds and never inspect a path.
+    // Copy before sizing: NSWorkspace owns and may reuse its original images.
+    private static func pathIcon(for type: UTType) -> NSImage {
+        let image = NSWorkspace.shared.icon(for: type).copy() as! NSImage
+        image.size = NSSize(width: 16, height: 16)
+        return image
+    }
+    private static let volumePathIcon = pathIcon(for: .volume)
+    private static let directoryPathIcon = pathIcon(for: .folder)
+    private static let filePathIcon = pathIcon(for: .data)
     var searchToolbarItem: NSSearchToolbarItem?
     var emptyStateVisible = false
     let coverageButton = NSButton(title: "", target: nil, action: nil)
@@ -387,7 +399,7 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         let footer = NSStackView(views: [progress, statusLabel, cancelButton, coverageButton, NSView(), detailLabel]); footer.spacing = 7
         footer.setClippingResistancePriority(.defaultLow, for: .horizontal)
         pathControl.pathStyle = .standard; pathControl.isEditable = false; pathControl.controlSize = .small
-        pathControl.target = self; pathControl.doubleAction = #selector(revealPathComponent)
+        pathControl.target = self; pathControl.delegate = self; pathControl.doubleAction = #selector(revealPathComponent)
         pathControl.isHidden = true
         pathControl.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         // Selection changes only the contents of this fixed-height slot. Hiding
@@ -504,8 +516,17 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         UserDefaults.standard.set(table.tableColumns.filter(\.isHidden).map { $0.identifier.rawValue }, forKey: ApplicationIdentity.preferencePrefix + "HiddenColumns")
     }
     @objc func revealPathComponent(_ sender: Any?) {
-        guard offlineListID == nil, let path = pathControl.clickedPathItem?.url?.path else { return }
-        SearchClient.shared.call(["op": "files", "action": "reveal", "paths": [path]]) { [weak self] reply in self?.checkResult(reply) }
+        guard canUseSelection, offlineListID == nil, let item = pathControl.clickedPathItem, let url = pathComponentURL(for: item) else { return }
+        SearchClient.shared.call(["op": "files", "action": "reveal", "paths": [url.path]]) { [weak self] reply in self?.checkResult(reply) }
+    }
+    func pathComponentURL(for item: NSPathControlItem) -> URL? {
+        guard let index = pathControl.pathItems.firstIndex(where: { $0 === item }), pathComponentURLs.indices.contains(index) else { return nil }
+        return pathComponentURLs[index]
+    }
+    func pathControl(_ pathControl: NSPathControl, shouldDrag item: NSPathControlItem, with pasteboard: NSPasteboard) -> Bool {
+        guard canUseSelection, offlineListID == nil, let url = pathComponentURL(for: item) else { return false }
+        pasteboard.clearContents()
+        return pasteboard.writeObjects([url as NSURL])
     }
     func selectFilter(query: String, title: String) {
         activeFilter = query; activeFilterTitle = title; resultsHeading.stringValue = title; runQuery()
@@ -978,11 +999,11 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
     }
     func displayName(_ record: [String: Any], path: String) -> String {
         if isWindowsListPath(path) { return path.split(separator: "\\", omittingEmptySubsequences: true).last.map(String.init) ?? path }
-        return record["name"] as? String ?? URL(fileURLWithPath: path).lastPathComponent
+        return record["name"] as? String ?? URL(fileURLWithPath: path, isDirectory: false).lastPathComponent
     }
     func displayParent(_ path: String) -> String {
         if isWindowsListPath(path), let separator = path.lastIndex(of: "\\") { return String(path[..<separator]) }
-        return URL(fileURLWithPath: path).deletingLastPathComponent().path
+        return URL(fileURLWithPath: path, isDirectory: false).deletingLastPathComponent().path
     }
     func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
         if window?.isVisible == true { runQuery() }
@@ -997,7 +1018,29 @@ final class SearchWindowController: NSWindowController, NSSearchFieldDelegate, N
         guard paths != displayedSelectionPaths || selectionCount != displayedSelectionCount else { return }
         displayedSelectionPaths = paths; displayedSelectionCount = selectionCount
         pathControl.isHidden = selectionCount != 1 || !selectionIsComplete || offlineListID != nil
-        if !pathControl.isHidden, let path = selectedPaths.first { pathControl.url = URL(fileURLWithPath: path) }
+        if !pathControl.isHidden, let row = table.selectedRowIndexes.first, let record = cachedRows[row], let path = paths.first {
+            // NSPathControl.url resolves attributes and per-file icons on the
+            // main thread, including FileProvider/iCloud requests. Selection
+            // already has the path and kind: supply native items directly.
+            let isDirectory = boolValue(record["is_dir"])
+            let components = URL(fileURLWithPath: path, isDirectory: isDirectory).pathComponents
+            var prefix = ""
+            // NSPathControlItem.url is read-only. Keep navigation targets in
+            // the model and supply them through the public action/drag APIs.
+            pathComponentURLs = []
+            pathControl.pathItems = components.enumerated().map { index, component in
+                prefix = (prefix as NSString).appendingPathComponent(component)
+                let directory = index < components.count - 1 || isDirectory
+                let item = NSPathControlItem()
+                item.title = component
+                pathComponentURLs.append(URL(fileURLWithPath: prefix, isDirectory: directory))
+                item.image = index == 0 ? Self.volumePathIcon : (directory ? Self.directoryPathIcon : Self.filePathIcon)
+                return item
+            }
+        } else {
+            pathControl.pathItems = []
+            pathComponentURLs = []
+        }
         window?.toolbar?.validateVisibleItems()
         detailLabel.stringValue = selectionCount == 1 && paths.count == 1 ? (offlineListID == nil ? "" : paths[0]) : (selectionCount == 0 ? "" : L("status.selected_count", selectionCount.formatted()))
         if offlineListID == nil, QLPreviewPanel.sharedPreviewPanelExists(), QLPreviewPanel.shared()?.isVisible == true { updatePreview() }

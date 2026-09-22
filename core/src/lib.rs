@@ -1604,11 +1604,7 @@ impl SearchEngine {
                 }
                 !missing
             });
-            report.errors.retain(|error| {
-                !removed
-                    .iter()
-                    .any(|path| error.starts_with(&format!("{path}: ")))
-            });
+            discard_removed_path_errors(&mut report.errors, &removed);
         }
         let mut index_store = self.index_store.lock().unwrap();
         if !report.cancelled {
@@ -2097,6 +2093,22 @@ impl SearchEngine {
         duplicates::find(&snapshot, mode, &cancelled)
     }
 }
+/// Error strings retain the public `path: description` representation. Index
+/// removed paths once rather than allocating/comparing every path for every
+/// error in a large rename/removal burst. Test each delimiter because `: ` is
+/// also legal inside a filename; splitting only at the first one loses errors.
+fn discard_removed_path_errors(errors: &mut Vec<String>, removed: &[String]) {
+    if errors.is_empty() || removed.is_empty() {
+        return;
+    }
+    let removed: HashSet<&str> = removed.iter().map(String::as_str).collect();
+    errors.retain(|error| {
+        !error
+            .match_indices(": ")
+            .any(|(end, _)| removed.contains(&error[..end]))
+    });
+}
+
 /// An opaque coverage identity, independent of metadata generation. Keep the
 /// full coverage proof in the lease, but never send it as a UI comparison token.
 fn coverage_token(coverage: &Value) -> String {
@@ -3024,6 +3036,9 @@ mod scan_resume_tests;
 
 #[cfg(test)]
 mod event_scope_tests;
+
+#[cfg(test)]
+mod reconciliation_errors_tests;
 
 #[cfg(test)]
 mod stop_publication_tests;
